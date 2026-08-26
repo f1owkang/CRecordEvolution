@@ -120,6 +120,13 @@ func (a *app) readIntNode(name string) (int64, error) {
 	return a.fs.ReadInt(node)
 }
 
+func healthPct(fullUA, designUA int64) int64 {
+	if designUA <= 0 {
+		return 0
+	}
+	return fullUA * 100 / designUA
+}
+
 func (a *app) basics() (Design, int64, error) {
 	full, err := a.readIntNode("charge_full")
 	if err != nil {
@@ -129,12 +136,8 @@ func (a *app) basics() (Design, int64, error) {
 	if err != nil {
 		return Design{}, 0, err
 	}
-	pct, err := a.readIntNode("capacity")
-	if err != nil {
-		return Design{}, 0, err
-	}
 	d := Design{DesignMah: a.designUA / 1000, FullMah: full / 1000, Cycles: cycles}
-	return d, pct, nil
+	return d, healthPct(full, a.designUA), nil
 }
 
 func (a *app) refresh() error {
