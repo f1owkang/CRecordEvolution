@@ -46,7 +46,7 @@ jobs:
           cp -r module.prop customize.sh service.sh action.sh bin webroot META-INF mlstage/
           mv bin/batteryd.ml mlstage/bin/batteryd
           rm -f mlstage/bin/batteryd.ml
-          sed -i 's/^name=.*/name=Charging Record ML/' mlstage/module.prop
+          sed -i 's/^name=.*/name=ChargingRecord Evolution ML/' mlstage/module.prop
           sed -i 's/^description=/description=[ML实验版]/' mlstage/module.prop
           sed -i '/^updateJson=/d' mlstage/module.prop
           cd mlstage && zip -r ../Charging_Record_ML.zip . && cd ..
