@@ -50,6 +50,7 @@ if [[ $(get_choose) == 0 ]]; then
 	UiPrint "- 已选择安装 $MODNAME"
 	UiPrint " "
 	unzip -o "$ZIPFILE" '/*' -d $MODPATH >&2
+	set_perm "$MODPATH/bin/batteryd" 0 0 0755
 else
     abort "* 已经选择退出安装"
 fi
