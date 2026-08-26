@@ -3,3 +3,4 @@ data/
 .superpowers/
 *.exe
 
+.playwright-mcp/
