@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Charging Record</title>
+    <title>ChargingRecord Evolution</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { -webkit-text-size-adjust: 100%; }
@@ -105,7 +105,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 <body>
 <div class="wrap">
   <header>
-    <h1>Charging Record</h1>
+    <h1>ChargingRecord Evolution</h1>
     <span id="badge" class="badge">—</span>
   </header>
 
@@ -144,8 +144,8 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 <script>
 (function () {
   'use strict';
-  var CMD_JSON = '/data/adb/modules/Charging_Record/bin/batteryd json';
-  var CMD_ONCE = '/data/adb/modules/Charging_Record/bin/batteryd once';
+  var CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
+  var CMD_ONCE = '/data/adb/modules/CRecordEvolution/bin/batteryd once';
 
   function $(id) { return document.getElementById(id); }
 

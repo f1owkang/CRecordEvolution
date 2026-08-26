@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Magisk 模块「Charging_Record」：Go 二进制 `batteryd` 读取 sysfs 并结合充电会话库仑积分估算电池健康度，结果显示在管理器的模块描述里。业务逻辑全部在 Go（`cmd/batteryd/`）；仓库里的 `service.sh` / `action.sh` / `customize.sh` 只是 POSIX sh 引导/交互壳，在 Android 设备上由 root 管理器执行，本机无法运行验证。
+Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1owkang、不会梦游的鱼、阿巴酱`）：Go 二进制 `batteryd` 读取 sysfs 并结合充电会话库仑积分估算电池健康度，结果显示在管理器的模块描述里。业务逻辑全部在 Go（`cmd/batteryd/`）；仓库里的 `service.sh` / `action.sh` / `customize.sh` 只是 POSIX sh 引导/交互壳，在 Android 设备上由 root 管理器执行，本机无法运行验证。
 
 ## 构建
 
@@ -15,8 +15,8 @@ Magisk 模块「Charging_Record」：Go 二进制 `batteryd` 读取 sysfs 并结
 - `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
 - `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。
 - `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。
-- `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），按序探测管理器注入的执行 API 调 `bin/batteryd json` 取数。权限由安装器接管，**不要给它加 chmod/set_perm**。
-- `module.prop` — 模块元数据。`description=` 行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed）；手动修改只能存活到下次刷新。
+- `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），取数走管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名字符串)` 并带 15s 超时与级联回退，调 `/data/adb/modules/CRecordEvolution/bin/batteryd json`。权限由安装器接管，**不要给它加 chmod/set_perm**。
+- `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
 - 运行期数据：`$MODDIR/data/battery.db`（SQLite 六表：kv/sessions/estimates/resistance/rest_points/events，90 天自动清理）。
 - `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 Release → 回写 `update.json`。
 - `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。
@@ -27,6 +27,7 @@ Magisk 模块「Charging_Record」：Go 二进制 `batteryd` 读取 sysfs 并结
 - 所有面向用户的文案（描述、once 输出、WebUI）为简体中文，新增输出保持中文风格一致；数值与单位间有空格（`%d mAh` 为定稿格式）。
 - 双变体发布：同一源码打两个包——stable `Charging_Record.zip` 与实验 `Charging_Record_ML.zip`。CI 打 ML 包时改 `name=Charging Record ML`、description 加 `[ML实验版]` 前缀并**删除 updateJson 行**，故 ML 仅手动刷入、无应用内更新；`updateJson` 永远只指向 stable 资产。
 - 两变体 id 相同互斥安装，同一次发版 version/versionCode 相同。
+- 历史 id 曾为 `Charging_Record`：从旧 id 升级必须先卸载旧模块再刷入（README 安装节已注明），模块目录与数据目录随之迁移。
 - 打包发布由 `.github/workflows/release.yml` 完成；不要把生成的 zip 提交进仓库。
 
 ## 发版流程

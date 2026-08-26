@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔋 Charging Record
+# 🔋 ChargingRecord Evolution
 
 **把电池健康度写在 root 管理器模块描述里，刷入即用，零配置**
 
@@ -31,6 +31,7 @@
 
 > [!NOTE]
 > 两个变体互斥，后刷的会替换先刷的。Magisk 低版本没有 Action 按钮，等下次重启刷新即可。
+> 从 v1.2.x 及更早版本（模块 id 为 `Charging_Record`）升级：请先在管理器中卸载旧模块，再刷入新版。
 
 ## 工作原理
 
@@ -57,7 +58,7 @@
 运行数据存在模块目录下的 `data/battery.db`（SQLite），只保留最近 90 天，过期数据每日自动清理。有 root 终端的话可以这样翻历史：
 
 ```sh
-sqlite3 /data/adb/modules/Charging_Record/data/battery.db \
+sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
   'SELECT datetime(ts, "unixepoch", "localtime"), mah FROM estimates ORDER BY ts DESC LIMIT 10;'
 ```
 
