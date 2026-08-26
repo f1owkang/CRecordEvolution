@@ -49,7 +49,7 @@ jobs:
           VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
           VERSION_CODE="$(grep '^versionCode=' module.prop | cut -d= -f2)"
           [ -n "$VERSION_CODE" ] || { echo "::error::module.prop 缺少 versionCode"; exit 1; }
-          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/Charging_Record/releases/latest/download/Charging_Record.zip",\n  "changelog": "https://github.com/f1owkang/Charging_Record/releases/latest/download/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" > update.json
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/latest/download/Charging_Record.zip",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/latest/download/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" > update.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add update.json
