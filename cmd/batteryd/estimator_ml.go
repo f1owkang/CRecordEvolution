@@ -22,6 +22,9 @@ const (
 type Learning struct{ kv KVStore }
 
 func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
+	if tempOutOfRange(sr) {
+		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "temp_out_of_range"}}
+	}
 	delta := sr.EndCap - sr.StartCap
 	if delta < minDeltaCap {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "delta_lt_20"}}

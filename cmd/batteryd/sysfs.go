@@ -77,6 +77,24 @@ func (s SysFS) ReadInt(path string) (int64, error) {
 	return strconv.ParseInt(text, 10, 64)
 }
 
+// ReadIntSigned 读取带可选正负号的整数。power_supply 规范约定放电电流为负值，
+// 因此 current_now 必须走此入口；其余非负节点仍用严格校验的 ReadInt。
+func (s SysFS) ReadIntSigned(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("ReadIntSigned %q: %w", path, err)
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0, fmt.Errorf("ReadIntSigned %q: 空内容", path)
+	}
+	v, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("ReadIntSigned %q: 内容不是整数", path)
+	}
+	return v, nil
+}
+
 func NormCurrentUA(raw int64) int64 {
 	if raw > 10000 {
 		return raw

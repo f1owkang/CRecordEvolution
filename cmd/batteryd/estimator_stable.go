@@ -35,8 +35,17 @@ func (s *Stable) OnSession(sr SettledSession) (EstUpdate, error) {
 	return EstUpdate{EstUA: ema, Samples: samples, Changed: true}, nil
 }
 
+// tempOutOfRange 判断会话温度是否越界；temp 节点缺失时 TempMin=TempMax=0
+//（未知温度），不做门控。
+func tempOutOfRange(sr SettledSession) bool {
+	if sr.TempMin == 0 && sr.TempMax == 0 {
+		return false
+	}
+	return sr.TempMin < stableTempMinC || sr.TempMax > stableTempMaxC
+}
+
 func evaluateStable(sr SettledSession) SessionResult {
-	if sr.TempMin < stableTempMinC || sr.TempMax > stableTempMaxC {
+	if tempOutOfRange(sr) {
 		return SessionResult{Reason: "temp_out_of_range"}
 	}
 	delta := sr.EndCap - sr.StartCap

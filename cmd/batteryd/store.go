@@ -51,6 +51,9 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// WAL：daemon 与 WebUI 的 batteryd json 并发读写同一库，WAL 显著降低锁竞争。
+	// 失败仅告警不阻断（回退默认 journal）。
+	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	return &Store{db: db}, nil
 }
 

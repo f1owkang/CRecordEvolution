@@ -95,6 +95,40 @@ func TestSysFSReadInt(t *testing.T) {
 	}
 }
 
+func TestSysFSReadIntSigned(t *testing.T) {
+	s := newTestSysFS(t)
+	cases := []struct {
+		content string
+		want    int64
+		wantErr bool
+	}{
+		{"-500000\n", -500000, false},
+		{"500000\n", 500000, false},
+		{"-0\n", 0, false},
+		{"abc\n", 0, true},
+		{"\n", 0, true},
+	}
+	for i, tc := range cases {
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			p := filepath.Join(s.Base, "signed.txt")
+			writeFile(t, p, tc.content)
+			got, err := s.ReadIntSigned(p)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("内容 %q 应报错, got %d", tc.content, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("内容 %q 不应报错: %v", tc.content, err)
+			}
+			if got != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestSysFSNormCurrentUA(t *testing.T) {
 	if got := NormCurrentUA(500); got != 500000 {
 		t.Fatalf("NormCurrentUA(500) = %d, want 500000", got)

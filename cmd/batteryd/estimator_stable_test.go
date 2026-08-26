@@ -76,6 +76,27 @@ func TestOnSessionRejectsTempOutOfRange(t *testing.T) {
 	}
 }
 
+func TestStableAcceptsUnknownTemp(t *testing.T) {
+	// temp 节点缺失时 TempMin=TempMax=0，视为未知温度，不做门控
+	est, _ := newTestStable(t)
+
+	sess := baseSession()
+	sess.TempMin = 0
+	sess.TempMax = 0
+	sr := SettledSession{Session: sess, AccUA: 8208000000, DesignUA: 4000000}
+
+	upd, err := est.OnSession(sr)
+	if err != nil {
+		t.Fatalf("未知温度会话应被接受: %v", err)
+	}
+	if !upd.Changed {
+		t.Fatal("接受时 Changed 应为 true")
+	}
+	if upd.Samples != 1 {
+		t.Fatalf("Samples = %d, want 1", upd.Samples)
+	}
+}
+
 func TestOnSessionRejectsDeltaBelow20(t *testing.T) {
 	est, st := newTestStable(t)
 

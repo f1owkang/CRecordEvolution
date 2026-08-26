@@ -46,6 +46,31 @@ func seedML(t *testing.T, est *Learning) {
 	}
 }
 
+func TestLearningRejectsColdSeed(t *testing.T) {
+	// ML 通道同样启用温度门控：种子阶段冷/热会话不得初始化 EMA
+	est, _ := newTestLearning(t)
+
+	sess := baseSession()
+	sess.TempMin = 8
+	sess.TempMax = 10
+	sr := SettledSession{Session: sess, AccUA: 6480000000, DesignUA: 4000000}
+
+	_, err := est.OnSession(sr)
+	if err == nil {
+		t.Fatal("越温种子会话应被拒绝")
+	}
+	var re *RejectError
+	if !errors.As(err, &re) {
+		t.Fatalf("错误类型 = %T, want *RejectError", err)
+	}
+	if re.Result.Reason != "temp_out_of_range" {
+		t.Fatalf("Reason = %q, want temp_out_of_range", re.Result.Reason)
+	}
+	if _, ok := est.kv.KVGet(kvKeyEmaUA); ok {
+		t.Fatal("拒绝后 EMA 不应被写入")
+	}
+}
+
 func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 	est, st := newTestLearning(t)
 	seedML(t, est)

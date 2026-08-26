@@ -170,6 +170,15 @@ func (p *Pipeline) readNode(name string) (int64, error) {
 	return p.fs.ReadInt(path)
 }
 
+// readNodeSigned 带符号读取（放电电流为负，见 sysfs.ReadIntSigned）。
+func (p *Pipeline) readNodeSigned(name string) (int64, error) {
+	path, err := p.nodePath(name)
+	if err != nil {
+		return 0, err
+	}
+	return p.fs.ReadIntSigned(path)
+}
+
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
 	if status == "Charging" {
@@ -197,25 +206,28 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	if err != nil {
 		return err
 	}
-	iRaw, err := p.readNode("current_now")
+	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
 		return err
 	}
-	tRaw, err := p.readNode("temp")
-	if err != nil {
-		return err
-	}
-	vUV, err := p.readNode("voltage_now")
-	if err != nil {
-		return err
-	}
+	iAbs := absI64(iRaw)
+	iUA := absI64(NormCurrentUA(iAbs))
 
-	iUA := absI64(NormCurrentUA(iRaw))
-	tempC := NormTempC(tRaw)
-
-	p.pushWindow(iUA, vUV)
-	if err := p.evalResistance(); err != nil {
-		return err
+	var tempC float64
+	haveTemp := false
+	if tRaw, terr := p.readNode("temp"); terr == nil {
+		tempC = NormTempC(tRaw)
+		haveTemp = true
+	}
+	vUV, verr := p.readNode("voltage_now")
+	if verr != nil {
+		vUV = 0
+	}
+	if vUV > 0 {
+		p.pushWindow(iUA, vUV)
+		if err := p.evalResistance(); err != nil {
+			return err
+		}
 	}
 
 	s := &p.sess
@@ -229,19 +241,21 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 		s.accUAs += iUA * tickSeconds
 		s.ticks++
 		s.lastCap = capVal
-		ti := int64(tempC)
-		if s.tempN == 0 || ti < s.tempMin {
-			if s.tempN == 0 {
-				s.tempMin, s.tempMax = ti, ti
-			} else {
-				s.tempMin = ti
+		if haveTemp {
+			ti := int64(tempC)
+			if s.tempN == 0 || ti < s.tempMin {
+				if s.tempN == 0 {
+					s.tempMin, s.tempMax = ti, ti
+				} else {
+					s.tempMin = ti
+				}
 			}
+			if ti > s.tempMax {
+				s.tempMax = ti
+			}
+			s.tempSum += tempC
+			s.tempN++
 		}
-		if ti > s.tempMax {
-			s.tempMax = ti
-		}
-		s.tempSum += tempC
-		s.tempN++
 	}
 
 	total := kvInt(p.st, kvChargedTotal) + iUA*tickSeconds
@@ -409,11 +423,11 @@ func (p *Pipeline) tickResting(status string) error {
 		p.restStreak = 0
 		return nil
 	}
-	iRaw, err := p.readNode("current_now")
+	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
 		return err
 	}
-	if absI64(NormCurrentUA(iRaw)) >= restQuietUA {
+	if absI64(NormCurrentUA(absI64(iRaw))) >= restQuietUA {
 		p.restStreak = 0
 		return nil
 	}
@@ -421,13 +435,13 @@ func (p *Pipeline) tickResting(status string) error {
 	if p.restStreak < restMinTicks {
 		return nil
 	}
-	uv, err := p.readNode("voltage_now")
-	if err != nil {
-		return err
+	uv, uerr := p.readNode("voltage_now")
+	if uerr != nil {
+		return nil
 	}
-	capVal, err := p.readNode("capacity")
-	if err != nil {
-		return err
+	capVal, cerr := p.readNode("capacity")
+	if cerr != nil {
+		return nil
 	}
 	if absI64(capVal-p.lastRestCap) < restDedupCapDelta &&
 		absI64(uv-p.lastRestUV) <= restDedupUVDrift {
