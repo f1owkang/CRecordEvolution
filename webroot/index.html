@@ -149,31 +149,85 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
   function $(id) { return document.getElementById(id); }
 
-  function pickExec() {
-    if (typeof ksu !== 'undefined' && ksu && typeof ksu.exec === 'function') {
-      return function (cmd, cb) { ksu.exec(cmd, cb); };
-    }
-    if (window.APatch && typeof window.APatch.exec === 'function') {
-      return function (cmd, cb) { window.APatch.exec(cmd, cb); };
-    }
-    return null;
-  }
+  var SEQ = 0;
+  var TIMEOUT_MS = 15000;
 
   function normalize(a, b, c) {
     if (a && typeof a === 'object' && ('errno' in a || 'stdout' in a)) return a;
     return { errno: Number(a) || 0, stdout: b == null ? '' : String(b), stderr: c == null ? '' : String(c) };
   }
 
-  var execRaw = pickExec();
+  function pickHost() {
+    if (typeof ksu !== 'undefined' && ksu && typeof ksu.exec === 'function') return ksu;
+    if (window.APatch && typeof window.APatch.exec === 'function') return window.APatch;
+    if (window.apatch && typeof window.apatch.exec === 'function') return window.apatch;
+    return null;
+  }
+
+  function hasExec() { return pickHost() != null; }
+
+  // KernelSU / APatch / WebUI-X 官方协议：exec(cmd, optionsJson, 回调函数名字符串)
+  function cbNameExec(host, cmd) {
+    return new Promise(function (resolve) {
+      var name = '__cr_cb_' + (++SEQ) + '_' + Date.now();
+      var done = false;
+      window[name] = function (errno, stdout, stderr) {
+        if (done) return;
+        done = true;
+        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        resolve(normalize(errno, stdout, stderr));
+      };
+      try {
+        host.exec(cmd, '{}', name);
+      } catch (e) {
+        if (!done) { done = true; resolve({ errno: -1, stdout: '', stderr: String(e) }); }
+      }
+    });
+  }
+
+  // 部分宿主的 exec 直接返回 Promise<{errno,stdout,stderr}>；不适用时 resolve(null)
+  function promiseExec(host, cmd) {
+    return new Promise(function (resolve) {
+      var p;
+      try { p = host.exec(cmd); } catch (e) { resolve(null); return; }
+      if (p && typeof p.then === 'function') {
+        p.then(function (r) { resolve(r && typeof r === 'object' ? normalize(r) : null); },
+               function () { resolve(null); });
+      } else { resolve(null); }
+    });
+  }
+
+  // 旧式直调：exec(cmd, function(errno, stdout, stderr))；抛错或未回调则 resolve(null)
+  function directCbExec(host, cmd) {
+    return new Promise(function (resolve) {
+      try {
+        host.exec(cmd, function (a, b, c) { resolve(normalize(a, b, c)); });
+      } catch (e) { resolve(null); }
+    });
+  }
 
   function run(cmd) {
+    var host = pickHost();
+    if (!host) {
+      return Promise.resolve({ errno: -1, nohost: true, stdout: '', stderr: '' });
+    }
+    var kinds = [cbNameExec, promiseExec, directCbExec];
     return new Promise(function (resolve) {
-      if (!execRaw) { resolve({ errno: -1, stdout: '', stderr: '' }); return; }
-      try {
-        execRaw(cmd, function (a, b, c) { resolve(normalize(a, b, c)); });
-      } catch (e) {
-        resolve({ errno: -1, stdout: '', stderr: String(e) });
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (!settled) { settled = true; resolve({ errno: -1, stdout: '', stderr: '执行超时' }); }
+      }, TIMEOUT_MS);
+      // errno=-1 视为该策略不可用，级联到下一种；其余（含命令本身的非零退出码）直接采纳
+      function attempt(i) {
+        if (settled) return;
+        kinds[i](host, cmd).then(function (r) {
+          if (settled) return;
+          if (r && Number(r.errno) !== -1) { settled = true; clearTimeout(timer); resolve(r); return; }
+          if (i + 1 < kinds.length) { setTimeout(function () { attempt(i + 1); }, 350); return; }
+          settled = true; clearTimeout(timer); resolve({ errno: -1, stdout: '', stderr: '' });
+        });
       }
+      attempt(0);
     });
   }
 
@@ -288,7 +342,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   }
 
   function init() {
-    if (!execRaw) {
+    if (!hasExec()) {
       $('app').style.display = 'none';
       $('err').style.display = 'none';
       $('gate').style.display = 'flex';
