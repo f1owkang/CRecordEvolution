@@ -26,6 +26,10 @@ is_valid() {
 }
 
 refresh() {
+	NODE_CFD=$(find_node charge_full_design)
+	NODE_CF=$(find_node charge_full)
+	NODE_CC=$(find_node cycle_count)
+	NODE_STATUS=$(find_node status)
 	cfd=$(cat "$NODE_CFD" 2>/dev/null)
 	cf=$(cat "$NODE_CF" 2>/dev/null)
 	cc=$(cat "$NODE_CC" 2>/dev/null)
@@ -51,11 +55,6 @@ refresh() {
 	return 0
 }
 
-NODE_CFD=$(find_node charge_full_design)
-NODE_CF=$(find_node charge_full)
-NODE_CC=$(find_node cycle_count)
-NODE_STATUS=$(find_node status)
-
 if [ "$1" = "once" ]; then
 	refresh
 	exit $?
@@ -65,7 +64,12 @@ while [ "$(getprop sys.boot_completed)" != "1" ]; do
 	sleep 2
 done
 
-refresh
+retry=0
+until refresh; do
+	retry=$((retry + 1))
+	[ "$retry" -ge 10 ] && break
+	sleep 30
+done
 
 last_status=$(cat "$NODE_STATUS" 2>/dev/null)
 count=0
