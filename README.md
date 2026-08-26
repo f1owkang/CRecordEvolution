@@ -22,8 +22,8 @@
 
 | 资产 | 通道 | 说明 |
 | :--: | :-- | :-- |
-| `Charging_Record.zip` | ✅ 稳定 | 统计算法，支持应用内更新 |
-| `Charging_Record_ML.zip` | 🧪 实验 | 在线学习算法，手动刷入，不提供应用内更新 |
+| `ChargingRecordEvolution.zip` | ✅ 稳定 | 统计算法，支持应用内更新 |
+| `ChargingRecordEvolution_ML.zip` | 🧪 实验 | 在线学习算法，手动刷入，不提供应用内更新 |
 
 1. 在管理器中选择刷入下载好的 zip
 2. 按提示确认：音量+ 安装 / 音量- 取消
