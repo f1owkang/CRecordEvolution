@@ -84,19 +84,17 @@ func newApp() (*app, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
 	}
-	fail := func(err error) (*app, error) {
-		_ = st.InsertEvent("boot_fail", err.Error())
-		_ = st.Close()
-		return nil, err
-	}
 	fs := SysFS{}
-	node, err := fs.FindNode("charge_full_design")
-	if err != nil {
-		return fail(fmt.Errorf("读取出厂设计容量失败：%w", err))
+	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
+	// 设计容量窗口而保持「学习期」，但内核读数（当前容量/循环次数）仍可正常展示。
+	designUA := int64(0)
+	if node, err := fs.FindNode("charge_full_design"); err == nil {
+		if v, rerr := fs.ReadInt(node); rerr == nil {
+			designUA = v
+		}
 	}
-	designUA, err := fs.ReadInt(node)
-	if err != nil {
-		return fail(fmt.Errorf("读取出厂设计容量失败：%w", err))
+	if designUA <= 0 {
+		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
 	var est Estimator = NewStable(st)
 	if channel == "ml" {
@@ -127,25 +125,30 @@ func healthPct(fullUA, designUA int64) int64 {
 	return fullUA * 100 / designUA
 }
 
-func (a *app) basics() (Design, int64, error) {
-	full, err := a.readIntNode("charge_full")
-	if err != nil {
-		return Design{}, 0, err
+func (a *app) basics() Design {
+	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
+	if full, err := a.readIntNode("charge_full"); err == nil {
+		d.FullMah = full / 1000
+		d.HasFull = true
+		if d.HasDesign {
+			d.Pct = healthPct(full, a.designUA)
+			d.HasPct = true
+		}
 	}
-	cycles, err := a.readIntNode("cycle_count")
-	if err != nil {
-		return Design{}, 0, err
+	if cycles, err := a.readIntNode("cycle_count"); err == nil {
+		d.Cycles = cycles
+		d.HasCycles = true
 	}
-	d := Design{DesignMah: a.designUA / 1000, FullMah: full / 1000, Cycles: cycles}
-	return d, healthPct(full, a.designUA), nil
+	return d
 }
 
 func (a *app) refresh() error {
-	d, pct, err := a.basics()
+	d := a.basics()
+	desc, err := BuildDescription(d, Snapshot{})
 	if err != nil {
 		return err
 	}
-	return WriteModuleProp(a.propPath, BuildDescription(d, Snapshot{Pct: pct}))
+	return WriteModuleProp(a.propPath, desc)
 }
 
 func (a *app) refreshPruned() error {
@@ -161,12 +164,8 @@ func (a *app) refreshPruned() error {
 }
 
 func (a *app) stats() (Design, Snapshot, error) {
-	d, pct, err := a.basics()
-	if err != nil {
-		return Design{}, Snapshot{}, err
-	}
+	d := a.basics()
 	snap := Snapshot{
-		Pct:        pct,
 		CycleEquiv: float64(kvInt(a.st, kvChargedTotal)) / float64(a.designUA),
 		RMoh:       a.rMoh(),
 	}
@@ -174,12 +173,10 @@ func (a *app) stats() (Design, Snapshot, error) {
 		snap.EstUA = &ema
 		snap.Samples = samples
 	}
-	tRaw, err := a.readIntNode("temp")
-	if err != nil {
-		return d, snap, err
+	if tRaw, err := a.readIntNode("temp"); err == nil {
+		tempC := NormTempC(tRaw)
+		snap.TempC = &tempC
 	}
-	tempC := NormTempC(tRaw)
-	snap.TempC = &tempC
 	return d, snap, nil
 }
 
@@ -237,7 +234,16 @@ func runDaemon() error {
 	for range ticker.C {
 		raw, err := os.ReadFile(statusNode)
 		if err != nil {
-			fatalf(a, "读取 status 失败：%v", err)
+			// status 读取抖动属于瞬态故障，走连败计数而非直接退出
+			streak, dead := tickStrike(failStreak, err)
+			failStreak = streak
+			msg := "读取 status 失败：" + err.Error()
+			if dead {
+				fatalf(a, "%s，连续 %d 次", msg, failStreak)
+			}
+			_ = a.st.InsertEvent("tick_error", msg)
+			fmt.Fprintln(os.Stderr, msg)
+			continue
 		}
 		status := strings.TrimSpace(string(raw))
 
@@ -308,14 +314,24 @@ func runOnce() error {
 		resText = fmt.Sprintf("%.1f mΩ", *snap.RMoh)
 	}
 
-	fmt.Printf("出厂设计容量：%d mAh\n", d.DesignMah)
-	fmt.Printf("当前电池容量：%d mAh\n", d.FullMah)
-	fmt.Printf("循环次数：%d\n", d.Cycles)
-	fmt.Printf("剩余容量：%d%%\n", snap.Pct)
+	if d.HasDesign {
+		fmt.Printf("出厂设计容量：%d mAh\n", d.DesignMah)
+	}
+	if d.HasFull {
+		fmt.Printf("当前电池容量：%d mAh\n", d.FullMah)
+	}
+	if d.HasCycles {
+		fmt.Printf("循环次数：%d\n", d.Cycles)
+	}
+	if d.HasPct {
+		fmt.Printf("剩余容量：%d%%\n", d.Pct)
+	}
 	fmt.Printf("实测估算：%s\n", estText)
 	fmt.Printf("循环当量：%.2f\n", snap.CycleEquiv)
 	fmt.Printf("内阻：%s\n", resText)
-	fmt.Printf("电池温度：%.1f℃\n", *snap.TempC)
+	if snap.TempC != nil {
+		fmt.Printf("电池温度：%.1f℃\n", *snap.TempC)
+	}
 	return nil
 }
 

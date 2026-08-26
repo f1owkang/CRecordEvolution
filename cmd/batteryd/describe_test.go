@@ -8,22 +8,53 @@ import (
 	"testing"
 )
 
+func fullDesign() Design {
+	return Design{DesignMah: 4000, HasDesign: true, FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
+}
+
 func TestBuildDescriptionBase(t *testing.T) {
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
-	snap := Snapshot{Pct: 96}
+	d := fullDesign()
+	snap := Snapshot{}
 	want := "出厂设计容量为：4000 mAh，当前电池容量为：3850 mAh，电池循环次数为：210次，估算剩余容量百分比为：96%"
-	if got := BuildDescription(d, snap); got != want {
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestBuildDescriptionWithMeasured(t *testing.T) {
 	estUA := int64(3820000)
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
-	snap := Snapshot{Pct: 96, EstUA: &estUA}
+	d := fullDesign()
+	snap := Snapshot{EstUA: &estUA}
 	want := "出厂设计容量为：4000 mAh，当前电池容量为：3850 mAh，电池循环次数为：210次，估算剩余容量百分比为：96%，实测估算容量为：3820 mAh"
-	if got := BuildDescription(d, snap); got != want {
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionPartial(t *testing.T) {
+	// 仅全容量与循环次数（缺设计容量），按可用段组装
+	d := Design{FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true}
+	want := "当前电池容量为：3850 mAh，电池循环次数为：210次"
+	got, err := BuildDescription(d, Snapshot{})
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionNoData(t *testing.T) {
+	if _, err := BuildDescription(Design{}, Snapshot{}); err == nil {
+		t.Fatal("无任何数据时应返回 ErrNoData")
 	}
 }
 
@@ -31,8 +62,11 @@ func TestBuildDescriptionStableNoPrefix(t *testing.T) {
 	old := channel
 	channel = "stable"
 	defer func() { channel = old }()
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
-	got := BuildDescription(d, Snapshot{Pct: 96})
+	d := fullDesign()
+	got, err := BuildDescription(d, Snapshot{})
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
 	want := "出厂设计容量为：4000 mAh，当前电池容量为：3850 mAh，电池循环次数为：210次，估算剩余容量百分比为：96%"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -44,10 +78,14 @@ func TestBuildDescriptionMLPrefix(t *testing.T) {
 	channel = "ml"
 	defer func() { channel = old }()
 	estUA := int64(3820000)
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
-	snap := Snapshot{Pct: 96, EstUA: &estUA}
+	d := fullDesign()
+	snap := Snapshot{EstUA: &estUA}
 	want := "[ML实验版]出厂设计容量为：4000 mAh，当前电池容量为：3850 mAh，电池循环次数为：210次，估算剩余容量百分比为：96%，实测估算容量为：3820 mAh"
-	if got := BuildDescription(d, snap); got != want {
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

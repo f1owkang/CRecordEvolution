@@ -10,11 +10,25 @@ import (
 )
 
 func TestRenderJSONGoldenWithNulls(t *testing.T) {
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
-	snap := Snapshot{Pct: 96}
+	d := Design{DesignMah: 4000, HasDesign: true, FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
+	snap := Snapshot{}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
 	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[]}`
 	got, err := RenderJSON("stable", d, snap, []TsVal{}, now)
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if string(got) != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestRenderJSONGoldenPartialNulls(t *testing.T) {
+	// 缺设计容量与循环次数 → 对应字段渲染为 null
+	d := Design{FullMah: 3850, HasFull: true}
+	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
+	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[]}`
+	got, err := RenderJSON("stable", d, Snapshot{}, []TsVal{}, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -27,9 +41,10 @@ func TestRenderJSONGoldenFull(t *testing.T) {
 	estUA := int64(4501234)
 	rMoh := 0.85
 	tempC := 28.5
-	d := Design{DesignMah: 5000, FullMah: 4600, Cycles: 322}
-	snap := Snapshot{Pct: 92, EstUA: &estUA, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC}
-	recent := []TsVal{{TS: 1778000000, V: 4501}, {TS: 1777999940, V: 4498}}
+	d := Design{DesignMah: 5000, HasDesign: true, FullMah: 4600, HasFull: true, Cycles: 322, HasCycles: true, Pct: 92, HasPct: true}
+	snap := Snapshot{EstUA: &estUA, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC}
+	// estimates 表存 µAh，RenderJSON 负责 /1000 转 mAh
+	recent := []TsVal{{TS: 1778000000, V: 4501000}, {TS: 1777999940, V: 4498000}}
 	now := time.Date(2026, 8, 26, 9, 5, 1, 0, time.UTC)
 	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}]}`
 	got, err := RenderJSON("ml", d, snap, recent, now)
@@ -42,12 +57,12 @@ func TestRenderJSONGoldenFull(t *testing.T) {
 }
 
 func TestRenderJSONSanitizesNonFiniteFloats(t *testing.T) {
-	d := Design{DesignMah: 4000, FullMah: 3850, Cycles: 210}
+	d := Design{DesignMah: 4000, HasDesign: true, FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
 
 	nanR := math.NaN()
 	infTemp := math.Inf(1)
-	snapNaN := Snapshot{Pct: 96, CycleEquiv: 3.5, RMoh: &nanR}
+	snapNaN := Snapshot{CycleEquiv: 3.5, RMoh: &nanR}
 	out, err := RenderJSON("stable", d, snapNaN, nil, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -63,7 +78,7 @@ func TestRenderJSONSanitizesNonFiniteFloats(t *testing.T) {
 	}
 
 	infCycle := math.Inf(-1)
-	snapInf := Snapshot{Pct: 96, CycleEquiv: infCycle, TempC: &infTemp}
+	snapInf := Snapshot{CycleEquiv: infCycle, TempC: &infTemp}
 	out, err = RenderJSON("stable", d, snapInf, nil, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)

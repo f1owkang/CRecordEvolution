@@ -1,19 +1,26 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 )
 
+var ErrNoData = errors.New("无可用电池数据")
+
 type Design struct {
 	DesignMah int64
+	HasDesign bool
 	FullMah   int64
+	HasFull   bool
 	Cycles    int64
+	HasCycles bool
+	Pct       int64
+	HasPct    bool
 }
 
 type Snapshot struct {
-	Pct        int64
 	EstUA      *int64
 	Samples    int64
 	CycleEquiv float64
@@ -21,16 +28,32 @@ type Snapshot struct {
 	TempC      *float64
 }
 
-func BuildDescription(d Design, snap Snapshot) string {
-	base := fmt.Sprintf("出厂设计容量为：%d mAh，当前电池容量为：%d mAh，电池循环次数为：%d次，估算剩余容量百分比为：%d%%",
-		d.DesignMah, d.FullMah, d.Cycles, snap.Pct)
+// BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。
+func BuildDescription(d Design, snap Snapshot) (string, error) {
+	var parts []string
+	if d.HasDesign {
+		parts = append(parts, fmt.Sprintf("出厂设计容量为：%d mAh", d.DesignMah))
+	}
+	if d.HasFull {
+		parts = append(parts, fmt.Sprintf("当前电池容量为：%d mAh", d.FullMah))
+	}
+	if d.HasCycles {
+		parts = append(parts, fmt.Sprintf("电池循环次数为：%d次", d.Cycles))
+	}
+	if d.HasPct {
+		parts = append(parts, fmt.Sprintf("估算剩余容量百分比为：%d%%", d.Pct))
+	}
+	desc := strings.Join(parts, "，")
 	if snap.EstUA != nil {
-		base += fmt.Sprintf("，实测估算容量为：%d mAh", *snap.EstUA/1000)
+		desc += fmt.Sprintf("，实测估算容量为：%d mAh", *snap.EstUA/1000)
+	}
+	if desc == "" {
+		return "", ErrNoData
 	}
 	if channel == "ml" {
-		base = "[ML实验版]" + base
+		desc = "[ML实验版]" + desc
 	}
-	return base
+	return desc, nil
 }
 
 func WriteModuleProp(propPath, newDescription string) error {
