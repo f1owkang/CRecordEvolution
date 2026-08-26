@@ -32,8 +32,13 @@ type RejectError struct{ Result SessionResult }
 func (e *RejectError) Error() string { return e.Result.Reason }
 
 var _ Estimator = (*Stable)(nil)
+var _ Estimator = (*Learning)(nil)
 var _ KVStore = (*Store)(nil)
 
 func NewStable(kv KVStore) *Stable {
 	return &Stable{kv: kv}
+}
+
+func NewLearning(kv KVStore) *Learning {
+	return &Learning{kv: kv}
 }
