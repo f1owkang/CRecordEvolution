@@ -13,5 +13,12 @@ Magisk 模块「Charging_Record」：读取 sysfs 估算电池健康度。**所�
 
 - 脚本是 POSIX sh（`#!/system/bin/sh` / `#!/sbin/sh`）。不要按 pwsh 或 GNU bash 习惯“修正”语法，也不要尝试本地执行验证，只能靠通读代码推演设备端行为。
 - 所有面向用户的文案（日志、description）为简体中文，新增输出保持中文风格一致。
-- 打包发布 = 将仓库根目录内容压成 zip：`module.prop` 与 `META-INF/` 必须位于 zip 根层。仓库没有打包脚本；不要把生成的 zip 提交进仓库。
+- 打包发布 = 将仓库根目录内容压成 zip：`module.prop` 与 `META-INF/` 必须位于 zip 根层。打包由 `.github/workflows/release.yml` 完成；不要把生成的 zip 提交进仓库。
 - 发版时同步递增 `module.prop` 的 `version` 与 `versionCode`。
+
+## 发版流程
+
+1. 改 `module.prop` 的 `version` 与 `versionCode`（同步递增）
+2. 提交到 main
+3. `git tag vX.Y && git push origin main --tags` —— CI 自动打包、创建 Release（固定资产名 `Charging_Record.zip` / `changelog.txt`）并回写 `update.json`
+4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.1 ↔ version=1.1），否则 CI 直接失败
