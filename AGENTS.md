@@ -37,3 +37,4 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 2. 提交到 main
 3. `git tag vX.Y.Z && git push origin main --tags` —— CI 自动构建打包、创建 Release（固定资产名 `ChargingRecordEvolution.zip` / `ChargingRecordEvolution_ML.zip` / `changelog.txt`）并回写 `update.json`
 4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败
+5. `versionCode` 必须严格递增，**不得复用历史值**（曾踩坑：1.3.0(15)→1.2.2(15) 撞号导致部分管理器缓存旧版本收不到更新）

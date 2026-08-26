@@ -315,6 +315,11 @@ func (p *Pipeline) resetSession() error {
 
 func (p *Pipeline) settle() error {
 	s := &p.sess
+	// 结算开始即置会话为不活跃：若进程在此之后、写库完成前被杀，
+	// 重启后不会重复结算（最多丢失本次会话，绝不产生重复行）。
+	if err := p.st.KVSet(kvSessActive, "0"); err != nil {
+		return &SettleError{Err: err}
+	}
 	duration := s.ticks * tickSeconds
 	var avgI int64
 	if duration > 0 {
@@ -398,7 +403,8 @@ func (p *Pipeline) evalResistance() error {
 	if math.Sqrt(sqSum/fn) < resMinStdUA {
 		return nil
 	}
-	mo := -((fn*sumIV - sumI*sumV) / denom) * 1000
+	// 内阻样本仅在充电态采集，充电时 V = OCV + I·R，斜率 dV/dI = +R，取正号。
+	mo := ((fn*sumIV - sumI*sumV) / denom) * 1000
 	if mo < resMinMOhm || mo > resMaxMOhm {
 		return nil
 	}

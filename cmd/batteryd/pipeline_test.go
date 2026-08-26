@@ -387,7 +387,8 @@ func TestPipelineRestOCVThreeTicksAndDedup(t *testing.T) {
 
 func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 	currents := []int64{1000000, 2000000, 3000000}
-	voltOf := func(iUA int64) int64 { return 4200000 - iUA/20 }
+	// 物理正确的充电关系：V = OCV + I·R，斜率 dV/dI 为正
+	voltOf := func(iUA int64) int64 { return 4200000 + iUA/20 }
 	runTicks := func(r *pipeRig, n int) {
 		for k := 0; k < n; k++ {
 			i := currents[k%len(currents)]

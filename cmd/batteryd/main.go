@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,6 +64,7 @@ type app struct {
 	est      Estimator
 	designUA int64
 
+	nodePaths map[string]string
 	lastPruneDay int64
 }
 
@@ -111,11 +113,32 @@ func newApp() (*app, error) {
 }
 
 func (a *app) readIntNode(name string) (int64, error) {
-	node, err := a.fs.FindNode(name)
+	// 节点路径按进程缓存一次（固定路径未命中才全树扫描），避免每次刷新重复遍历 /sys/devices
+	node, err := a.nodePath(name)
 	if err != nil {
 		return 0, err
 	}
 	return a.fs.ReadInt(node)
+}
+
+// nodePath 缓存 FindNode 结果，未命中时解析一次并记录空结果，避免重复全树扫描。
+func (a *app) nodePath(name string) (string, error) {
+	if a.nodePaths == nil {
+		a.nodePaths = make(map[string]string)
+	}
+	if p, ok := a.nodePaths[name]; ok {
+		if p == "" {
+			return "", fmt.Errorf("找不到节点：%s", name)
+		}
+		return p, nil
+	}
+	p, err := a.fs.FindNode(name)
+	if err != nil {
+		a.nodePaths[name] = ""
+		return "", err
+	}
+	a.nodePaths[name] = p
+	return p, nil
 }
 
 func healthPct(fullUA, designUA int64) int64 {
@@ -143,8 +166,12 @@ func (a *app) basics() Design {
 }
 
 func (a *app) refresh() error {
-	d := a.basics()
-	desc, err := BuildDescription(d, Snapshot{})
+	// 用 stats() 组装描述，让实测估算（EstUA）也能写进 module.prop
+	d, snap, err := a.stats()
+	if err != nil {
+		return err
+	}
+	desc, err := BuildDescription(d, snap)
 	if err != nil {
 		return err
 	}
@@ -327,7 +354,11 @@ func runOnce() error {
 		fmt.Printf("剩余容量：%d%%\n", d.Pct)
 	}
 	fmt.Printf("实测估算：%s\n", estText)
-	fmt.Printf("循环当量：%.2f\n", snap.CycleEquiv)
+	if math.IsNaN(snap.CycleEquiv) || math.IsInf(snap.CycleEquiv, 0) {
+		fmt.Printf("循环当量：--\n")
+	} else {
+		fmt.Printf("循环当量：%.2f\n", snap.CycleEquiv)
+	}
 	fmt.Printf("内阻：%s\n", resText)
 	if snap.TempC != nil {
 		fmt.Printf("电池温度：%.1f℃\n", *snap.TempC)
