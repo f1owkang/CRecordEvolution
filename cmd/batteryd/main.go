@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,7 @@ const (
 	refreshEveryTicks = 1440
 	retainDays        = 90
 	jsonRecentLimit   = 10
+	tickFailMax       = 5
 )
 
 func printUsage(w io.Writer) {
@@ -64,12 +66,16 @@ type app struct {
 	lastPruneDay int64
 }
 
+func deriveModdir(exePath string) string {
+	return filepath.Dir(filepath.Dir(exePath))
+}
+
 func newApp() (*app, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("定位可执行文件失败：%w", err)
 	}
-	moddir := filepath.Dir(exe)
+	moddir := deriveModdir(exe)
 	dataDir := filepath.Join(moddir, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建数据目录失败：%w", err)
@@ -222,6 +228,7 @@ func runDaemon() error {
 	p := NewPipeline(a.fs, a.st, a.est, a.designUA, time.Now)
 	lastStatus := ""
 	count := 0
+	failStreak := 0
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -232,8 +239,17 @@ func runDaemon() error {
 		status := strings.TrimSpace(string(raw))
 
 		if _, err := p.Tick(status); err != nil {
-			fatalf(a, "Tick(status=%s) 失败：%v", status, err)
+			streak, dead := tickStrike(failStreak, err)
+			failStreak = streak
+			msg := fmt.Sprintf("Tick(status=%s) 失败：%v", status, err)
+			if dead {
+				fatalf(a, "%s，连续 %d 次", msg, failStreak)
+			}
+			_ = a.st.InsertEvent("tick_error", msg)
+			fmt.Fprintln(os.Stderr, msg)
+			continue
 		}
+		failStreak = 0
 
 		changed := status != lastStatus
 		lastStatus = status
@@ -247,6 +263,15 @@ func runDaemon() error {
 		}
 	}
 	return nil
+}
+
+func tickStrike(prev int, err error) (int, bool) {
+	var se *SettleError
+	if errors.As(err, &se) {
+		return prev, true
+	}
+	n := prev + 1
+	return n, n >= tickFailMax
 }
 
 func fatalf(a *app, format string, args ...any) {

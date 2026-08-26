@@ -41,6 +41,12 @@ const (
 
 type TickOutcome struct{ SessionSettled bool }
 
+type SettleError struct{ Err error }
+
+func (e *SettleError) Error() string { return "结算或落库失败：" + e.Err.Error() }
+
+func (e *SettleError) Unwrap() error { return e.Err }
+
 type sessionState struct {
 	active   bool
 	sealed   bool
@@ -180,7 +186,7 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	}
 	if p.sess.active {
 		if err := p.resetSession(); err != nil {
-			return outcome, err
+			return outcome, &SettleError{Err: err}
 		}
 	}
 	return outcome, nil
@@ -240,12 +246,12 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 
 	total := kvInt(p.st, kvChargedTotal) + iUA*tickSeconds
 	if err := p.st.KVSet(kvChargedTotal, strconv.FormatInt(total, 10)); err != nil {
-		return err
+		return &SettleError{Err: err}
 	}
 
 	if !s.sealed {
 		if err := p.persistSession(); err != nil {
-			return err
+			return &SettleError{Err: err}
 		}
 		if capVal >= sealCapacity {
 			if err := p.settle(); err != nil {
@@ -254,7 +260,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			outcome.SessionSettled = true
 			s.sealed = true
 			if err := p.persistSession(); err != nil {
-				return err
+				return &SettleError{Err: err}
 			}
 		}
 	}
@@ -321,19 +327,25 @@ func (p *Pipeline) settle() error {
 	if err != nil {
 		var re *RejectError
 		if !errors.As(err, &re) {
-			return err
+			return &SettleError{Err: err}
 		}
 		row.Valid = false
 		if _, insErr := p.st.InsertSession(row); insErr != nil {
-			return insErr
+			return &SettleError{Err: insErr}
 		}
-		return p.st.InsertEvent(re.Result.Reason, "")
+		if evErr := p.st.InsertEvent(re.Result.Reason, ""); evErr != nil {
+			return &SettleError{Err: evErr}
+		}
+		return nil
 	}
 	row.Valid = true
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
-		return insErr
+		return &SettleError{Err: insErr}
 	}
-	return p.st.InsertEstimate(row.EndTs, upd.EstUA)
+	if estErr := p.st.InsertEstimate(row.EndTs, upd.EstUA); estErr != nil {
+		return &SettleError{Err: estErr}
+	}
+	return nil
 }
 
 func (p *Pipeline) pushWindow(iUA, vUV int64) {
@@ -378,7 +390,7 @@ func (p *Pipeline) evalResistance() error {
 	}
 	ts := p.now().Unix()
 	if err := p.st.InsertResistance(ts, mo); err != nil {
-		return err
+		return &SettleError{Err: err}
 	}
 	ema := mo
 	if old, ok := p.st.KVGet(kvREmaMOhm); ok {
@@ -386,7 +398,10 @@ func (p *Pipeline) evalResistance() error {
 			ema = f*0.8 + mo*0.2
 		}
 	}
-	return p.st.KVSet(kvREmaMOhm, strconv.FormatFloat(ema, 'f', -1, 64))
+	if err := p.st.KVSet(kvREmaMOhm, strconv.FormatFloat(ema, 'f', -1, 64)); err != nil {
+		return &SettleError{Err: err}
+	}
+	return nil
 }
 
 func (p *Pipeline) tickResting(status string) error {
@@ -419,7 +434,7 @@ func (p *Pipeline) tickResting(status string) error {
 		return nil
 	}
 	if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {
-		return err
+		return &SettleError{Err: err}
 	}
 	p.lastRestCap, p.lastRestUV = capVal, uv
 	return nil

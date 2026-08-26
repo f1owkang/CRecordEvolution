@@ -27,6 +27,9 @@ func BuildDescription(d Design, snap Snapshot) string {
 	if snap.EstUA != nil {
 		base += fmt.Sprintf("，实测估算容量为：%d mAh", *snap.EstUA/1000)
 	}
+	if channel == "ml" {
+		base = "[ML实验版]" + base
+	}
 	return base
 }
 
