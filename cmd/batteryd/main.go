@@ -121,20 +121,17 @@ func (a *app) readIntNode(name string) (int64, error) {
 	return a.fs.ReadInt(node)
 }
 
-// nodePath 缓存 FindNode 结果，未命中时解析一次并记录空结果，避免重复全树扫描。
+// nodePath 仅缓存成功解析的结果；失败不落缓存，下次调用会重新探测，
+// 避免把开机瞬间未就绪的节点「永久屏蔽」成假重试。
 func (a *app) nodePath(name string) (string, error) {
 	if a.nodePaths == nil {
 		a.nodePaths = make(map[string]string)
 	}
 	if p, ok := a.nodePaths[name]; ok {
-		if p == "" {
-			return "", fmt.Errorf("找不到节点：%s", name)
-		}
 		return p, nil
 	}
 	p, err := a.fs.FindNode(name)
 	if err != nil {
-		a.nodePaths[name] = ""
 		return "", err
 	}
 	a.nodePaths[name] = p
@@ -171,6 +168,10 @@ func (a *app) refresh() error {
 	if err != nil {
 		return err
 	}
+	return a.refreshWith(d, snap)
+}
+
+func (a *app) refreshWith(d Design, snap Snapshot) error {
 	desc, err := BuildDescription(d, snap)
 	if err != nil {
 		return err
@@ -324,11 +325,11 @@ func runOnce() error {
 	}
 	defer a.st.Close()
 
-	if err := a.refresh(); err != nil {
-		return err
-	}
 	d, snap, err := a.stats()
 	if err != nil {
+		return err
+	}
+	if err := a.refreshWith(d, snap); err != nil {
 		return err
 	}
 
