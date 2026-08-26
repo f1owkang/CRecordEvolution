@@ -25,8 +25,26 @@ jobs:
             exit 1
           fi
 
-      - name: Pack module zip
-        run: zip -r Charging_Record.zip module.prop customize.sh service.sh action.sh META-INF
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build batteryd
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
+
+      - name: Pack stable zip
+        run: |
+          zip -r Charging_Record.zip module.prop customize.sh service.sh action.sh bin webroot META-INF
+
+      - name: Pack ML zip
+        run: |
+          rm -rf mlstage && mkdir mlstage
+          cp -r module.prop customize.sh service.sh action.sh bin webroot META-INF mlstage/
+          sed -i 's/^name=.*/name=Charging Record ML/' mlstage/module.prop
+          sed -i 's/^description=/description=[ML实验版]/' mlstage/module.prop
+          sed -i '/^updateJson=/d' mlstage/module.prop
+          cd mlstage && zip -r ../Charging_Record_ML.zip . && cd ..
 
       - name: Generate changelog
         run: |
@@ -36,12 +54,14 @@ jobs:
           else
             git log --oneline > changelog.txt
           fi
+          printf '%s\n' 'Charging_Record_ML.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新' >> changelog.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             Charging_Record.zip
+            Charging_Record_ML.zip
             changelog.txt
 
       - name: Update update.json on main
