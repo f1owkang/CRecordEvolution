@@ -1,7 +1,7 @@
 id=Charging_Record
 name=Charging Record
-version=1.2
-versionCode=13
+version=1.2.1
+versionCode=14
 author=f1owkang
 description=[等待重启中]
 updateJson=https://raw.githubusercontent.com/f1owkang/CRecordEvolution/main/update.json
