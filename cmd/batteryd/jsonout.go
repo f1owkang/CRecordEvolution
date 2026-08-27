@@ -14,7 +14,7 @@ type recentEntry struct {
 type sessionEntry struct {
 	StartTs  int64    `json:"start_ts"`
 	EndTs    int64    `json:"end_ts"`
-	DeltaMah int64    `json:"delta_mah"`
+	DeltaPct int64    `json:"delta_pct"`
 	EstMah   *int64   `json:"est_mah"`
 	Valid    bool     `json:"valid"`
 	TempAvg  *int64   `json:"temp_avg"`
@@ -71,9 +71,9 @@ func intPtr(v int64) *int64 { return &v }
 
 func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
-		DeltaMah: (se.EndCap - se.StartCap), Valid: se.Valid}
-	if e.DeltaMah > 0 {
-		mah := se.Ua * 100 / (e.DeltaMah * 3_600_000)
+		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid}
+	if e.DeltaPct > 0 {
+		mah := se.Ua * 100 / (e.DeltaPct * 3_600_000)
 		e.EstMah = &mah
 	}
 	if se.TempAvg > 0 {

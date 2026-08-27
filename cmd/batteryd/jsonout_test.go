@@ -104,14 +104,14 @@ func TestRenderJSONNewFields(t *testing.T) {
 	d := Design{HasDesign: true, DesignMah: 4500, HasFull: true, FullMah: 4450, HasCycles: true, Cycles: 123}
 	snap := Snapshot{}
 	recent := []TsVal{{TS: 1, V: 4_400_000}}
-	sess := []sessionEntry{{StartTs: 100, EndTs: 200, DeltaMah: 60, EstMah: intPtr(4500), Valid: true}}
+	sess := []sessionEntry{{StartTs: 100, EndTs: 200, DeltaPct: 60, EstMah: intPtr(4500), Valid: true}}
 	rests := []restEntry{{TS: 300, UV: 3_900_000, Cap: 60}}
 	b, err := RenderJSON("stable", d, snap, recent, sess, rests, nil, nil, 42, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, want := range []string{`"samples_n":42`, `"valid":true`, `"est_mah":4500`, `"uv":3900000`} {
+	for _, want := range []string{`"samples_n":42`, `"valid":true`, `"est_mah":4500`, `"uv":3900000`, `"delta_pct":60`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("缺字段 %s: %s", want, s)
 		}

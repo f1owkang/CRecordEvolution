@@ -419,12 +419,12 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return svgOpen(w, h) + chartBase(w, h) + dots + '</svg>';
   }
 
-  // sessions delta 条形：每条会话一个 <rect>，高度按 delta_mah 占比
+  // sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比
   function svgBars(data, w, h, color) {
     var rows = Array.isArray(data) ? data : [];
     var vals = [], i, v;
     for (i = 0; i < rows.length; i++) {
-      v = Number(rows[i] == null ? null : rows[i].delta_mah);
+      v = Number(rows[i] == null ? null : rows[i].delta_pct);
       if (isFinite(v)) vals.push(v);
     }
     if (vals.length < 2) return chartPending();
@@ -486,7 +486,8 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
     var recent = Array.isArray(doc.recent) ? doc.recent : [];
     var estParts = [];
-    var latest = recent.length ? recent[recent.length - 1] : null;
+    // RecentEstimates 按 ts DESC 返回，首元素即最新
+    var latest = recent.length ? recent[0] : null;
     if (recent.length >= 2 && latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
     if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
     var tw = Number(doc.trend_mah_per_week);
@@ -498,11 +499,11 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     });
     var sesSum = 0, i, dv;
     for (i = 0; i < sesRows.length; i++) {
-      dv = Number(sesRows[i].delta_mah);
+      dv = Number(sesRows[i].delta_pct);
       if (isFinite(dv)) sesSum += dv;
     }
     setChart('chart_ses', svgBars(sesRows, W, H, '#79c0ff'),
-      sesRows.length >= 2 ? '有效会话 ' + sesRows.length + ' 次 · 合计 ' + fmtInt(Math.round(sesSum)) + ' mAh' : '');
+      sesRows.length >= 2 ? '有效会话 ' + sesRows.length + ' 次 · 合计 ' + fmtInt(Math.round(sesSum)) + ' %' : '');
 
     var restRows = Array.isArray(doc.rest_points) ? doc.rest_points : [];
     var uvs = [];
