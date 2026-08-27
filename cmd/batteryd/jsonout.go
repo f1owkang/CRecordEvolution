@@ -105,13 +105,10 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
 	}
-	// 非空才赋值：零值时保持 null（与既有数组字段惯例一致），调用方传空切片则输出 []
-	if len(sess) > 0 {
-		doc.Sessions = sess
-	}
-	if len(rests) > 0 {
-		doc.RestPoints = rests
-	}
+	// sessions/rest_points 直接透传调用方切片：nil 输出 null，非 nil 空切片输出 []，
+	// 「空数据 ⇒ [] 禁止 null 噪声」由调用方（runJson）以 make(...,0) 保证
+	doc.Sessions = sess
+	doc.RestPoints = rests
 	b, err := json.Marshal(doc)
 	if err != nil {
 		return nil, err

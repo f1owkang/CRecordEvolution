@@ -115,8 +115,13 @@ func TestRenderJSONNewFields(t *testing.T) {
 			t.Fatalf("缺字段 %s: %s", want, s)
 		}
 	}
-	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, 0, time.Unix(0, 0))
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, []sessionEntry{}, []restEntry{}, 0, time.Unix(0, 0))
 	if strings.Contains(string(b2), `"sessions":[{`) {
 		t.Fatalf("空数据不应出会话数组元素: %s", b2)
+	}
+	for _, want := range []string{`"sessions":[]`, `"rest_points":[]`} {
+		if !strings.Contains(string(b2), want) {
+			t.Fatalf("空切片应输出 %s 而非 null: %s", want, b2)
+		}
 	}
 }
