@@ -11,19 +11,38 @@ type recentEntry struct {
 	Mah int64 `json:"mah"`
 }
 
+type sessionEntry struct {
+	StartTs  int64    `json:"start_ts"`
+	EndTs    int64    `json:"end_ts"`
+	DeltaMah int64    `json:"delta_mah"`
+	EstMah   *int64   `json:"est_mah"`
+	Valid    bool     `json:"valid"`
+	TempAvg  *int64   `json:"temp_avg"`
+	CRate    *float64 `json:"c_rate"`
+}
+
+type restEntry struct {
+	TS  int64 `json:"ts"`
+	UV  int64 `json:"uv"`
+	Cap int64 `json:"cap"`
+}
+
 type jsonDoc struct {
-	Channel    string        `json:"channel"`
-	DesignMah  *int64        `json:"design_mah"`
-	FullMah    *int64        `json:"full_mah"`
-	Cycles     *int64        `json:"cycles"`
-	Pct        *int64        `json:"pct"`
-	EstMah     *int64        `json:"est_mah"`
-	Samples    int64         `json:"samples"`
-	CycleEquiv *float64      `json:"cycle_equiv"`
-	RMoh       *float64      `json:"r_moh"`
-	TempC      *float64      `json:"temp_c"`
-	Updated    string        `json:"updated"`
-	Recent     []recentEntry `json:"recent"`
+	Channel    string         `json:"channel"`
+	DesignMah  *int64         `json:"design_mah"`
+	FullMah    *int64         `json:"full_mah"`
+	Cycles     *int64         `json:"cycles"`
+	Pct        *int64         `json:"pct"`
+	EstMah     *int64         `json:"est_mah"`
+	Samples    int64          `json:"samples"`
+	CycleEquiv *float64       `json:"cycle_equiv"`
+	RMoh       *float64       `json:"r_moh"`
+	TempC      *float64       `json:"temp_c"`
+	Updated    string         `json:"updated"`
+	Recent     []recentEntry  `json:"recent"`
+	Sessions   []sessionEntry `json:"sessions"`
+	RestPoints []restEntry    `json:"rest_points"`
+	SamplesN   int64          `json:"samples_n"`
 }
 
 func finitePtr(f *float64) *float64 {
@@ -35,7 +54,25 @@ func finitePtr(f *float64) *float64 {
 
 func intPtr(v int64) *int64 { return &v }
 
-func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, now time.Time) ([]byte, error) {
+func convSession(se Session) sessionEntry {
+	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
+		DeltaMah: (se.EndCap - se.StartCap), Valid: se.Valid}
+	if e.DeltaMah > 0 {
+		mah := se.Ua * 100 / (e.DeltaMah * 3_600_000)
+		e.EstMah = &mah
+	}
+	if se.TempAvg > 0 {
+		t := se.TempAvg
+		e.TempAvg = &t
+	}
+	if se.CRate > 0 {
+		c := se.CRate
+		e.CRate = &c
+	}
+	return e
+}
+
+func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:    ch,
 		Samples:    snap.Samples,
@@ -43,6 +80,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, now time.Tim
 		TempC:      finitePtr(snap.TempC),
 		Updated:    now.Format("2006-01-02 15:04:05"),
 		Recent:     make([]recentEntry, 0, len(recent)),
+		SamplesN:   samplesN,
 	}
 	if d.HasDesign {
 		doc.DesignMah = intPtr(d.DesignMah)
@@ -66,6 +104,13 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, now time.Tim
 	// estimates 表存 µAh，此处换算为 mAh 展示
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
+	}
+	// 非空才赋值：零值时保持 null（与既有数组字段惯例一致），调用方传空切片则输出 []
+	if len(sess) > 0 {
+		doc.Sessions = sess
+	}
+	if len(rests) > 0 {
+		doc.RestPoints = rests
 	}
 	b, err := json.Marshal(doc)
 	if err != nil {

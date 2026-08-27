@@ -382,7 +382,27 @@ func runJson() error {
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, time.Now())
+	sessRows, err := a.st.RecentSessions(jsonRecentLimit)
+	if err != nil {
+		return err
+	}
+	sess := make([]sessionEntry, 0, len(sessRows))
+	for _, se := range sessRows {
+		sess = append(sess, convSession(se))
+	}
+	restRows, err := a.st.RecentRestPoints(jsonRecentLimit)
+	if err != nil {
+		return err
+	}
+	rests := make([]restEntry, 0, len(restRows))
+	for _, rp := range restRows {
+		rests = append(rests, restEntry{TS: rp.TS, UV: rp.UV, Cap: rp.Cap})
+	}
+	n, err := a.st.CountSamples()
+	if err != nil {
+		return err
+	}
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, n, time.Now())
 	if err != nil {
 		return err
 	}
