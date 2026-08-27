@@ -100,6 +100,8 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 }
 .gate .gate-title { font-size: 16px; font-weight: 700; color: #e6edf3; }
 .gate div:last-child { font-size: 13px; color: #8b949e; line-height: 1.6; }
+.chart svg { display: block; width: 100%; height: auto; }
+.cap { font-size: 12px; color: #8b949e; margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -129,6 +131,24 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     <section class="panel">
       <div class="ptitle">近期估算</div>
       <div id="recent"></div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">估算趋势</div>
+      <div id="chart_est" class="chart"></div>
+      <div id="chart_est_cap" class="cap"></div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">充电会话</div>
+      <div id="chart_ses" class="chart"></div>
+      <div id="chart_ses_cap" class="cap"></div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">静置电压</div>
+      <div id="chart_rest" class="chart"></div>
+      <div id="chart_rest_cap" class="cap"></div>
     </section>
 
     <button id="refresh" type="button">立即刷新</button>
@@ -296,6 +316,142 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     setText('meta', '通道 ' + (doc.channel || '—') + ' · 更新于 ' + (doc.updated || '—'));
   }
 
+  var CHART_W = 320;
+  var CHART_H = 110;
+
+  function chartPending() { return '<div class="row empty">采集中</div>'; }
+
+  // 归一化结果内缩，避免描边/圆点贴边被 viewBox 裁切
+  function spanPad(p) { return 0.05 + p * 0.9; }
+
+  // pts: [{x,y}] 已归一化到 [0,1]
+  function ptsToPath(pts, w, h) {
+    return pts.map(function (p, i) { return (i ? 'L' : 'M') + (p.x * w).toFixed(1) + ',' + ((1 - p.y) * h).toFixed(1); }).join('');
+  }
+
+  function svgOpen(w, h) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" role="img">';
+  }
+
+  function chartBase(w, h) {
+    return '<line x1="0" y1="' + (h - 0.5) + '" x2="' + w + '" y2="' + (h - 0.5) + '" stroke="#232a36" stroke-width="1"/>';
+  }
+
+  function pickPairs(rows, kx, ky) {
+    var out = [], i, r, x, y;
+    for (i = 0; i < rows.length; i++) {
+      r = rows[i];
+      x = Number(r == null ? null : r[kx]);
+      y = Number(r == null ? null : r[ky]);
+      if (isFinite(x) && isFinite(y)) out.push({ x: x, y: y });
+    }
+    return out;
+  }
+
+  function minMax(vals) {
+    var mn = Infinity, mx = -Infinity, i;
+    for (i = 0; i < vals.length; i++) {
+      if (vals[i] < mn) mn = vals[i];
+      if (vals[i] > mx) mx = vals[i];
+    }
+    return { min: mn, max: mx };
+  }
+
+  function normPt(v, mn, mx) {
+    if (!(mx > mn)) return 0.5;
+    return (v - mn) / (mx - mn);
+  }
+
+  // data: [{ts,v}]，自动 min/max 归一化；不足 2 点返回提示文案
+  function svgLine(data, w, h, color) {
+    var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
+    if (raw.length < 2) return chartPending();
+    var tx = minMax(raw.map(function (p) { return p.x; }));
+    var ty = minMax(raw.map(function (p) { return p.y; }));
+    var pts = raw.map(function (p) {
+      return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) };
+    });
+    return svgOpen(w, h) + chartBase(w, h) +
+      '<path d="' + ptsToPath(pts, w, h) + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>';
+  }
+
+  // rest_points 散点：每点一个 <circle>
+  function svgScatter(data, w, h, color) {
+    var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'uv');
+    if (raw.length < 2) return chartPending();
+    var tx = minMax(raw.map(function (p) { return p.x; }));
+    var ty = minMax(raw.map(function (p) { return p.y; }));
+    var dots = raw.map(function (p) {
+      var cx = (spanPad(normPt(p.x, tx.min, tx.max)) * w).toFixed(1);
+      var cy = ((1 - spanPad(normPt(p.y, ty.min, ty.max))) * h).toFixed(1);
+      return '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="' + color + '" fill-opacity=".85"/>';
+    }).join('');
+    return svgOpen(w, h) + chartBase(w, h) + dots + '</svg>';
+  }
+
+  // sessions delta 条形：每条会话一个 <rect>，高度按 delta_mah 占比
+  function svgBars(data, w, h, color) {
+    var rows = Array.isArray(data) ? data : [];
+    var vals = [], i, v;
+    for (i = 0; i < rows.length; i++) {
+      v = Number(rows[i] == null ? null : rows[i].delta_mah);
+      if (isFinite(v)) vals.push(v);
+    }
+    if (vals.length < 2) return chartPending();
+    var mx = minMax(vals).max;
+    if (!(mx > 0)) mx = 1;
+    var slot = w / vals.length;
+    var bw = Math.min(slot * 0.62, 26);
+    var rects = '';
+    for (i = 0; i < vals.length; i++) {
+      var bh = Math.max(vals[i] / mx * (h - 6), 2);
+      rects += '<rect x="' + (i * slot + (slot - bw) / 2).toFixed(1) + '" y="' + (h - bh).toFixed(1) +
+        '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="3" fill="' + color + '"/>';
+    }
+    return svgOpen(w, h) + chartBase(w, h) + rects + '</svg>';
+  }
+
+  function setChart(id, html, cap) {
+    var el = $(id);
+    if (!el) return;
+    el.innerHTML = html;
+    setText(id + '_cap', cap || '');
+  }
+
+  function renderCharts(doc) {
+    if (!doc || typeof doc !== 'object') doc = {};
+    var W = CHART_W, H = CHART_H;
+
+    var recent = Array.isArray(doc.recent) ? doc.recent : [];
+    var estParts = [];
+    var latest = recent.length ? recent[recent.length - 1] : null;
+    if (recent.length >= 2 && latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
+    if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
+    setChart('chart_est', svgLine(recent, W, H, '#4ade80'), estParts.join(' · '));
+
+    var sesRows = (Array.isArray(doc.sessions) ? doc.sessions : []).filter(function (s) {
+      return !!(s && s.valid);
+    });
+    var sesSum = 0, i, dv;
+    for (i = 0; i < sesRows.length; i++) {
+      dv = Number(sesRows[i].delta_mah);
+      if (isFinite(dv)) sesSum += dv;
+    }
+    setChart('chart_ses', svgBars(sesRows, W, H, '#79c0ff'),
+      sesRows.length >= 2 ? '有效会话 ' + sesRows.length + ' 次 · 合计 ' + fmtInt(Math.round(sesSum)) + ' mAh' : '');
+
+    var restRows = Array.isArray(doc.rest_points) ? doc.rest_points : [];
+    var uvs = [];
+    for (i = 0; i < restRows.length; i++) {
+      dv = Number(restRows[i] == null ? null : restRows[i].uv);
+      if (isFinite(dv)) uvs.push(dv);
+    }
+    var ur = uvs.length >= 2 ? minMax(uvs) : null;
+    setChart('chart_rest', svgScatter(restRows, W, H, '#e6edf3'),
+      ur ? '区间 ' + (ur.min / 1e6).toFixed(3) + ' ~ ' + (ur.max / 1e6).toFixed(3) + ' V' : '');
+  }
+
   function fetchData() {
     return run(CMD_JSON).then(function (r) {
       if (r.errno !== 0) {
@@ -321,6 +477,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       hideError();
       try {
         render(doc);
+        renderCharts(doc);
       } catch (e) {
         showError('渲染失败：' + e.message);
       }
