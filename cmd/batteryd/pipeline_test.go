@@ -467,6 +467,31 @@ func TestPipelineChargingTickWritesSampleRow(t *testing.T) {
 	}
 }
 
+func TestPipelineChargingSampleGuards(t *testing.T) {
+	r := newPipeRig(t)
+	battery := filepath.Join(r.fs.Base, "battery")
+
+	writeFile(r.t, filepath.Join(battery, "capacity"), fmtNode(50))
+	writeFile(r.t, filepath.Join(battery, "current_now"), fmtNode(1200000))
+	writeFile(r.t, filepath.Join(battery, "temp"), "250\n")
+	r.step("Charging")
+	if n, _ := r.st.CountSamples(); n != 0 {
+		t.Fatalf("voltage 缺失(vUV=0)时 samples 行数 = %d, want 0", n)
+	}
+
+	r.put(0, 1200000, 4200000)
+	r.step("Charging")
+	if n, _ := r.st.CountSamples(); n != 0 {
+		t.Fatalf("capacity=0 时 samples 行数 = %d, want 0", n)
+	}
+
+	r.put(50, 1200000, 4200000)
+	r.step("Charging")
+	if n, _ := r.st.CountSamples(); n != 1 {
+		t.Fatalf("uv/cap 恢复正常应落 1 行, rows = %d", n)
+	}
+}
+
 func TestPipelineRejectedSessionRecorded(t *testing.T) {
 	r := newPipeRig(t)
 
