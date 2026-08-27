@@ -492,6 +492,33 @@ func TestPipelineChargingSampleGuards(t *testing.T) {
 	}
 }
 
+func TestPipelineChargingSamplesContinueAfterSeal(t *testing.T) {
+	r := newPipeRig(t)
+
+	r.put(100, 1200000, 4200000)
+	if out := r.step("Charging"); !out.SessionSettled {
+		t.Fatal("cap=100 应触发封账结算")
+	}
+	wantTS := tickBaseTs + 60
+	var ts int64
+	if err := r.st.db.QueryRow(`SELECT ts FROM samples`).Scan(&ts); err != nil {
+		t.Fatalf("封账 tick 应落样本行: %v", err)
+	}
+	if ts != wantTS {
+		t.Fatalf("样本 ts = %d, want %d", ts, wantTS)
+	}
+
+	r.put(100, 1500000, 4210000)
+	r.step("Charging")
+	if out := r.step("Charging"); out.SessionSettled {
+		t.Fatal("封账后浮充不应再次结算")
+	}
+	rows := queryInt64(t, r.st, `SELECT COUNT(*) FROM samples`)
+	if rows != 3 {
+		t.Fatalf("samples 行数 = %d, want 3(密封后两个浮充 tick 也应各落一行)", rows)
+	}
+}
+
 func TestPipelineRejectedSessionRecorded(t *testing.T) {
 	r := newPipeRig(t)
 
