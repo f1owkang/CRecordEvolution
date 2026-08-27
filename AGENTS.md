@@ -14,7 +14,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - `cmd/batteryd/` — 全部业务逻辑：sysfs 探测与单位判别、60s 采样管道与会话结算、stable/ml 双通道 Estimator、SQLite 存储与 90 天清理、description 组装与原子写回、`daemon | once | json` 子命令分发。算法通道由构建注入 `-X main.channel=ml` 区分。
 - `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
 - `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。
-- `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。
+- `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。模块元信息（name/version/author）直接从 `$MODPATH/module.prop` 读取（不依赖安装器注入的 `$MODNAME/$MODVERSION` 等变量，各管理器环境差异大）；升级时把旧模块 `data/` 复制进新 `$MODPATH/data`，因为 Magisk/KSU 的 staged update 重启会整体删除旧模块目录、否则 `data/battery.db`（学习记录）会丢。
 - `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），取数走管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名字符串)` 并带 15s 超时与级联回退，调 `/data/adb/modules/CRecordEvolution/bin/batteryd json`。权限由安装器接管，**不要给它加 chmod/set_perm**。
 - `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
 - 运行期数据：`$MODDIR/data/battery.db`（SQLite 六表：kv/sessions/estimates/resistance/rest_points/events，90 天自动清理）。

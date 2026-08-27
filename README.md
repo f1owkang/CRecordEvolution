@@ -97,6 +97,13 @@ sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
 
 </details>
 
+<details>
+<summary><b>升级模块会不会丢学习记录？</b></summary>
+
+不会。刷入脚本会把旧版本 `data/` 目录（含 `battery.db`）自动复制进新版本，升级后估算记录和循环历史完整保留。
+
+</details>
+
 ## 论文支撑
 
 模块算法的扩展路线有论文依据，证据库见 [`docs/`](docs/)（`NN-作者年份-主题-venue-分级.pdf`，末段为权威分级）：
