@@ -126,6 +126,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div class="cell"><div class="label">实测估算</div><div id="est" class="val">—</div></div>
       <div class="cell"><div class="label">循环当量</div><div id="cyceq" class="val">—</div></div>
       <div class="cell"><div class="label">内阻</div><div id="rmoh" class="val">—</div></div>
+      <div class="cell" style="grid-column: span 2;"><div class="label">容量趋势</div><div id="trend" class="val">—</div></div>
     </section>
 
     <section class="panel">
@@ -284,12 +285,16 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     setText('full', fmtInt(doc.full_mah));
     setText('cycles', fmtInt(doc.cycles));
     if (est != null) {
-      setText('est', est + ' mAh');
+      var sg = Number(doc.est_mah_sigma);
+      var sigmaTxt = (doc.channel === 'ml' && doc.est_mah_sigma != null && isFinite(sg)) ? ' ±' + Math.round(sg) + ' mAh' : '';
+      setText('est', est + ' mAh' + sigmaTxt);
     } else {
       setText('est', '学习中 · 已采集 ' + fmtInt(doc.samples == null ? 0 : doc.samples) + ' 次');
     }
     setText('cyceq', fmtFix(doc.cycle_equiv, 2));
     setText('rmoh', doc.r_moh != null ? Number(doc.r_moh).toFixed(1) + ' mΩ' : '采集中');
+    var tw = Number(doc.trend_mah_per_week);
+    setText('trend', (doc.trend_mah_per_week != null && isFinite(tw)) ? '本周斜率 ' + tw.toFixed(1) + ' mAh/周' : '学习期');
 
     var list = $('recent');
     list.textContent = '';
@@ -363,15 +368,27 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   }
 
   // data: [{ts,v}]，自动 min/max 归一化；不足 2 点返回提示文案
-  function svgLine(data, w, h, color) {
+  // trendMpw: mAh/周 斜率；有效时按首尾 ts 两端点叠一条拟合虚线（下置于主折线之下，颜色区分）
+  function svgLine(data, w, h, color, trendMpw) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
     if (raw.length < 2) return chartPending();
+    raw.sort(function (a, b) { return a.x - b.x; });
     var tx = minMax(raw.map(function (p) { return p.x; }));
-    var ty = minMax(raw.map(function (p) { return p.y; }));
-    var pts = raw.map(function (p) {
-      return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) };
-    });
-    return svgOpen(w, h) + chartBase(w, h) +
+    var ys = raw.map(function (p) { return p.y; });
+    var trendPts = null;
+    if (typeof trendMpw === 'number' && isFinite(trendMpw)) {
+      var vEnd = raw[0].y + trendMpw * ((tx.max - tx.min) / 604800);
+      trendPts = [{ x: raw[0].x, y: raw[0].y }, { x: tx.max, y: vEnd }];
+      ys.push(trendPts[0].y, trendPts[1].y);
+    }
+    var ty = minMax(ys);
+    function toXY(p) { return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) }; }
+    var pts = raw.map(toXY);
+    var overlay = '';
+    if (trendPts) {
+      overlay = '<path d="' + ptsToPath(trendPts.map(toXY), w, h) + '" fill="none" stroke="#79c0ff" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>';
+    }
+    return svgOpen(w, h) + chartBase(w, h) + overlay +
       '<path d="' + ptsToPath(pts, w, h) + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</svg>';
   }
@@ -428,7 +445,9 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     var latest = recent.length ? recent[recent.length - 1] : null;
     if (recent.length >= 2 && latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
     if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
-    setChart('chart_est', svgLine(recent, W, H, '#4ade80'), estParts.join(' · '));
+    var tw = Number(doc.trend_mah_per_week);
+    setChart('chart_est', svgLine(recent, W, H, '#4ade80',
+      (doc.trend_mah_per_week != null && isFinite(tw)) ? tw : null), estParts.join(' · '));
 
     var sesRows = (Array.isArray(doc.sessions) ? doc.sessions : []).filter(function (s) {
       return !!(s && s.valid);
