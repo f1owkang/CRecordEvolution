@@ -212,6 +212,36 @@ func TestRecordICASkipsOnNegativeBase(t *testing.T) {
 	}
 }
 
+// 基准损坏 "0"：ParseFloat 成功但除零得 +Inf，若不拦截将随 json.Marshal
+// 整体报错使 batteryd json 输出失效——应与本会话跳过并 events 留痕。
+func TestRecordICASkipsOnZeroBase(t *testing.T) {
+	r := newPipeRig(t)
+	if err := r.st.KVSet(kvICAPeakBase, "0"); err != nil {
+		t.Fatalf("预置零基准: %v", err)
+	}
+	r.p.recordICA(icaTestEndTs, icaGatedRows())
+
+	if n := countRows(t, r.st, "ica_peaks"); n != 0 {
+		t.Fatalf("零基准应跳过本会话, rows = %d", n)
+	}
+	queryEventOnce(t, r.st, "ica_skip")
+}
+
+// 基准损坏 "NaN"：ParseFloat 成功且 NaN<0 为 false，原判定绕过——
+// 应按异常降级：本会话不落行、events 留痕。
+func TestRecordICASkipsOnNaNBase(t *testing.T) {
+	r := newPipeRig(t)
+	if err := r.st.KVSet(kvICAPeakBase, "NaN"); err != nil {
+		t.Fatalf("预置 NaN 基准: %v", err)
+	}
+	r.p.recordICA(icaTestEndTs, icaGatedRows())
+
+	if n := countRows(t, r.st, "ica_peaks"); n != 0 {
+		t.Fatalf("NaN 基准应跳过本会话, rows = %d", n)
+	}
+	queryEventOnce(t, r.st, "ica_skip")
+}
+
 // 空门控行集合（如全部段倍率超限）：静默无痕返回。
 func TestRecordICAEmptyGatedRowsNoop(t *testing.T) {
 	r := newPipeRig(t)

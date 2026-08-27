@@ -429,8 +429,9 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 
 // recordICA 与 CCCT 共用同一批过倍率门控的恒流段样本行，在 CCCT 分析之后顺延
 // 执行：FindPeak 定位主峰与绝对峰高，按 kv 基准（ica_peak_base）rel 化后落
-// ica_peaks 表。首个合格会话写基准并记 rel=1；基准异常(<0) 跳过本会话。
-// 与 recordCCCT 同口径：一切失败仅记 events 留痕后静默返回，绝不影响结算主链路。
+// ica_peaks 表。首个合格会话写基准并记 rel=1；基准异常（非正数或非数值，
+// 含 0/负/NaN）跳过本会话。与 recordCCCT 同口径：一切失败仅记 events 留痕后
+// 静默返回，绝不影响结算主链路。
 func (p *Pipeline) recordICA(endTs int64, gatedRows []SampleRow) {
 	ev := func(kind, detail string) { _ = p.st.InsertEvent(kind, detail) }
 	if len(gatedRows) == 0 {
@@ -444,13 +445,19 @@ func (p *Pipeline) recordICA(endTs int64, gatedRows []SampleRow) {
 	rel := 1.0
 	if txt, has := p.st.KVGet(kvICAPeakBase); has {
 		base, perr := strconv.ParseFloat(txt, 64)
-		if perr != nil || base < 0 {
+		if perr != nil || !(base > 0) { // 须为正数：同时拦 0/负/NaN（NaN 比较为 false）
 			ev("ica_skip", "ica_peak_base 基准异常："+txt)
 			return
 		}
 		rel = hAbs / base
 	} else if serr := p.st.KVSet(kvICAPeakBase, strconv.FormatFloat(hAbs, 'f', -1, 64)); serr != nil {
 		ev("ica_skip", serr.Error())
+		return
+	}
+	if math.IsInf(rel, 0) || math.IsNaN(rel) {
+		// 基准虽为正但小到令 rel 溢出为 Inf 时，写库会连带 json.Marshal 整体
+		// 报错失效：按基准异常同路径降级留痕。
+		ev("ica_skip", "ica_peak_base 过小致 rel 非有限："+strconv.FormatFloat(rel, 'g', -1, 64))
 		return
 	}
 	if ierr := p.st.InsertICAPeak(endTs, uv, rel); ierr != nil {
