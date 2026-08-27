@@ -22,4 +22,24 @@ func TestFitTrend(t *testing.T) {
 	if _, ok := FitTrend(short); ok {
 		t.Fatal("跨度不足应拒绝")
 	}
+	var flat []TsVal
+	for d := 0; d < 8; d++ {
+		flat = append(flat, TsVal{TS: base + int64(d)*2*86400, V: 4_500_000})
+	}
+	if _, ok := FitTrend(flat); ok {
+		t.Fatal("跨度不足应拒绝")
+	}
+	var noisy []TsVal
+	for d := 0; d < 24; d++ {
+		v := int64(4_500_000) - int64(d)*1000
+		if d%2 == 0 {
+			v += 400_000
+		} else {
+			v -= 380_000
+		}
+		noisy = append(noisy, TsVal{TS: base + int64(d)*86400, V: v})
+	}
+	if _, ok := FitTrend(noisy); ok {
+		t.Fatal("R² 过低应拒绝")
+	}
 }
