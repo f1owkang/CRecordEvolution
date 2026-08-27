@@ -18,6 +18,7 @@ const (
 	restMinTicks            = 3
 	restDedupCapDelta int64 = 1
 	restDedupUVDrift  int64 = 5000
+	restRelaxTicks          = 10 // e-Energy '23：静置约 10 分钟电压收敛，可作 SoH 指纹
 
 	resWindowMax  int     = 30
 	resMinSamples int     = 20
@@ -452,6 +453,14 @@ func (p *Pipeline) tickResting(status string) error {
 	}
 	capVal, cerr := p.readNode("capacity")
 	if cerr != nil {
+		return nil
+	}
+	if p.restStreak == restRelaxTicks {
+		// 收敛指纹点：绕过去重强制记录（不同 ts 本就不冲突）
+		if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {
+			return &SettleError{Err: err}
+		}
+		p.lastRestCap, p.lastRestUV = capVal, uv
 		return nil
 	}
 	if absI64(capVal-p.lastRestCap) < restDedupCapDelta &&

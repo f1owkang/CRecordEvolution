@@ -385,6 +385,81 @@ func TestPipelineRestOCVThreeTicksAndDedup(t *testing.T) {
 	}
 }
 
+func TestPipelineRestRelaxFingerprint(t *testing.T) {
+	r := newPipeRig(t)
+
+	countRest := func() int64 {
+		t.Helper()
+		return queryInt64(t, r.st, `SELECT COUNT(*) FROM rest_points`)
+	}
+	lowTick := func(capV, vUV int64) int64 {
+		r.put(capV, 15000, vUV)
+		r.step("Discharging")
+		return r.cur.Unix()
+	}
+
+	type restRow struct {
+		ts, uv, cap int64
+	}
+	loadRows := func(t *testing.T) []restRow {
+		t.Helper()
+		rows, err := r.st.db.Query(`SELECT ts, uv, cap FROM rest_points ORDER BY ts`)
+		if err != nil {
+			t.Fatalf("查询 rest_points: %v", err)
+		}
+		defer rows.Close()
+		var out []restRow
+		for rows.Next() {
+			var row restRow
+			if err := rows.Scan(&row.ts, &row.uv, &row.cap); err != nil {
+				t.Fatalf("扫描 rest_points: %v", err)
+			}
+			out = append(out, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("遍历 rest_points: %v", err)
+		}
+		return out
+	}
+
+	for k := 0; k < 2; k++ {
+		lowTick(80, 4100000)
+	}
+	earlyTS := lowTick(80, 4100000)
+	rows := loadRows(t)
+	if len(rows) != 1 {
+		t.Fatalf("连续三 tick 静息应落 1 条早期点, rows = %d", len(rows))
+	}
+	if rows[0].ts != earlyTS || rows[0].uv != 4100000 || rows[0].cap != 80 {
+		t.Fatalf("早期点 = %+v, want {%d 4100000 80}", rows[0], earlyTS)
+	}
+
+	for k := 4; k <= 9; k++ {
+		lowTick(80, 4100000)
+	}
+	if n := countRest(); n != 1 {
+		t.Fatalf("第 4~9 tick 无漂移应被既有去重拦住, rows = %d", n)
+	}
+
+	fpTS := lowTick(80, 4100000)
+	if n := countRest(); n != 2 {
+		t.Fatalf("第 10 tick 应绕过去重强制落收敛指纹点, rows = %d", n)
+	}
+	rows = loadRows(t)
+	if rows[0].ts != earlyTS || rows[1].ts != fpTS || rows[1].ts == rows[0].ts {
+		t.Fatalf("两行 ts 不符: got (%d,%d), want (%d,%d)", rows[0].ts, rows[1].ts, earlyTS, fpTS)
+	}
+	if rows[1].uv != 4100000 || rows[1].cap != 80 {
+		t.Fatalf("指纹点值 = %+v, want {%d 4100000 80}", rows[1], fpTS)
+	}
+
+	lowTick(80, 4100000)
+	lowTick(80, 4100000)
+	if n := countRest(); n != 2 {
+		t.Fatalf("指纹点后数值不变仍应去重(最少形态 2 行), rows = %d", n)
+	}
+}
+
 func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 	currents := []int64{1000000, 2000000, 3000000}
 	// 物理正确的充电关系：V = OCV + I·R，斜率 dV/dI 为正
