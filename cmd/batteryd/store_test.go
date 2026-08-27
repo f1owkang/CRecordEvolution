@@ -129,6 +129,34 @@ func TestRecentEstimatesOrderAndLimit(t *testing.T) {
 	}
 }
 
+func TestSampleRoundtripAndPrune(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.InsertSample(1000, 500000, 3800000, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertSample(2000, 600000, 3850000, 55); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.CountSamples()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("CountSamples=%d, want 2", n)
+	}
+	if err := st.PruneBefore(1500); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ = st.CountSamples(); n != 1 {
+		t.Fatalf("after prune n=%d, want 1", n)
+	}
+}
+
 func TestPruneBeforeStrictLessThanBoundary(t *testing.T) {
 	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
 	defer func() { _ = s.Close() }()

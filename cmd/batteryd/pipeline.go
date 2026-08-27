@@ -229,6 +229,11 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			return err
 		}
 	}
+	if vUV > 0 && capVal > 0 {
+		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal); err != nil {
+			_ = p.st.InsertEvent("sample_fail", err.Error())
+		}
+	}
 
 	s := &p.sess
 	if !s.active {

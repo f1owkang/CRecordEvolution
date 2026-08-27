@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NUL
 CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 `
 
@@ -134,6 +135,17 @@ func (s *Store) InsertEvent(kind, detail string) error {
 	return err
 }
 
+func (s *Store) InsertSample(ts, ua, uv, cap int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap) VALUES(?, ?, ?, ?)`, ts, ua, uv, cap)
+	return err
+}
+
+func (s *Store) CountSamples() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM samples`).Scan(&n)
+	return n, err
+}
+
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name   string
@@ -144,6 +156,7 @@ func (s *Store) PruneBefore(cutoffTs int64) error {
 		{"resistance", "ts"},
 		{"rest_points", "ts"},
 		{"events", "ts"},
+		{"samples", "ts"},
 	} {
 		if _, err := s.db.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
 			return err

@@ -447,6 +447,26 @@ func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 	})
 }
 
+func TestPipelineChargingTickWritesSampleRow(t *testing.T) {
+	r := newPipeRig(t)
+
+	r.put(50, 1200000, 4200000)
+	r.step("Charging")
+
+	n := queryInt64(t, r.st, `SELECT COUNT(*) FROM samples`)
+	if n != 1 {
+		t.Fatalf("samples 行数 = %d, want 1", n)
+	}
+	var ts, ua, uv, capVal int64
+	if err := r.st.db.QueryRow(`SELECT ts, ua, uv, cap FROM samples`).Scan(&ts, &ua, &uv, &capVal); err != nil {
+		t.Fatalf("读取样本行: %v", err)
+	}
+	wantTs := tickBaseTs + 60
+	if ts != wantTs || ua != 1200000 || uv != 4200000 || capVal != 50 {
+		t.Fatalf("样本行 = (%d,%d,%d,%d), want (%d,1200000,4200000,50)", ts, ua, uv, capVal, wantTs)
+	}
+}
+
 func TestPipelineRejectedSessionRecorded(t *testing.T) {
 	r := newPipeRig(t)
 
