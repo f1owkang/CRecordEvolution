@@ -69,7 +69,7 @@ type app struct {
 	est      Estimator
 	designUA int64
 
-	nodePaths map[string]string
+	nodePaths    map[string]string
 	lastPruneDay int64
 }
 
@@ -213,6 +213,17 @@ func (a *app) stats() (Design, Snapshot, error) {
 	if tRaw, err := a.readIntNode("temp"); err == nil {
 		tempC := NormTempC(tRaw)
 		snap.TempC = &tempC
+	}
+	// 趋势门控较严（点数/跨度/R²），失败即无此字段，属正常降级
+	if recent, err := a.st.RecentEstimates(200); err == nil {
+		for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+			recent[i], recent[j] = recent[j], recent[i]
+		}
+		if tr, ok := FitTrend(recent); ok {
+			// FitTrend 斜率与 estimates 表同单位（µAh/周），换算为 mAh/周
+			v := tr.MahPerWeek / 1000
+			snap.TrendMahPerWeek = &v
+		}
 	}
 	return d, snap, nil
 }
