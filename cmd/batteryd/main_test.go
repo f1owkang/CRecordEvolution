@@ -70,6 +70,49 @@ func TestTickStoreFailureWrappedAsSettleError(t *testing.T) {
 	}
 }
 
+func TestStatsSigmaGatedByChannel(t *testing.T) {
+	// ML 刷回 stable 且 data 残留时，kv 中过期的 σ 不得泄漏进 stable 的任何出口
+	old := channel
+	defer func() { channel = old }()
+	_, st := newTestStable(t)
+	if err := st.KVSet(kvKeyEmaSigma, "12.5"); err != nil {
+		t.Fatalf("预置 kv: %v", err)
+	}
+	a := &app{st: st}
+
+	channel = "stable"
+	d, snap, err := a.stats()
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if snap.SigmaMah != nil {
+		t.Fatalf("stable 通道不应读出 SigmaMah, got %v (design=%v)", *snap.SigmaMah, d.DesignMah)
+	}
+
+	channel = "ml"
+	_, snap, err = a.stats()
+	if err != nil {
+		t.Fatalf("stats(ml): %v", err)
+	}
+	if snap.SigmaMah == nil || *snap.SigmaMah != 12.5 {
+		t.Fatalf("ml 通道应读出 σ=12.5, got %v", snap.SigmaMah)
+	}
+}
+
+func TestSigmaMahRejectsNonFinite(t *testing.T) {
+	// ParseFloat("NaN")/("Inf") err=nil 且不满足 <=0，必须显式拦截
+	_, st := newTestStable(t)
+	for _, val := range []string{"NaN", "Inf", "+Inf", "-Inf"} {
+		if err := st.KVSet(kvKeyEmaSigma, val); err != nil {
+			t.Fatalf("预置 kv[%s=%q]: %v", kvKeyEmaSigma, val, err)
+		}
+		a := &app{st: st}
+		if got := a.sigmaMah(); got != nil {
+			t.Fatalf("σ=%q 应被判 nil, got %v", val, *got)
+		}
+	}
+}
+
 func TestAppendLogRotate(t *testing.T) {
 	dir := t.TempDir()
 	a := &app{moddir: dir}

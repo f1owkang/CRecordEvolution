@@ -206,7 +206,10 @@ func (a *app) stats() (Design, Snapshot, error) {
 		snap.EstUA = &ema
 		snap.Samples = samples
 	}
-	snap.SigmaMah = a.sigmaMah()
+	// σ 仅 ML 通道有效：stable 读到残留 kv 值会污染 once/json 出口（describe 另有硬 gate）
+	if channel == "ml" {
+		snap.SigmaMah = a.sigmaMah()
+	}
 	if tRaw, err := a.readIntNode("temp"); err == nil {
 		tempC := NormTempC(tRaw)
 		snap.TempC = &tempC
@@ -235,14 +238,14 @@ func (a *app) rMoh() *float64 {
 	return &f
 }
 
-// sigmaMah 从 kv 读置信区间；解析失败或 ≤0（学习期/种子重置）⇒ nil
+// sigmaMah 从 kv 读置信区间；解析失败、≤0 或非有限值（学习期/种子重置）⇒ nil
 func (a *app) sigmaMah() *float64 {
 	v, ok := a.st.KVGet(kvKeyEmaSigma)
 	if !ok {
 		return nil
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f <= 0 {
+	if err != nil || f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
 		return nil
 	}
 	return &f
