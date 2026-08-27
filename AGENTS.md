@@ -19,7 +19,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
 - 运行期数据：`$MODDIR/data/battery.db`（SQLite 六表：kv/sessions/estimates/resistance/rest_points/events，90 天自动清理）。
 - `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 Release → 回写 `update.json`。
-- `docs/` — 论文证据库与设计笔记：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）；`note-*.md` 设计笔记可提交。**superpowers 过程文档（`docs/superpowers/` 规格与计划）只在本地工作区存在，禁止提交进仓库；「核对报告」类中间调研文档同样不提交。**
+- `docs/` — 论文证据库：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）。**设计笔记、superpowers 过程文档（`docs/superpowers/` 规格与计划）、「核对报告」类中间调研文档一律只存本地工作区，禁止提交进仓库。**
 - `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。
 
 ## 约定与坑
