@@ -129,6 +129,48 @@ func (s *Store) InsertRestPoint(ts, uv, cap int64) error {
 	return err
 }
 
+type RestPoint struct {
+	TS, UV, Cap int64
+}
+
+func (s *Store) RecentSessions(limit int) ([]Session, error) {
+	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+		temp_avg,valid FROM sessions ORDER BY end_ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Session{}
+	for rows.Next() {
+		var se Session
+		var v int64
+		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
+			&se.Ua, &se.CRate, &se.TempAvg, &v); err != nil {
+			return nil, err
+		}
+		se.Valid = v == 1
+		out = append(out, se)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecentRestPoints(limit int) ([]RestPoint, error) {
+	rows, err := s.db.Query(`SELECT ts, uv, cap FROM rest_points ORDER BY ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RestPoint{}
+	for rows.Next() {
+		var rp RestPoint
+		if err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap); err != nil {
+			return nil, err
+		}
+		out = append(out, rp)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) InsertEvent(kind, detail string) error {
 	_, err := s.db.Exec(`INSERT INTO events(ts, kind, detail) VALUES(?, ?, ?)`,
 		time.Now().Unix(), kind, detail)

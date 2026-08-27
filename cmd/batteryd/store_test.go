@@ -191,3 +191,34 @@ func TestPruneBeforeStrictLessThanBoundary(t *testing.T) {
 		t.Fatalf("estimates 留下的 ts = %d (err=%v), want 900", ts, err)
 	}
 }
+
+func TestRecentSessionsAndRestPoints(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(filepath.Join(dir, "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_, err = st.InsertSession(Session{StartTs: 100, EndTs: 200, StartCap: 20, EndCap: 80,
+		Ua: 2_160_000_000, Valid: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.InsertSession(Session{StartTs: 300, EndTs: 400, Valid: false}); err != nil {
+		t.Fatal(err)
+	}
+	ss, err := st.RecentSessions(10)
+	if err != nil || len(ss) != 2 {
+		t.Fatalf("sessions=%d err=%v", len(ss), err)
+	}
+	if ss[0].EndTs != 400 || ss[0].Valid {
+		t.Fatalf("倒序/valid 字段错误: %+v", ss[0])
+	}
+	if err = st.InsertRestPoint(500, 3_900_000, 60); err != nil {
+		t.Fatal(err)
+	}
+	rps, err := st.RecentRestPoints(10)
+	if err != nil || len(rps) != 1 || rps[0].UV != 3_900_000 || rps[0].Cap != 60 {
+		t.Fatalf("rest=%+v err=%v", rps, err)
+	}
+}
