@@ -73,6 +73,8 @@ func DetectCCSegs(samps []SampleRow, win int) []CCSeg {
 		for _, r := range samps[lo:hi] {
 			sum += float64(r.UA)
 		}
+		// 基数口径：segMean 含待剔候选窗自身（brief 字面「较段均值下滑逾 30%」），
+		// 长尾时会抬高基数导致偏保守多剔，属有意取舍。
 		segMean := sum / float64(hi-lo)
 		for i := e; i >= b; i-- { // 后续窗均为尾段：首个命中处截断
 			if meanUV[i] >= thrv && meanUA[i] < segMean*(1-ccTailDrop) {
@@ -96,13 +98,14 @@ func DetectCCSegs(samps []SampleRow, win int) []CCSeg {
 	return segs
 }
 
-// voltTopThreshold 返回观察序列 UV 的最高 3% 区间下界（升序分位点）。
+// voltTopThreshold 返回观察序列 UV 的最高 ccTopVoltFrac 区间下界：升序数组中
+// 自顶端倒数 ceil(n×frac) 个样本，取其中的最小值。
 func voltTopThreshold(samps []SampleRow) float64 {
 	uvs := make([]float64, len(samps))
 	for i, r := range samps {
 		uvs[i] = float64(r.UV)
 	}
 	sort.Float64s(uvs)
-	idx := int(math.Ceil(float64(len(uvs))*ccTopVoltFrac)) - 1
+	idx := len(uvs) - int(math.Ceil(float64(len(uvs))*ccTopVoltFrac))
 	return uvs[idx]
 }
