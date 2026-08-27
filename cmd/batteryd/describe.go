@@ -31,25 +31,25 @@ type Snapshot struct {
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。
 func BuildDescription(d Design, snap Snapshot) (string, error) {
 	var parts []string
-	if d.HasDesign {
-		parts = append(parts, fmt.Sprintf("出厂设计容量为：%d mAh", d.DesignMah))
-	}
-	if d.HasFull {
-		parts = append(parts, fmt.Sprintf("当前电池容量为：%d mAh", d.FullMah))
-	}
-	if d.HasCycles {
-		parts = append(parts, fmt.Sprintf("电池循环次数为：%d次", d.Cycles))
+	if snap.EstUA != nil {
+		parts = append(parts, fmt.Sprintf("实测 %d mAh", *snap.EstUA/1000))
 	}
 	if d.HasPct {
-		parts = append(parts, fmt.Sprintf("估算剩余容量百分比为：%d%%", d.Pct))
+		parts = append(parts, fmt.Sprintf("健康 %d%%", d.Pct))
 	}
-	desc := strings.Join(parts, "，")
-	if snap.EstUA != nil {
-		desc += fmt.Sprintf("，实测估算容量为：%d mAh", *snap.EstUA/1000)
+	if d.HasFull {
+		parts = append(parts, fmt.Sprintf("当前 %d mAh", d.FullMah))
 	}
-	if desc == "" {
+	if d.HasDesign {
+		parts = append(parts, fmt.Sprintf("设计 %d mAh", d.DesignMah))
+	}
+	if d.HasCycles {
+		parts = append(parts, fmt.Sprintf("循环 %d次", d.Cycles))
+	}
+	if len(parts) == 0 {
 		return "", ErrNoData
 	}
+	desc := strings.Join(parts, "｜")
 	if channel == "ml" {
 		desc = "[ML实验版]" + desc
 	}
