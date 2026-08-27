@@ -66,7 +66,7 @@ func TestTickStoreFailureWrappedAsSettleError(t *testing.T) {
 	_, err := r.p.Tick("Discharging")
 	var se *SettleError
 	if !errors.As(err, &se) {
-		t.Fatalf("库存失败应包成 SettleError, got %v", err)
+		t.Fatalf("落库失败应包成 SettleError, got %v", err)
 	}
 }
 
