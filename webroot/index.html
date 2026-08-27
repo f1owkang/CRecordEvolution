@@ -152,6 +152,18 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div id="chart_rest_cap" class="cap"></div>
     </section>
 
+    <section class="panel">
+      <div class="ptitle">恒流时长</div>
+      <div id="chart_ccct" class="chart"></div>
+      <div id="chart_ccct_cap" class="cap"></div>
+    </section>
+
+    <section class="panel">
+      <div class="ptitle">容量主峰</div>
+      <div id="chart_ica" class="chart"></div>
+      <div id="chart_ica_cap" class="cap"></div>
+    </section>
+
     <button id="refresh" type="button">立即刷新</button>
     <div id="meta" class="meta"></div>
   </main>
@@ -429,6 +441,38 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return svgOpen(w, h) + chartBase(w, h) + rects + '</svg>';
   }
 
+  // ts→key 通用折线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线
+  function svgTsLine(data, w, h, color, key, refY) {
+    var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', key);
+    if (raw.length < 2) return chartPending();
+    raw.sort(function (a, b) { return a.x - b.x; });
+    var tx = minMax(raw.map(function (p) { return p.x; }));
+    var ys = raw.map(function (p) { return p.y; });
+    var hasRef = typeof refY === 'number' && isFinite(refY);
+    if (hasRef) ys.push(refY);
+    var ty = minMax(ys);
+    function toXY(p) { return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) }; }
+    var refLine = '';
+    if (hasRef) {
+      var ry = ((1 - toXY({ x: 0, y: refY }).y) * h).toFixed(1);
+      refLine = '<line x1="' + (w * 0.05).toFixed(1) + '" y1="' + ry + '" x2="' + (w * 0.95).toFixed(1) +
+        '" y2="' + ry + '" stroke="#6e7681" stroke-width="1.5" stroke-dasharray="5,4"/>';
+    }
+    return svgOpen(w, h) + chartBase(w, h) + refLine +
+      '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>';
+  }
+
+  // key 字段可数值化的行数（口径与 pickPairs 一致）
+  function validCount(rows, key) {
+    var n = 0, i, v;
+    for (i = 0; i < rows.length; i++) {
+      v = Number(rows[i] == null ? null : rows[i][key]);
+      if (isFinite(v)) n++;
+    }
+    return n;
+  }
+
   function setChart(id, html, cap) {
     var el = $(id);
     if (!el) return;
@@ -469,6 +513,14 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     var ur = uvs.length >= 2 ? minMax(uvs) : null;
     setChart('chart_rest', svgScatter(restRows, W, H, '#e6edf3'),
       ur ? '区间 ' + (ur.min / 1e6).toFixed(3) + ' ~ ' + (ur.max / 1e6).toFixed(3) + ' V' : '');
+
+    var ccctRows = Array.isArray(doc.ccct) ? doc.ccct : [];
+    setChart('chart_ccct', svgTsLine(ccctRows, W, H, '#d2a8ff', 'secs'),
+      validCount(ccctRows, 'secs') >= 8 ? '方向指示，非绝对 SoH' : '');
+
+    var icaRows = Array.isArray(doc.ica_peaks) ? doc.ica_peaks : [];
+    setChart('chart_ica', svgTsLine(icaRows, W, H, '#ffa657', 'peak_h_rel', 1),
+      validCount(icaRows, 'peak_h_rel') >= 8 ? '方向指示，非绝对 SoH' : '');
   }
 
   function fetchData() {
