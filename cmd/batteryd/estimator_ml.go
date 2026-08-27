@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"strconv"
 )
@@ -17,6 +18,9 @@ const (
 	iqrMinSamples = 8
 	clipLo        = 0.7
 	clipHi        = 1.3
+
+	kvKeyEmaSigma = "ema_sigma_mah"
+	sigmaRelFloor = 0.005
 )
 
 type Learning struct{ kv KVStore }
@@ -57,6 +61,15 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	corrected := float64(ema) * clipRatio(dot4(phi, theta))
 	w := mlWeight(samples)
 	est := int64((1-w)*float64(ema) + w*corrected)
+
+	// RLS 预测方差 σ_rel = √(φᵀPφ)（rlsUpdate 之后的新 P），下限保护 0.005（0.5%）；
+	// σ_mAh = σ_rel × 校正容量/1000，mL→mAh 域换算
+	sigmaRel := math.Sqrt(quadForm(p, phi))
+	if sigmaRel < sigmaRelFloor {
+		sigmaRel = sigmaRelFloor
+	}
+	sigmaMah := sigmaRel * corrected / 1000
+
 	samples++
 
 	hist = append(hist, r)
@@ -64,10 +77,10 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 		hist = hist[len(hist)-ratioHistCap:]
 	}
 
-	if err := l.persist(theta, p, hist, est, samples); err != nil {
+	if err := l.persist(theta, p, hist, est, samples, sigmaMah); err != nil {
 		return EstUpdate{}, err
 	}
-	return EstUpdate{EstUA: est, Samples: samples, Changed: true}, nil
+	return EstUpdate{EstUA: est, Samples: samples, Changed: true, SigmaMah: sigmaMah}, nil
 }
 
 func (l *Learning) seed(uaFull int64) (EstUpdate, error) {
@@ -77,10 +90,13 @@ func (l *Learning) seed(uaFull int64) (EstUpdate, error) {
 	if err := l.kv.KVSet(kvKeySamples, "1"); err != nil {
 		return EstUpdate{}, err
 	}
+	if err := l.kv.KVSet(kvKeyEmaSigma, "0"); err != nil {
+		return EstUpdate{}, err
+	}
 	return EstUpdate{EstUA: uaFull, Samples: 1, Changed: true}, nil
 }
 
-func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist []float64, ema, samples int64) error {
+func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist []float64, ema, samples int64, sigmaMah float64) error {
 	thetaJSON, err := json.Marshal(theta[:])
 	if err != nil {
 		return err
@@ -105,7 +121,10 @@ func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist []float64, em
 	if err := l.kv.KVSet(kvKeyEmaUA, strconv.FormatInt(ema, 10)); err != nil {
 		return err
 	}
-	return l.kv.KVSet(kvKeySamples, strconv.FormatInt(samples, 10))
+	if err := l.kv.KVSet(kvKeySamples, strconv.FormatInt(samples, 10)); err != nil {
+		return err
+	}
+	return l.kv.KVSet(kvKeyEmaSigma, strconv.FormatFloat(sigmaMah, 'f', -1, 64))
 }
 
 func (l *Learning) loadFloats(key string, wantLen int) []float64 {
@@ -152,6 +171,21 @@ func dot4(a, b [4]float64) float64 {
 	return sum
 }
 
+func matVec(p [4][4]float64, v [4]float64) [4]float64 {
+	var out [4]float64
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			out[i] += p[i][j] * v[j]
+		}
+	}
+	return out
+}
+
+// quadForm 计算二次型 vᵀPv
+func quadForm(p [4][4]float64, v [4]float64) float64 {
+	return dot4(v, matVec(p, v))
+}
+
 func clipRatio(x float64) float64 {
 	if x < clipLo {
 		return clipLo
@@ -174,12 +208,7 @@ func mlWeight(n int64) float64 {
 }
 
 func rlsUpdate(theta [4]float64, p [4][4]float64, phi [4]float64, y float64) ([4]float64, [4][4]float64) {
-	var pphi [4]float64
-	for i := 0; i < 4; i++ {
-		for j := 0; j < 4; j++ {
-			pphi[i] += p[i][j] * phi[j]
-		}
-	}
+	pphi := matVec(p, phi)
 	denom := rlsLambda + dot4(phi, pphi)
 	var k [4]float64
 	for i := range k {

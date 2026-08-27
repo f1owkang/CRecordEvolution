@@ -206,6 +206,7 @@ func (a *app) stats() (Design, Snapshot, error) {
 		snap.EstUA = &ema
 		snap.Samples = samples
 	}
+	snap.SigmaMah = a.sigmaMah()
 	if tRaw, err := a.readIntNode("temp"); err == nil {
 		tempC := NormTempC(tRaw)
 		snap.TempC = &tempC
@@ -224,6 +225,19 @@ func (a *app) estimate() (int64, int64, bool) {
 
 func (a *app) rMoh() *float64 {
 	v, ok := a.st.KVGet(kvREmaMOhm)
+	if !ok {
+		return nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return nil
+	}
+	return &f
+}
+
+// sigmaMah 从 kv 读置信区间；解析失败或 ≤0（学习期/种子重置）⇒ nil
+func (a *app) sigmaMah() *float64 {
+	v, ok := a.st.KVGet(kvKeyEmaSigma)
 	if !ok {
 		return nil
 	}
@@ -403,6 +417,9 @@ func runOnce() error {
 		fmt.Printf("剩余容量：%d%%\n", d.Pct)
 	}
 	fmt.Printf("实测估算：%s\n", estText)
+	if snap.SigmaMah != nil {
+		fmt.Printf("估计不确定度：±%.0f mAh\n", *snap.SigmaMah)
+	}
 	if math.IsNaN(snap.CycleEquiv) || math.IsInf(snap.CycleEquiv, 0) {
 		fmt.Printf("循环当量：--\n")
 	} else {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -246,6 +247,33 @@ func TestLearningIQROnlyFromEighthRatio(t *testing.T) {
 	}
 	if v, _ := st.KVGet(kvKeyEmaUA); v != "3000000" {
 		t.Fatalf(`剔除后 kv[ema_ua] = %q, want "3000000"`, v)
+	}
+}
+
+func TestLearningSigma(t *testing.T) {
+	est, st := newTestLearning(t)
+	seedML(t, est)
+
+	// 种子分支应把 σ 重置为 0，避免沿用上一台设备/旧数据的残留区间
+	if v, _ := st.KVGet(kvKeyEmaSigma); v != "0" {
+		t.Fatalf("种子后 kv[%s] = %q, want \"0\"", kvKeyEmaSigma, v)
+	}
+
+	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
+	if err != nil {
+		t.Fatalf("会话应被接受: %v", err)
+	}
+	if upd.SigmaMah <= 0 {
+		t.Fatalf("SigmaMah = %v, want > 0（rlsUpdate 后新 P 的 φᵀPφ）", upd.SigmaMah)
+	}
+
+	v, ok := st.KVGet(kvKeyEmaSigma)
+	if !ok {
+		t.Fatalf("缺少 kv[%s]", kvKeyEmaSigma)
+	}
+	f, perr := strconv.ParseFloat(v, 64)
+	if perr != nil || f <= 0 || f != upd.SigmaMah {
+		t.Fatalf("kv[%s] = %q (err=%v), want 与 SigmaMah=%v 同一正值", kvKeyEmaSigma, v, perr, upd.SigmaMah)
 	}
 }
 

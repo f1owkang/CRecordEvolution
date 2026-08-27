@@ -210,6 +210,23 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	}
 }
 
+func TestStableNeverProducesSigma(t *testing.T) {
+	// stable 通道无 P 矩阵：返回值 SigmaMah 恒为 0，且不落 kv 键
+	est, st := newTestStable(t)
+
+	sr := SettledSession{Session: baseSession(), AccUA: 8208000000, DesignUA: 4000000}
+	upd, err := est.OnSession(sr)
+	if err != nil {
+		t.Fatalf("会话应被接受: %v", err)
+	}
+	if upd.SigmaMah != 0 {
+		t.Fatalf("stable 的 SigmaMah = %v, want 0", upd.SigmaMah)
+	}
+	if _, ok := st.KVGet(kvKeyEmaSigma); ok {
+		t.Fatalf("stable 通道不应写入 kv[%s] 键", kvKeyEmaSigma)
+	}
+}
+
 type brokenKV struct{}
 
 func (brokenKV) KVGet(string) (string, bool) { return "", false }

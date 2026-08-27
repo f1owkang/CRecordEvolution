@@ -32,17 +32,18 @@ type jsonDoc struct {
 	DesignMah  *int64         `json:"design_mah"`
 	FullMah    *int64         `json:"full_mah"`
 	Cycles     *int64         `json:"cycles"`
-	Pct        *int64         `json:"pct"`
-	EstMah     *int64         `json:"est_mah"`
-	Samples    int64          `json:"samples"`
-	CycleEquiv *float64       `json:"cycle_equiv"`
-	RMoh       *float64       `json:"r_moh"`
-	TempC      *float64       `json:"temp_c"`
-	Updated    string         `json:"updated"`
-	Recent     []recentEntry  `json:"recent"`
-	Sessions   []sessionEntry `json:"sessions"`
-	RestPoints []restEntry    `json:"rest_points"`
-	SamplesN   int64          `json:"samples_n"`
+	Pct           *int64         `json:"pct"`
+	EstMah        *int64         `json:"est_mah"`
+	EstMahSigma   *float64       `json:"est_mah_sigma"`
+	Samples       int64          `json:"samples"`
+	CycleEquiv    *float64       `json:"cycle_equiv"`
+	RMoh          *float64       `json:"r_moh"`
+	TempC         *float64       `json:"temp_c"`
+	Updated       string         `json:"updated"`
+	Recent        []recentEntry  `json:"recent"`
+	Sessions      []sessionEntry `json:"sessions"`
+	RestPoints    []restEntry    `json:"rest_points"`
+	SamplesN      int64          `json:"samples_n"`
 }
 
 func finitePtr(f *float64) *float64 {
@@ -74,13 +75,14 @@ func convSession(se Session) sessionEntry {
 
 func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
-		Channel:    ch,
-		Samples:    snap.Samples,
-		RMoh:       finitePtr(snap.RMoh),
-		TempC:      finitePtr(snap.TempC),
-		Updated:    now.Format("2006-01-02 15:04:05"),
-		Recent:     make([]recentEntry, 0, len(recent)),
-		SamplesN:   samplesN,
+		Channel:      ch,
+		Samples:      snap.Samples,
+		RMoh:         finitePtr(snap.RMoh),
+		TempC:        finitePtr(snap.TempC),
+		EstMahSigma:  finitePtr(snap.SigmaMah),
+		Updated:      now.Format("2006-01-02 15:04:05"),
+		Recent:       make([]recentEntry, 0, len(recent)),
+		SamplesN:     samplesN,
 	}
 	if d.HasDesign {
 		doc.DesignMah = intPtr(d.DesignMah)

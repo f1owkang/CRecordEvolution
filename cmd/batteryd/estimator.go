@@ -21,6 +21,8 @@ type EstUpdate struct {
 	EstUA   int64
 	Samples int64
 	Changed bool
+	// SigmaMah 置信区间 σ（mAh 域，RLS φᵀPφ 推出；stable 无 P 矩阵恒为 0）
+	SigmaMah float64
 }
 
 type Estimator interface {

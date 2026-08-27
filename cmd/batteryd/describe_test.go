@@ -90,6 +90,59 @@ func TestBuildDescriptionMLPrefix(t *testing.T) {
 	}
 }
 
+func TestBuildDescriptionMLSigmaSuffix(t *testing.T) {
+	old := channel
+	channel = "ml"
+	defer func() { channel = old }()
+	estUA := int64(3820000)
+	sigma := 15.6
+	d := fullDesign()
+	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
+	want := "[ML实验版]实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次±16 mAh"
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionStableIgnoresSigma(t *testing.T) {
+	old := channel
+	channel = "stable"
+	defer func() { channel = old }()
+	estUA := int64(3820000)
+	sigma := 15.6
+	d := fullDesign()
+	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
+	want := "实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionMLZeroSigmaOmitted(t *testing.T) {
+	old := channel
+	channel = "ml"
+	defer func() { channel = old }()
+	sigma := 0.0
+	d := fullDesign()
+	snap := Snapshot{SigmaMah: &sigma}
+	want := "[ML实验版]健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	got, err := BuildDescription(d, snap)
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	if got != want {
+		t.Fatalf("零区间不应追加尾段: got %q", got)
+	}
+}
+
 func writeTestProp(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "module.prop")

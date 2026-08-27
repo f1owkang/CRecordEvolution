@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -26,6 +27,7 @@ type Snapshot struct {
 	CycleEquiv float64
 	RMoh       *float64
 	TempC      *float64
+	SigmaMah   *float64
 }
 
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。
@@ -52,6 +54,9 @@ func BuildDescription(d Design, snap Snapshot) (string, error) {
 	desc := strings.Join(parts, "｜")
 	if channel == "ml" {
 		desc = "[ML实验版]" + desc
+		if snap.SigmaMah != nil && *snap.SigmaMah > 0 {
+			desc += fmt.Sprintf("±%d mAh", int64(math.Round(*snap.SigmaMah)))
+		}
 	}
 	return desc, nil
 }

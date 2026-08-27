@@ -13,7 +13,7 @@ func TestRenderJSONGoldenWithNulls(t *testing.T) {
 	d := Design{DesignMah: 4000, HasDesign: true, FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
 	snap := Snapshot{}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
-	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"samples_n":0}`
+	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"samples_n":0}`
 	got, err := RenderJSON("stable", d, snap, []TsVal{}, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -27,7 +27,7 @@ func TestRenderJSONGoldenPartialNulls(t *testing.T) {
 	// 缺设计容量与循环次数 → 对应字段渲染为 null
 	d := Design{FullMah: 3850, HasFull: true}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
-	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"samples_n":0}`
+	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"samples_n":0}`
 	got, err := RenderJSON("stable", d, Snapshot{}, []TsVal{}, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -41,12 +41,13 @@ func TestRenderJSONGoldenFull(t *testing.T) {
 	estUA := int64(4501234)
 	rMoh := 0.85
 	tempC := 28.5
+	sigma := 12.3
 	d := Design{DesignMah: 5000, HasDesign: true, FullMah: 4600, HasFull: true, Cycles: 322, HasCycles: true, Pct: 92, HasPct: true}
-	snap := Snapshot{EstUA: &estUA, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC}
+	snap := Snapshot{EstUA: &estUA, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC, SigmaMah: &sigma}
 	// estimates 表存 µAh，RenderJSON 负责 /1000 转 mAh
 	recent := []TsVal{{TS: 1778000000, V: 4501000}, {TS: 1777999940, V: 4498000}}
 	now := time.Date(2026, 8, 26, 9, 5, 1, 0, time.UTC)
-	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}],"sessions":null,"rest_points":null,"samples_n":0}`
+	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"est_mah_sigma":12.3,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}],"sessions":null,"rest_points":null,"samples_n":0}`
 	got, err := RenderJSON("ml", d, snap, recent, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
