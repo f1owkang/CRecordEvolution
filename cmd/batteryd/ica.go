@@ -53,8 +53,8 @@ func FindPeak(rows []SampleRow) (peakUV int64, peakH float64, ok bool) {
 	var sum float64
 	nHit := 0
 	for i, v := range smoothed {
-		sum += v
 		if dens[i] > 0 {
+			sum += v
 			nHit++
 		}
 		if maxIdx < 0 || v > smoothed[maxIdx] {
@@ -64,8 +64,8 @@ func FindPeak(rows []SampleRow) (peakUV int64, peakH float64, ok bool) {
 	if maxIdx < 0 || nHit == 0 {
 		return 0, 0, false
 	}
-	// 均值只统计有数据（轨迹覆盖）的桶：域内未经过的空洞不计入分母，
-	// 否则缓变线的首尾空窗会人为压低均值、造成伪显著。
+	// 均值只统计轨迹覆盖桶的平滑值（分子分母同口径）：空洞桶的滑动平均泄漏值
+	// 不参与分母也不参与分子，避免泄漏抬高均值、把显著性门槛 1.2×mean 拉严到漏检。
 	mean := sum / float64(nHit)
 	if h := smoothed[maxIdx]; h > 0 && h > icaMinProminence*mean {
 		return (loBin + int64(maxIdx)) * icaBinUV, h, true
@@ -92,3 +92,4 @@ func movingAvg(xs []float64, half int) []float64 {
 	}
 	return out
 }
+

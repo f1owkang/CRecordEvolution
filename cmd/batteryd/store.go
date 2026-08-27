@@ -179,6 +179,9 @@ func (s *Store) InsertEvent(kind, detail string) error {
 	return err
 }
 
+// InsertSample 写入一条充电样本。ts 为秒级主键：60s tick 下同一秒只写一次、
+// 天然唯一；若未来缩短采样周期或出现多写路径，INSERT OR REPLACE 会静默覆盖
+// 同 ts 旧行（幂等而非追加），属已知约束。
 func (s *Store) InsertSample(ts, ua, uv, cap int64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap) VALUES(?, ?, ?, ?)`, ts, ua, uv, cap)
 	return err

@@ -98,7 +98,7 @@ func TestBuildDescriptionMLSigmaSuffix(t *testing.T) {
 	sigma := 15.6
 	d := fullDesign()
 	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
-	want := "[ML实验版]实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次±16 mAh"
+	want := "[ML实验版]实测 3820±16 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)

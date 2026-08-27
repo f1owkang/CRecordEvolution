@@ -61,6 +61,29 @@ func TestFindPeakSmoothRampNoPeak(t *testing.T) {
 	}
 }
 
+// 均值口径回归：稀疏覆盖（每 5 桶才有一行）时，滑动平均会把非零值泄漏进空洞桶；
+// 若均值分子错把全部平滑值（含泄漏）累加而分母只数非空桶，均值被抬高到约 5×，
+// 2× 主峰过不了 1.2×mean 门槛而漏检。修复后分子只累加轨迹覆盖桶，峰值可通过。
+func TestFindPeakSparseCoverageMeanGauge(t *testing.T) {
+	var rows []SampleRow
+	for i := int64(0); i <= 12; i++ {
+		uv := 3_700_000 + i*5*icaBinUV
+		ua := int64(500_000)
+		if uv == 3_950_000 { // 唯一强峰：2× 基线
+			ua = 1_000_000
+		}
+		rows = append(rows, SampleRow{TS: i * tickSeconds, UA: ua, UV: uv})
+	}
+	uv, _, ok := FindPeak(rows)
+	if !ok {
+		t.Fatal("稀疏覆盖下的 2× 主峰应通过均值口径检测")
+	}
+	// 滑均半窗 ±2 桶会把峰摊到相邻桶同值，严格比较取左沿——允许 ±2 桶漂移。
+	if uv < 3_930_000 || uv > 3_970_000 {
+		t.Fatalf("peakUV = %d, want ∈ [3_930_000, 3_970_000]", uv)
+	}
+}
+
 func TestFindPeakInsufficientInput(t *testing.T) {
 	if _, _, ok := FindPeak(nil); ok {
 		t.Fatal("空输入应 ok=false")

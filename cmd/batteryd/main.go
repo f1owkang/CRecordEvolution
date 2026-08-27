@@ -359,7 +359,6 @@ func (a *app) appendLog(format string, args ...any) {
 	if err != nil {
 		return // 日志永远不影响主链路
 	}
-	defer f.Close()
 	st, _ := f.Stat()
 	if st != nil && st.Size() > maxLogBytes {
 		f.Close()
@@ -368,8 +367,8 @@ func (a *app) appendLog(format string, args ...any) {
 		if err != nil {
 			return
 		}
-		defer f.Close()
 	}
+	defer f.Close()
 	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 

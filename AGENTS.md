@@ -25,7 +25,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 ## 约定与坑
 
 - shell 脚本是 POSIX sh（`#!/system/bin/sh`）。不要按 pwsh 或 GNU bash 习惯“修正”语法，也不要尝试本地执行验证，只能靠通读代码推演设备端行为；Go 侧改动必须本地 `go test ./...` 全绿。
-- 所有面向用户的文案（描述、once 输出、WebUI）为简体中文，新增输出保持中文风格一致；数值与单位间有空格（`%d mAh` 为定稿格式）。
+- 所有面向用户的文案（描述、once 输出、WebUI）为简体中文，新增输出保持中文风格一致；数值与复合单位间有空格（`%d mAh` 为定稿格式）；百分号与量词 `次` 紧邻数字不空格（`健康 92%`、`循环 210次` 为定稿格式）。
 - 双变体发布：同一源码打两个包——stable `ChargingRecordEvolution.zip` 与实验 `ChargingRecordEvolution_ML.zip`。CI 打 ML 包时改 `name=ChargingRecord Evolution ML`、description 加 `[ML实验版]` 前缀并**删除 updateJson 行**，故 ML 仅手动刷入、无应用内更新；`updateJson` 永远只指向 stable 资产。
 - 两变体 id 相同互斥安装，同一次发版 version/versionCode 相同。
 - 历史 id 曾为 `Charging_Record`：从旧 id 升级必须先卸载旧模块再刷入（README 安装节已注明），模块目录与数据目录随之迁移。

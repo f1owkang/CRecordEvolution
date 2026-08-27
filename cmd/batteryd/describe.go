@@ -36,7 +36,11 @@ type Snapshot struct {
 func BuildDescription(d Design, snap Snapshot) (string, error) {
 	var parts []string
 	if snap.EstUA != nil {
-		parts = append(parts, fmt.Sprintf("实测 %d mAh", *snap.EstUA/1000))
+		if channel == "ml" && snap.SigmaMah != nil && *snap.SigmaMah > 0 {
+			parts = append(parts, fmt.Sprintf("实测 %d±%d mAh", *snap.EstUA/1000, int64(math.Round(*snap.SigmaMah))))
+		} else {
+			parts = append(parts, fmt.Sprintf("实测 %d mAh", *snap.EstUA/1000))
+		}
 	}
 	if d.HasPct {
 		parts = append(parts, fmt.Sprintf("健康 %d%%", d.Pct))
@@ -56,9 +60,6 @@ func BuildDescription(d Design, snap Snapshot) (string, error) {
 	desc := strings.Join(parts, "｜")
 	if channel == "ml" {
 		desc = "[ML实验版]" + desc
-		if snap.SigmaMah != nil && *snap.SigmaMah > 0 {
-			desc += fmt.Sprintf("±%d mAh", int64(math.Round(*snap.SigmaMah)))
-		}
 	}
 	return desc, nil
 }
