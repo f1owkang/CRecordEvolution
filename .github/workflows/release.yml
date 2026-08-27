@@ -65,6 +65,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: ChargingRecord Evolution ${{ github.ref_name }}
+          overwrite: true
           files: |
             ChargingRecordEvolution-${{ github.ref_name }}.zip
             ChargingRecordEvolution_ML-${{ github.ref_name }}.zip
