@@ -35,7 +35,7 @@ jobs:
 
       - name: Pack stable zip
         run: |
-          zip -r ChargingRecordEvolution.zip module.prop customize.sh service.sh action.sh bin webroot META-INF
+          zip -r "ChargingRecordEvolution-${GITHUB_REF_NAME}.zip" module.prop customize.sh service.sh action.sh bin webroot META-INF
 
       - name: Build batteryd (ML)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.channel=ml" -o bin/batteryd.ml ./cmd/batteryd
@@ -49,7 +49,7 @@ jobs:
           sed -i 's/^name=.*/name=ChargingRecord Evolution ML/' mlstage/module.prop
           sed -i 's/^description=/description=[ML实验版]/' mlstage/module.prop
           sed -i '/^updateJson=/d' mlstage/module.prop
-          cd mlstage && zip -r ../ChargingRecordEvolution_ML.zip . && cd ..
+          cd mlstage && zip -r "../ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip" . && cd ..
 
       - name: Generate changelog
         run: |
@@ -59,15 +59,15 @@ jobs:
           else
             git log --oneline > changelog.txt
           fi
-          printf '%s\n' 'ChargingRecordEvolution_ML.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新' >> changelog.txt
+          printf '%s\n' "ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新" >> changelog.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ChargingRecord Evolution ${{ github.ref_name }}
           files: |
-            ChargingRecordEvolution.zip
-            ChargingRecordEvolution_ML.zip
+            ChargingRecordEvolution-${{ github.ref_name }}.zip
+            ChargingRecordEvolution_ML-${{ github.ref_name }}.zip
             changelog.txt
 
       - name: Update update.json on main
@@ -75,7 +75,7 @@ jobs:
           VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
           VERSION_CODE="$(grep '^versionCode=' module.prop | cut -d= -f2)"
           [ -n "$VERSION_CODE" ] || { echo "::error::module.prop 缺少 versionCode"; exit 1; }
-          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/latest/download/ChargingRecordEvolution.zip",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/latest/download/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" > update.json
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/ChargingRecordEvolution-%s.zip",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" "${GITHUB_REF_NAME}" "${GITHUB_REF_NAME}" "${GITHUB_REF_NAME}" > update.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add update.json
