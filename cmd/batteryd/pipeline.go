@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"time"
@@ -370,7 +371,54 @@ func (p *Pipeline) settle() error {
 	if estErr := p.st.InsertEstimate(row.EndTs, upd.EstUA); estErr != nil {
 		return &SettleError{Err: estErr}
 	}
+	// CCCT 特征采集：只在有效结算后做一次，60~240 行扫描毫秒级；一切
+	// 失败仅记 events，静默跳过，绝不影响结算主链路。
+	p.recordCCCT(s.startTs, row.EndTs)
 	return nil
+}
+
+// recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控
+// ≤C/2：段均值 ×2 超过设计容量不采信；designUA 缺失时无从判定倍率，
+// 同样视为不采信。0/≥2 个跨界段、查询失败等均以事件落痕后静默返回。
+func (p *Pipeline) recordCCCT(startTs, end int64) {
+	ev := func(kind, detail string) { _ = p.st.InsertEvent(kind, detail) }
+	if p.designUA <= 0 {
+		ev("ccct_skip", "设计容量缺失，无法判倍率，跳过 CCCT")
+		return
+	}
+	rows, err := p.st.SamplesRange(startTs, end)
+	if err != nil {
+		ev("ccct_skip", err.Error())
+		return
+	}
+	segs := DetectCCSegs(rows, ccctSegWin)
+	gateRejected := 0
+	crossings := 0
+	var loS, hiS SampleRow
+	for _, g := range segs {
+		if g.MeanUA*2 > p.designUA {
+			gateRejected++
+			continue
+		}
+		l, h, cross := locateWindowCross(rows, g)
+		if !cross {
+			continue
+		}
+		crossings++
+		loS, hiS = l, h
+	}
+	switch {
+	case crossings == 1:
+		if ierr := p.st.InsertCCCT(hiS.TS, loS.UV, hiS.UV, hiS.TS-loS.TS); ierr != nil {
+			ev("ccct_skip", ierr.Error())
+		}
+	case crossings == 0 && gateRejected > 0:
+		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值×2>%d µA)，未采信", gateRejected, p.designUA))
+	case crossings == 0:
+		ev("cc_unstable", "无可跨越整窗的恒流段")
+	default:
+		ev("ccct_skip", fmt.Sprintf("%d 个恒流段同时跨越整窗，无法唯一归因", crossings))
+	}
 }
 
 func (p *Pipeline) pushWindow(iUA, vUV int64) {

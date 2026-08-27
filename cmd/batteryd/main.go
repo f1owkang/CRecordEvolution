@@ -477,11 +477,19 @@ func runJson() error {
 	for _, rp := range restRows {
 		rests = append(rests, restEntry{TS: rp.TS, UV: rp.UV, Cap: rp.Cap})
 	}
+	ccctRows, err := a.st.RecentCCCT(jsonRecentLimit)
+	if err != nil {
+		return err
+	}
+	ccct := make([]ccctEntry, 0, len(ccctRows))
+	for _, c := range ccctRows {
+		ccct = append(ccct, ccctEntry{TS: c.TS, Secs: c.Secs})
+	}
 	n, err := a.st.CountSamples()
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, n, time.Now())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, n, time.Now())
 	if err != nil {
 		return err
 	}

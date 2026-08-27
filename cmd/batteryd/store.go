@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 `
 
@@ -188,6 +189,53 @@ func (s *Store) CountSamples() (int64, error) {
 	return n, err
 }
 
+// SamplesRange 返回 [from, to] 闭区间内的样本行，按 ts 升序。
+func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
+	rows, err := s.db.Query(`SELECT ts, ua, uv, cap FROM samples
+		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SampleRow{}
+	for rows.Next() {
+		var r SampleRow
+		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CcctRow 为 ccct 表一行：穿窗上沿时刻、窗下/上沿电压与穿窗耗时。
+type CcctRow struct {
+	TS, VwLo, VwHi, Secs int64
+}
+
+func (s *Store) InsertCCCT(ts, vwLo, vwHi, secs int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO ccct(ts, vw_lo, vw_hi, secs) VALUES(?, ?, ?, ?)`,
+		ts, vwLo, vwHi, secs)
+	return err
+}
+
+func (s *Store) RecentCCCT(limit int) ([]CcctRow, error) {
+	rows, err := s.db.Query(`SELECT ts, vw_lo, vw_hi, secs FROM ccct ORDER BY ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CcctRow{}
+	for rows.Next() {
+		var c CcctRow
+		if err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name   string
@@ -199,6 +247,7 @@ func (s *Store) PruneBefore(cutoffTs int64) error {
 		{"rest_points", "ts"},
 		{"events", "ts"},
 		{"samples", "ts"},
+		{"ccct", "ts"},
 	} {
 		if _, err := s.db.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
 			return err

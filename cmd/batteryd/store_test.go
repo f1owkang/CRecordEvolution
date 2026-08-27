@@ -222,3 +222,61 @@ func TestRecentSessionsAndRestPoints(t *testing.T) {
 		t.Fatalf("rest=%+v err=%v", rps, err)
 	}
 }
+
+func TestSamplesRangeInclusiveAscending(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	for ts := int64(100); ts <= 500; ts += 100 {
+		if err := s.InsertSample(ts, 100_000+ts, 4_000_000+ts, int64(ts)/100); err != nil {
+			t.Fatalf("InsertSample(%d): %v", ts, err)
+		}
+	}
+	got, err := s.SamplesRange(200, 400)
+	if err != nil {
+		t.Fatalf("SamplesRange: %v", err)
+	}
+	want := []SampleRow{
+		{TS: 200, UA: 100_000 + 200, UV: 4_000_000 + 200, Cap: 2},
+		{TS: 300, UA: 100_000 + 300, UV: 4_000_000 + 300, Cap: 3},
+		{TS: 400, UA: 100_000 + 400, UV: 4_000_000 + 400, Cap: 4},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("SamplesRange(200,400) 长度 = %d, want %d(端点含)", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SamplesRange[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if empty, err := s.SamplesRange(501, 600); err != nil || len(empty) != 0 {
+		t.Fatalf("空区间应返回空切片且无错: (%v, %v)", empty, err)
+	}
+}
+
+func TestCCCTRoundtripAndPrune(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	if err := s.InsertCCCT(100, 3_900_000, 4_000_000, 960); err != nil {
+		t.Fatalf("InsertCCCT: %v", err)
+	}
+	if err := s.InsertCCCT(200, 3_910_000, 4_010_000, 480); err != nil {
+		t.Fatalf("InsertCCCT: %v", err)
+	}
+	got, err := s.RecentCCCT(1)
+	if err != nil {
+		t.Fatalf("RecentCCCT: %v", err)
+	}
+	want := (CcctRow{TS: 200, VwLo: 3_910_000, VwHi: 4_010_000, Secs: 480})
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("RecentCCCT(1) = %+v, want %v", got, want)
+	}
+
+	if err := s.PruneBefore(150); err != nil {
+		t.Fatalf("PruneBefore: %v", err)
+	}
+	if n := countRows(t, s, "ccct"); n != 1 {
+		t.Fatalf("清理后 ccct 行数 = %d, want 1", n)
+	}
+}
