@@ -19,6 +19,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
 - 运行期数据：`$MODDIR/data/battery.db`（SQLite 六表：kv/sessions/estimates/resistance/rest_points/events，90 天自动清理）。
 - `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 Release → 回写 `update.json`。
+- `docs/` — 论文证据库与设计笔记：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）；`note-*.md` 设计笔记可提交。**superpowers 过程文档（`docs/superpowers/` 规格与计划）只在本地工作区存在，禁止提交进仓库；「核对报告」类中间调研文档同样不提交。**
 - `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。
 
 ## 约定与坑
@@ -29,6 +30,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - 两变体 id 相同互斥安装，同一次发版 version/versionCode 相同。
 - 历史 id 曾为 `Charging_Record`：从旧 id 升级必须先卸载旧模块再刷入（README 安装节已注明），模块目录与数据目录随之迁移。
 - 打包发布由 `.github/workflows/release.yml` 完成；不要把生成的 zip 提交进仓库。
+- WebUI 取数 JSON 的顶层字段与 `cmd/batteryd/jsonout.go` 一一对应（recent 按 ts 倒序、`delta_pct` 为容量百分点、空切片输出 `[]` 非 null）；新增字段须两端同步并保持「缺失即省略」降级纪律。samples/ccct/ica_peaks 等新表全部接入 90 天清理。
 - 已知局限（勿当 bug 修，属有意取舍）：current 单位启发式在涓流 <10mA 时可能误判；RLS 无遗忘因子、P 矩阵长期膨胀属潜伏项；FindNode 全树兜底仅缺节点时触发；`current_now` 走带符号读取（放电为负），其余节点严格非负；节点缺失时描述/JSON/once 输出按可用字段降级，不整体失败。
 
 ## 发版流程

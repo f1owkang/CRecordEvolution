@@ -94,6 +94,21 @@ sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
 
 </details>
 
+## 论文支撑
+
+模块算法的扩展路线有论文依据，证据库见 [`docs/`](docs/)（`NN-作者年份-主题-venue-分级.pdf`，末段为权威分级）：
+
+| 功能 | 依据论文 | 分级 |
+| :--: | :-- | :--: |
+| 静置电压指纹（远期 SoH 通道数据积累中） | He & Shin, *Fingerprinting Battery Health Using Relaxing Voltages*, ACM e-Energy '23 | A |
+| 容量衰减趋势外推 | Severson et al., *Data-driven Prediction of Battery Cycle Life*, Nature Energy 2019 及其后续 arXiv 2312.05717 | A |
+| 置信区间输出（ML 变体） | arXiv 2410.06422（概率 ML 不确定性量化）＋ RLS 预测方差恒等式 φᵀPφ | C |
+| 恒流充电时长 CCCT 特征 | Lin et al., Energy 2022（SSRN 预印本核对） | A |
+| 增量容量分析 ICA 主峰追踪 | MDPI Energies 2024 综述；Fly & Chen, J. Energy Storage 2020（低倍率约束） | B |
+| 会话级重置设计合理性 | Zhang et al., ICCK 2025（库仑计累积误差，领域共识级辅助佐证） | D |
+
+> 核对日期 2026-08-27，核心结论全部由 A/B 级同行评审文献支撑。
+
 ## 致谢
 
 - 原模块：不会梦游的鱼
