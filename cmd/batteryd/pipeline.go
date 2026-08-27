@@ -372,34 +372,39 @@ func (p *Pipeline) settle() error {
 		return &SettleError{Err: estErr}
 	}
 	// CCCT 特征采集：只在有效结算后做一次，60~240 行扫描毫秒级；一切
-	// 失败仅记 events，静默跳过，绝不影响结算主链路。
-	p.recordCCCT(s.startTs, row.EndTs)
+	// 失败仅记 events，静默跳过，绝不影响结算主链路。同源特征 ICA 复用
+	// 其返回的过门段样本行，避免重复扫库。
+	p.recordICA(row.EndTs, p.recordCCCT(s.startTs, row.EndTs))
 	return nil
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控
 // ≤C/2：段均值 ×2 超过设计容量不采信；designUA 缺失时无从判定倍率，
 // 同样视为不采信。0/≥2 个跨界段、查询失败等均以事件落痕后静默返回。
-func (p *Pipeline) recordCCCT(startTs, end int64) {
+// 返回通过倍率门控的恒流段覆盖样本行，供同源特征（ICA）顺延复用；
+// 门控不成立（设计容量缺失 / 读样本出错 / 无过门段）时返回 nil。
+func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	ev := func(kind, detail string) { _ = p.st.InsertEvent(kind, detail) }
 	if p.designUA <= 0 {
 		ev("ccct_skip", "设计容量缺失，无法判倍率，跳过 CCCT")
-		return
+		return nil
 	}
 	rows, err := p.st.SamplesRange(startTs, end)
 	if err != nil {
 		ev("ccct_skip", err.Error())
-		return
+		return nil
 	}
 	segs := DetectCCSegs(rows, ccctSegWin)
 	gateRejected := 0
 	crossings := 0
 	var loS, hiS SampleRow
+	var gatedRows []SampleRow
 	for _, g := range segs {
 		if g.MeanUA*2 > p.designUA {
 			gateRejected++
 			continue
 		}
+		gatedRows = append(gatedRows, rowsInRange(rows, g)...)
 		l, h, cross := locateWindowCross(rows, g)
 		if !cross {
 			continue
@@ -418,6 +423,38 @@ func (p *Pipeline) recordCCCT(startTs, end int64) {
 		ev("cc_unstable", "无可跨越整窗的恒流段")
 	default:
 		ev("ccct_skip", fmt.Sprintf("%d 个恒流段同时跨越整窗，无法唯一归因", crossings))
+	}
+	return gatedRows
+}
+
+// recordICA 与 CCCT 共用同一批过倍率门控的恒流段样本行，在 CCCT 分析之后顺延
+// 执行：FindPeak 定位主峰与绝对峰高，按 kv 基准（ica_peak_base）rel 化后落
+// ica_peaks 表。首个合格会话写基准并记 rel=1；基准异常(<0) 跳过本会话。
+// 与 recordCCCT 同口径：一切失败仅记 events 留痕后静默返回，绝不影响结算主链路。
+func (p *Pipeline) recordICA(endTs int64, gatedRows []SampleRow) {
+	ev := func(kind, detail string) { _ = p.st.InsertEvent(kind, detail) }
+	if len(gatedRows) == 0 {
+		return
+	}
+	uv, hAbs, ok := FindPeak(gatedRows)
+	if !ok {
+		// 平滑线无显著主峰属常态而非异常：静默跳过，不产生事件噪声。
+		return
+	}
+	rel := 1.0
+	if txt, has := p.st.KVGet(kvICAPeakBase); has {
+		base, perr := strconv.ParseFloat(txt, 64)
+		if perr != nil || base < 0 {
+			ev("ica_skip", "ica_peak_base 基准异常："+txt)
+			return
+		}
+		rel = hAbs / base
+	} else if serr := p.st.KVSet(kvICAPeakBase, strconv.FormatFloat(hAbs, 'f', -1, 64)); serr != nil {
+		ev("ica_skip", serr.Error())
+		return
+	}
+	if ierr := p.st.InsertICAPeak(endTs, uv, rel); ierr != nil {
+		ev("ica_skip", ierr.Error())
 	}
 }
 

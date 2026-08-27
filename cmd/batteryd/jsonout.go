@@ -32,6 +32,12 @@ type ccctEntry struct {
 	Secs int64 `json:"secs"`
 }
 
+type icaEntry struct {
+	TS       int64   `json:"ts"`
+	PeakUV   int64   `json:"peak_uv"`
+	PeakHRel float64 `json:"peak_h_rel"`
+}
+
 type jsonDoc struct {
 	Channel         string         `json:"channel"`
 	DesignMah       *int64         `json:"design_mah"`
@@ -50,6 +56,7 @@ type jsonDoc struct {
 	Sessions        []sessionEntry `json:"sessions"`
 	RestPoints      []restEntry    `json:"rest_points"`
 	Ccct            []ccctEntry    `json:"ccct"`
+	IcaPeaks        []icaEntry     `json:"ica_peaks"`
 	SamplesN        int64          `json:"samples_n"`
 }
 
@@ -80,7 +87,7 @@ func convSession(se Session) sessionEntry {
 	return e
 }
 
-func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, samplesN int64, now time.Time) ([]byte, error) {
+func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:         ch,
 		Samples:         snap.Samples,
@@ -115,11 +122,12 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
 	}
-	// sessions/rest_points/ccct 直接透传调用方切片：nil 输出 null，非 nil 空
+	// sessions/rest_points/ccct/ica_peaks 直接透传调用方切片：nil 输出 null，非 nil 空
 	// 切片输出 []，「空数据 ⇒ [] 禁止 null 噪声」由调用方（runJson）以 make(...,0) 保证
 	doc.Sessions = sess
 	doc.RestPoints = rests
 	doc.Ccct = ccct
+	doc.IcaPeaks = icaPeaks
 	b, err := json.Marshal(doc)
 	if err != nil {
 		return nil, err

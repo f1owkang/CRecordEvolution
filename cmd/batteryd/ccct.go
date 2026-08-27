@@ -37,6 +37,18 @@ func locateWindowCross(rows []SampleRow, seg CCSeg) (lo, hi SampleRow, crossed b
 	return SampleRow{}, SampleRow{}, false
 }
 
+// rowsInRange 返回 rows 中落在 seg [FromTs, ToTs] 闭区间内的子集（保持升序），
+// 供同源特征（ICA）复用恒流段覆盖样本。
+func rowsInRange(rows []SampleRow, seg CCSeg) []SampleRow {
+	out := []SampleRow{}
+	for _, r := range rows {
+		if r.TS >= seg.FromTs && r.TS <= seg.ToTs {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // AnalyzeCCCT 求唯一跨越整窗 [ccctWinLo, ccctWinHi] 的恒流段穿窗耗时。
 // 0 或 ≥2 个跨界段均返回 ok=false（无可采信样本 / 无法唯一归因）。
 // 注意：belowLo 只在 lo 锚定前累计，出下沿后的回落不参与判定。

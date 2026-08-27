@@ -485,11 +485,19 @@ func runJson() error {
 	for _, c := range ccctRows {
 		ccct = append(ccct, ccctEntry{TS: c.TS, Secs: c.Secs})
 	}
+	icaRows, err := a.st.RecentICAPeaks(jsonRecentLimit)
+	if err != nil {
+		return err
+	}
+	icaPeaks := make([]icaEntry, 0, len(icaRows))
+	for _, ip := range icaRows {
+		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: ip.PeakHRel})
+	}
 	n, err := a.st.CountSamples()
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, n, time.Now())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, time.Now())
 	if err != nil {
 		return err
 	}

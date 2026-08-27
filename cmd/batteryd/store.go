@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ica_peaks(session_end_ts INTEGER PRIMARY KEY, peak_uv INTEGER NOT NULL, peak_h_rel REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 `
 
@@ -236,6 +237,35 @@ func (s *Store) RecentCCCT(limit int) ([]CcctRow, error) {
 	return out, rows.Err()
 }
 
+// ICAPeakRow 为 ica_peaks 表一行：会话结束时刻、主峰位置（µV）与相对峰高。
+type ICAPeakRow struct {
+	TS, PeakUV int64
+	PeakHRel   float64
+}
+
+func (s *Store) InsertICAPeak(ts, peakUV int64, peakHRel float64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO ica_peaks(session_end_ts, peak_uv, peak_h_rel) VALUES(?, ?, ?)`,
+		ts, peakUV, peakHRel)
+	return err
+}
+
+func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
+	rows, err := s.db.Query(`SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks ORDER BY session_end_ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ICAPeakRow{}
+	for rows.Next() {
+		var r ICAPeakRow
+		if err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name   string
@@ -248,6 +278,7 @@ func (s *Store) PruneBefore(cutoffTs int64) error {
 		{"events", "ts"},
 		{"samples", "ts"},
 		{"ccct", "ts"},
+		{"ica_peaks", "session_end_ts"},
 	} {
 		if _, err := s.db.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
 			return err
