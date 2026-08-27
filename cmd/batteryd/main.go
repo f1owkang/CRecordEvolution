@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,10 @@ const (
 	retainDays        = 90
 	jsonRecentLimit   = 10
 	tickFailMax       = 5
+
+	logFile       = "batteryd.log"
+	maxLogBytes   = 256 << 10 // 约 6h 错误量上限，超限保尾 128KB
+	keepTailBytes = 128 << 10
 )
 
 func printUsage(w io.Writer) {
@@ -236,6 +241,8 @@ func runDaemon() error {
 	}
 	defer a.st.Close()
 
+	a.appendLog("启动 channel=%s", channel)
+
 	var lastErr error
 	for i := 0; i < refreshRetryMax; i++ {
 		if lastErr = a.refreshPruned(); lastErr == nil {
@@ -270,6 +277,7 @@ func runDaemon() error {
 				fatalf(a, "%s，连续 %d 次", msg, failStreak)
 			}
 			_ = a.st.InsertEvent("tick_error", msg)
+			a.appendLog("%s", msg)
 			fmt.Fprintln(os.Stderr, msg)
 			continue
 		}
@@ -283,6 +291,7 @@ func runDaemon() error {
 				fatalf(a, "%s，连续 %d 次", msg, failStreak)
 			}
 			_ = a.st.InsertEvent("tick_error", msg)
+			a.appendLog("%s", msg)
 			fmt.Fprintln(os.Stderr, msg)
 			continue
 		}
@@ -294,6 +303,7 @@ func runDaemon() error {
 		if changed || count >= refreshEveryTicks {
 			if err := a.refreshPruned(); err != nil {
 				_ = a.st.InsertEvent("refresh_fail", err.Error())
+				a.appendLog("刷新描述失败：%s", err.Error())
 				fmt.Fprintln(os.Stderr, "刷新描述失败："+err.Error())
 			}
 			count = 0
@@ -311,9 +321,47 @@ func tickStrike(prev int, err error) (int, bool) {
 	return n, n >= tickFailMax
 }
 
+// appendLog 向 <moddir>/data/batteryd.log 追加一行带时间戳的排障日志；
+// 超过 maxLogBytes 时收敛为保尾 128KB 的环形语义。日志永远不影响主链路，
+// 任何内部错误均静默吞掉。
+func (a *app) appendLog(format string, args ...any) {
+	path := filepath.Join(a.moddir, "data", logFile)
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return // 日志永远不影响主链路
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	if st != nil && st.Size() > maxLogBytes {
+		f.Close()
+		a.trimLog(path)
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+	}
+	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
+}
+
+func (a *app) trimLog(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) <= keepTailBytes {
+		return
+	}
+	idx := bytes.IndexByte(data[len(data)-keepTailBytes:], '\n')
+	if idx < 0 {
+		idx = 0
+	}
+	tail := data[len(data)-keepTailBytes+idx:]
+	_ = os.WriteFile(path, append([]byte("[truncated]\n"), tail...), 0o644)
+}
+
 func fatalf(a *app, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	_ = a.st.InsertEvent("tick_fatal", msg)
+	a.appendLog("%s", msg)
 	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
 }
