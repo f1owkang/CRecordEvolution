@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"math"
 	"path/filepath"
 	"strconv"
@@ -66,13 +67,15 @@ func (r *pipeRig) step(status string) TickOutcome {
 func onlySession(t *testing.T, st *Store) Session {
 	t.Helper()
 	var s Session
+	var reason sql.NullString
 	err := st.db.QueryRow(`SELECT start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
-		temp_min,temp_max,temp_avg,v_start,duration,valid FROM sessions ORDER BY id`).Scan(
+		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason FROM sessions ORDER BY id`).Scan(
 		&s.StartTs, &s.EndTs, &s.StartCap, &s.EndCap, &s.Ua, &s.AvgI, &s.CRate,
-		&s.TempMin, &s.TempMax, &s.TempAvg, &s.VStart, &s.Duration, &s.Valid)
+		&s.TempMin, &s.TempMax, &s.TempAvg, &s.VStart, &s.Duration, &s.Valid, &reason)
 	if err != nil {
 		t.Fatalf("读取会话行: %v", err)
 	}
+	s.InvalidReason = reason.String
 	return s
 }
 
@@ -613,6 +616,9 @@ func TestPipelineRejectedSessionRecorded(t *testing.T) {
 	if sess.Valid {
 		t.Fatal("delta<20 会话应为 valid=0")
 	}
+	if sess.InvalidReason != "delta_lt_20" {
+		t.Fatalf("被拒会话应落 invalid_reason=delta_lt_20, got %q", sess.InvalidReason)
+	}
 	if n := countRows(t, r.st, "estimates"); n != 0 {
 		t.Fatalf("被拒会话不应写 estimates, rows = %d", n)
 	}
@@ -624,4 +630,25 @@ func TestPipelineRejectedSessionRecorded(t *testing.T) {
 		t.Fatalf("event.kind = %q, want delta_lt_20", evKind)
 	}
 	wantKV(t, r.st, "sess_active", "0")
+}
+
+func TestPipelineValidSessionHasNoInvalidReason(t *testing.T) {
+	r := newPipeRig(t)
+
+	for _, capV := range []int64{10, 22, 34, 46, 58, 70} {
+		r.put(capV, 12000000, 4200000)
+		r.step("Charging")
+	}
+	r.put(70, 500000, 4300000)
+	if out := r.step("Discharging"); !out.SessionSettled {
+		t.Fatal("拔出应触发结算")
+	}
+
+	sess := onlySession(t, r.st)
+	if !sess.Valid {
+		t.Fatal("会话应为有效")
+	}
+	if sess.InvalidReason != "" {
+		t.Fatalf("有效会话 invalid_reason 应为空, got %q", sess.InvalidReason)
+	}
 }

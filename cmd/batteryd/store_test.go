@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -71,8 +72,8 @@ func TestInsertSessionPersists(t *testing.T) {
 		StartTs: 1000, EndTs: 2000,
 		StartCap: 20, EndCap: 100,
 		Ua: 3000000, AvgI: 1500000,
-		CRate:    0.75,
-		TempMin:  25, TempMax: 33, TempAvg: 29,
+		CRate:   0.75,
+		TempMin: 25, TempMax: 33, TempAvg: 29,
 		VStart: 4200000, Duration: 1000,
 		Valid: true,
 	}
@@ -251,6 +252,58 @@ func TestSamplesRangeInclusiveAscending(t *testing.T) {
 	}
 	if empty, err := s.SamplesRange(501, 600); err != nil || len(empty) != 0 {
 		t.Fatalf("空区间应返回空切片且无错: (%v, %v)", empty, err)
+	}
+}
+
+// legacySessionsDDL 为不含 invalid_reason 列的旧版 sessions 表结构，
+// 用于构造升级前旧库、验证 OpenStore 的在线迁移。
+const legacySessionsDDL = `
+CREATE TABLE IF NOT EXISTS sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
+  start_cap INTEGER, end_cap INTEGER,
+  ua INTEGER, avg_i INTEGER, c_rate REAL,
+  temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER,
+  v_start INTEGER, duration INTEGER,
+  valid INTEGER NOT NULL);`
+
+func TestStoreMigratesLegacySessionsInvalidReason(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "battery.db")
+
+	legacy, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("打开旧库: %v", err)
+	}
+	if _, err := legacy.Exec(legacySessionsDDL); err != nil {
+		t.Fatalf("建旧版表: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("关闭旧库: %v", err)
+	}
+
+	s := openTestStore(t, dbPath)
+	defer func() { _ = s.Close() }()
+
+	if _, err := s.InsertSession(Session{StartTs: 100, EndTs: 200, Valid: false, InvalidReason: "delta_lt_20"}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	if _, err := s.InsertSession(Session{StartTs: 300, EndTs: 400, Valid: true}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	got, err := s.RecentSessions(10)
+	if err != nil {
+		t.Fatalf("RecentSessions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("RecentSessions 行数 = %d, want 2", len(got))
+	}
+	// RecentSessions 按 end_ts 倒序：最新（valid）在前，被拒在后
+	if !got[0].Valid || got[0].InvalidReason != "" {
+		t.Fatalf("有效会话原因应为空, got valid=%v reason=%q", got[0].Valid, got[0].InvalidReason)
+	}
+	if got[1].Valid || got[1].InvalidReason != "delta_lt_20" {
+		t.Fatalf("被拒会话应为 valid=0 且带原因, got valid=%v reason=%q", got[1].Valid, got[1].InvalidReason)
 	}
 }
 

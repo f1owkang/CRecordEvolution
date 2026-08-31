@@ -137,3 +137,44 @@ func TestRenderJSONCcctEntries(t *testing.T) {
 		t.Fatalf("ccct 序列化不符, got %s", b)
 	}
 }
+
+func TestRenderJSONSessionInvalidReason(t *testing.T) {
+	sess := []sessionEntry{
+		{StartTs: 100, EndTs: 200, DeltaPct: 5, Valid: false, InvalidReason: "delta_lt_20"},
+		{StartTs: 300, EndTs: 400, DeltaPct: 60, EstMah: intPtr(4500), Valid: true},
+		{StartTs: 500, EndTs: 600, DeltaPct: 8, Valid: false}, // 旧行为无原因（legacy 行）
+	}
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, sess, nil, nil, nil, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("解析输出: %v\n%s", err, b)
+	}
+	if len(doc.Sessions) != 3 {
+		t.Fatalf("sessions 条数 = %d, want 3: %s", len(doc.Sessions), b)
+	}
+	if got := doc.Sessions[0]["invalid_reason"]; got != "delta_lt_20" {
+		t.Fatalf("被拒会话应带 invalid_reason=delta_lt_20, got %v: %s", got, b)
+	}
+	for _, key := range []int{1, 2} {
+		if _, has := doc.Sessions[key]["invalid_reason"]; has {
+			t.Fatalf("第 %d 条会话无原因应省略 invalid_reason: %s", key+1, b)
+		}
+	}
+}
+
+func TestConvSessionCarriesInvalidReason(t *testing.T) {
+	in := Session{StartTs: 100, EndTs: 200, StartCap: 30, EndCap: 35,
+		Ua: 1_800_000_000, Valid: false, InvalidReason: "temp_out_of_range"}
+	e := convSession(in)
+	if e.InvalidReason != "temp_out_of_range" {
+		t.Fatalf("convSession 应透传 invalid_reason, got %q", e.InvalidReason)
+	}
+	if e := convSession(Session{Valid: true}); e.InvalidReason != "" {
+		t.Fatalf("有效会话 invalid_reason 应为空, got %q", e.InvalidReason)
+	}
+}

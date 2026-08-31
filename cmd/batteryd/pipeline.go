@@ -356,6 +356,7 @@ func (p *Pipeline) settle() error {
 			return &SettleError{Err: err}
 		}
 		row.Valid = false
+		row.InvalidReason = re.Result.Reason
 		if _, insErr := p.st.InsertSession(row); insErr != nil {
 			return &SettleError{Err: insErr}
 		}

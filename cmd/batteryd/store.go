@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   ua INTEGER, avg_i INTEGER, c_rate REAL,
   temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER,
   v_start INTEGER, duration INTEGER,
-  valid INTEGER NOT NULL);
+  valid INTEGER NOT NULL,
+  invalid_reason TEXT);
 CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
@@ -31,13 +32,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 type Store struct{ db *sql.DB }
 
 type Session struct {
-	StartTs, EndTs                            int64
-	StartCap, EndCap                          int64
-	Ua, AvgI                                  int64
-	CRate                                     float64
-	TempMin, TempMax, TempAvg                 int64
-	VStart, Duration                          int64
-	Valid                                     bool
+	StartTs, EndTs            int64
+	StartCap, EndCap          int64
+	Ua, AvgI                  int64
+	CRate                     float64
+	TempMin, TempMax, TempAvg int64
+	VStart, Duration          int64
+	Valid                     bool
+	InvalidReason             string
 }
 
 type TsVal struct {
@@ -54,10 +56,46 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// 旧库在线迁移：sessions 表补 invalid_reason 列（新库 DDL 已含，重复执行幂等）
+	if err := migrateSessionsReason(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// WAL：daemon 与 WebUI 的 batteryd json 并发读写同一库，WAL 显著降低锁竞争。
 	// 失败仅告警不阻断（回退默认 journal）。
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	return &Store{db: db}, nil
+}
+
+// migrateSessionsReason 检查 sessions 表是否缺 invalid_reason 列（升级前旧库），
+// 缺则 ALTER TABLE 补列；已存在时不动，幂等。
+func migrateSessionsReason(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid int64
+		var name, typ string
+		var notNull, pk int64
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "invalid_reason" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN invalid_reason TEXT`)
+	return err
 }
 
 func (s *Store) Close() error {
@@ -88,10 +126,11 @@ func boolToInt(b bool) int64 {
 func (s *Store) InsertSession(sess Session) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO sessions(
 		start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
-		temp_min,temp_max,temp_avg,v_start,duration,valid
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.StartTs, sess.EndTs, sess.StartCap, sess.EndCap, sess.Ua, sess.AvgI, sess.CRate,
-		sess.TempMin, sess.TempMax, sess.TempAvg, sess.VStart, sess.Duration, boolToInt(sess.Valid))
+		sess.TempMin, sess.TempMax, sess.TempAvg, sess.VStart, sess.Duration, boolToInt(sess.Valid),
+		sql.NullString{String: sess.InvalidReason, Valid: sess.InvalidReason != ""})
 	if err != nil {
 		return 0, err
 	}
@@ -137,7 +176,7 @@ type RestPoint struct {
 
 func (s *Store) RecentSessions(limit int) ([]Session, error) {
 	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
-		temp_avg,valid FROM sessions ORDER BY end_ts DESC LIMIT ?`, limit)
+		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -146,11 +185,13 @@ func (s *Store) RecentSessions(limit int) ([]Session, error) {
 	for rows.Next() {
 		var se Session
 		var v int64
+		var reason sql.NullString
 		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-			&se.Ua, &se.CRate, &se.TempAvg, &v); err != nil {
+			&se.Ua, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
 			return nil, err
 		}
 		se.Valid = v == 1
+		se.InvalidReason = reason.String
 		out = append(out, se)
 	}
 	return out, rows.Err()
@@ -271,8 +312,8 @@ func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
 
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
-		name   string
-		tsCol  string
+		name  string
+		tsCol string
 	}{
 		{"sessions", "end_ts"},
 		{"estimates", "ts"},
