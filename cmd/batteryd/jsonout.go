@@ -19,6 +19,9 @@ type sessionEntry struct {
 	Valid    bool     `json:"valid"`
 	TempAvg  *int64   `json:"temp_avg"`
 	CRate    *float64 `json:"c_rate"`
+	// InvalidReason 未参与估算的机器可读原因（delta_lt_20 / temp_out_of_range /
+	// out_of_window / outlier）；有效会话与旧数据无此字段（缺失即省略）
+	InvalidReason string `json:"invalid_reason,omitempty"`
 }
 
 type restEntry struct {
@@ -71,7 +74,7 @@ func intPtr(v int64) *int64 { return &v }
 
 func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
-		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid}
+		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid, InvalidReason: se.InvalidReason}
 	if e.DeltaPct > 0 {
 		mah := se.Ua * 100 / (e.DeltaPct * 3_600_000)
 		e.EstMah = &mah
