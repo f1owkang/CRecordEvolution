@@ -4,12 +4,85 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>ChargingRecord Evolution</title>
+<script>
+// 首屏前应用主题，避免闪烁：localStorage 手动选择 > 系统 prefers-color-scheme
+(function () {
+  var t = null;
+  try { t = localStorage.getItem('cre_theme'); } catch (e) {}
+  if (t !== 'light' && t !== 'dark') {
+    t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { -webkit-text-size-adjust: 100%; }
+:root {
+  --bg: #0b0e14;
+  --fg: #e6edf3;
+  --dim: #9fb3c8;
+  --mute: #8b949e;
+  --faint: #6e7681;
+  --card: #151a23;
+  --border: #232a36;
+  --border-soft: #1d242f;
+  --hero-a: #13221a;
+  --hero-b: #12161f;
+  --hero-border: #23303c;
+  --accent: #4ade80;
+  --accent-soft-bg: rgba(74,222,128,.12);
+  --accent-soft-bd: rgba(74,222,128,.35);
+  --blue: #79c0ff;
+  --blue-soft-bg: rgba(88,166,255,.12);
+  --blue-soft-bd: rgba(88,166,255,.35);
+  --badge-bd: #30363d;
+  --err-bg: rgba(248,113,113,.08);
+  --err-bd: rgba(248,113,113,.35);
+  --err-fg: #fca5a5;
+  --btn: #238636;
+  --btn-hover: #2ea043;
+  --btn-fg: #fff;
+  --chart-base: #232a36;
+  --chart-ref: #6e7681;
+  --purple: #d2a8ff;
+  --orange: #ffa657;
+  --rest-dot: #e6edf3;
+}
+html[data-theme="light"] {
+  --bg: #f6f8fa;
+  --fg: #1f2328;
+  --dim: #57606a;
+  --mute: #656d76;
+  --faint: #8c959f;
+  --card: #ffffff;
+  --border: #d0d7de;
+  --border-soft: #eaeef2;
+  --hero-a: #eaf6ec;
+  --hero-b: #f0f6fc;
+  --hero-border: #cfe0d6;
+  --accent: #1a7f37;
+  --accent-soft-bg: rgba(26,127,55,.10);
+  --accent-soft-bd: rgba(26,127,55,.35);
+  --blue: #0969da;
+  --blue-soft-bg: rgba(9,105,218,.10);
+  --blue-soft-bd: rgba(9,105,218,.35);
+  --badge-bd: #d0d7de;
+  --err-bg: rgba(207,34,46,.06);
+  --err-bd: rgba(207,34,46,.35);
+  --err-fg: #cf222e;
+  --btn: #1f883d;
+  --btn-hover: #1a7f37;
+  --btn-fg: #fff;
+  --chart-base: #d0d7de;
+  --chart-ref: #8c959f;
+  --purple: #8250df;
+  --orange: #bc4c00;
+  --rest-dot: #1f2328;
+}
 body {
-  background: #0b0e14;
-  color: #e6edf3;
+  background: var(--bg);
+  color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   min-height: 100vh;
   padding: 16px;
@@ -17,17 +90,29 @@ body {
 .wrap { max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 header { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; }
 h1 { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
+.hbtns { display: flex; align-items: center; gap: 8px; }
+button.theme {
+  background: var(--card);
+  color: var(--dim);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: inherit;
+  cursor: pointer;
+}
 .badge {
   font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
-  border: 1px solid #30363d; color: #8b949e;
+  border: 1px solid var(--badge-bd); color: var(--mute);
 }
-.badge.meas { color: #4ade80; background: rgba(74,222,128,.12); border-color: rgba(74,222,128,.35); }
-.badge.kernel { color: #79c0ff; background: rgba(88,166,255,.12); border-color: rgba(88,166,255,.35); }
+.badge.meas { color: var(--accent); background: var(--accent-soft-bg); border-color: var(--accent-soft-bd); }
+.badge.kernel { color: var(--blue); background: var(--blue-soft-bg); border-color: var(--blue-soft-bd); }
 .err {
   display: none;
-  background: rgba(248,113,113,.08);
-  border: 1px solid rgba(248,113,113,.35);
-  color: #fca5a5;
+  background: var(--err-bg);
+  border: 1px solid var(--err-bd);
+  color: var(--err-fg);
   border-radius: 12px;
   padding: 11px 14px;
   font-size: 13px;
@@ -35,49 +120,51 @@ h1 { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
   word-break: break-all;
 }
 .hero {
-  background: linear-gradient(160deg, #13221a 0%, #12161f 60%);
-  border: 1px solid #23303c;
+  background: linear-gradient(160deg, var(--hero-a) 0%, var(--hero-b) 60%);
+  border: 1px solid var(--hero-border);
   border-radius: 16px;
   padding: 26px 20px;
   text-align: center;
 }
 .hero-line {
   font-size: 58px; font-weight: 700; line-height: 1.05;
-  color: #4ade80;
+  color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
-.hero-line .unit { font-size: 26px; font-weight: 600; margin-left: 4px; color: #4ade80; }
-.sub { margin-top: 8px; font-size: 13px; color: #9fb3c8; font-variant-numeric: tabular-nums; }
+.hero-line .unit { font-size: 26px; font-weight: 600; margin-left: 4px; color: var(--accent); }
+.sub { margin-top: 8px; font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .cell {
-  background: #151a23;
-  border: 1px solid #232a36;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
   min-width: 0;
 }
-.cell .label { font-size: 12px; color: #8b949e; margin-bottom: 5px; }
+.cell .label { font-size: 12px; color: var(--mute); margin-bottom: 5px; }
 .cell .val { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .panel {
-  background: #151a23;
-  border: 1px solid #232a36;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 6px 14px 8px;
 }
-.ptitle { font-size: 13px; color: #8b949e; padding: 9px 0 3px; }
+.ptitle { font-size: 13px; color: var(--mute); padding: 9px 0 3px; }
 .row {
   display: flex; justify-content: space-between; align-items: center;
   padding: 9px 0;
-  border-bottom: 1px solid #1d242f;
+  border-bottom: 1px solid var(--border-soft);
   font-variant-numeric: tabular-nums;
 }
 .row:last-child { border-bottom: none; }
-.row .t { color: #9fb3c8; }
-.row.empty { justify-content: center; color: #6e7681; }
+.row .t { color: var(--dim); }
+.row .ok { color: var(--accent); font-weight: 600; }
+.row .bad { color: var(--mute); }
+.row.empty { justify-content: center; color: var(--faint); }
 button#refresh {
   width: 100%;
-  background: #238636;
-  color: #fff;
+  background: var(--btn);
+  color: var(--btn-fg);
   border: none;
   border-radius: 12px;
   padding: 13px;
@@ -86,29 +173,32 @@ button#refresh {
   font-family: inherit;
   cursor: pointer;
 }
-button#refresh:hover:not(:disabled) { background: #2ea043; }
+button#refresh:hover:not(:disabled) { background: var(--btn-hover); }
 button#refresh:disabled { opacity: .55; cursor: default; }
-.meta { font-size: 12px; color: #6e7681; text-align: center; font-variant-numeric: tabular-nums; }
+.meta { font-size: 12px; color: var(--faint); text-align: center; font-variant-numeric: tabular-nums; }
 .gate {
   display: none;
   flex-direction: column; align-items: center; gap: 8px;
-  background: #151a23;
-  border: 1px solid #232a36;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 40px 24px;
   text-align: center;
 }
-.gate .gate-title { font-size: 16px; font-weight: 700; color: #e6edf3; }
-.gate div:last-child { font-size: 13px; color: #8b949e; line-height: 1.6; }
+.gate .gate-title { font-size: 16px; font-weight: 700; color: var(--fg); }
+.gate div:last-child { font-size: 13px; color: var(--mute); line-height: 1.6; }
 .chart svg { display: block; width: 100%; height: auto; }
-.cap { font-size: 12px; color: #8b949e; margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cap { font-size: 12px; color: var(--mute); margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>ChargingRecord Evolution</h1>
-    <span id="badge" class="badge">—</span>
+    <div class="hbtns">
+      <button id="theme" class="theme" type="button">日间</button>
+      <span id="badge" class="badge">—</span>
+    </div>
   </header>
 
   <section id="err" class="err"></section>
@@ -129,36 +219,37 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div class="cell" style="grid-column: span 2;"><div class="label">容量趋势</div><div id="trend" class="val">—</div></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_recent">
       <div class="ptitle">近期估算</div>
       <div id="recent"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_est">
       <div class="ptitle">估算趋势</div>
       <div id="chart_est" class="chart"></div>
       <div id="chart_est_cap" class="cap"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_ses">
       <div class="ptitle">充电会话</div>
       <div id="chart_ses" class="chart"></div>
       <div id="chart_ses_cap" class="cap"></div>
+      <div id="ses_list"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_rest">
       <div class="ptitle">静置电压</div>
       <div id="chart_rest" class="chart"></div>
       <div id="chart_rest_cap" class="cap"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_ccct">
       <div class="ptitle">恒流时长</div>
       <div id="chart_ccct" class="chart"></div>
       <div id="chart_ccct_cap" class="cap"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panel_ica">
       <div class="ptitle">容量主峰</div>
       <div id="chart_ica" class="chart"></div>
       <div id="chart_ica_cap" class="cap"></div>
@@ -179,6 +270,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   'use strict';
   var CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
   var CMD_ONCE = '/data/adb/modules/CRecordEvolution/bin/batteryd once';
+  var THEME_KEY = 'cre_theme';
 
   function $(id) { return document.getElementById(id); }
 
@@ -266,10 +358,11 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
   function pad(n) { n = String(n); return n.length < 2 ? '0' + n : n; }
 
-  function hhmm(ts) {
+  // 精确到分的时间：MM-DD HH:MM（简体中文习惯，列表项之间可区分）
+  function fmtTs(ts) {
     var d = new Date(Number(ts) * 1000);
-    if (isNaN(d.getTime())) return '--:--';
-    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (isNaN(d.getTime())) return '--';
+    return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
   function setText(id, v) { var el = $(id); if (el) el.textContent = v; }
@@ -278,6 +371,38 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
   function showError(msg) { var el = $('err'); if (el) { el.textContent = msg; el.style.display = 'block'; } }
   function hideError() { var el = $('err'); if (el) el.style.display = 'none'; }
+
+  // ---- 主题：手动选择持久化到 localStorage，未手动选择时跟随系统 ----
+  function appliedTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+
+  function setTheme(t, persist) {
+    document.documentElement.setAttribute('data-theme', t);
+    var b = $('theme');
+    if (b) b.textContent = (t === 'light') ? '夜间' : '日间';
+    if (persist) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} }
+  }
+
+  function initTheme() {
+    setTheme(appliedTheme(), false);
+    var b = $('theme');
+    if (b) {
+      b.addEventListener('click', function () {
+        setTheme(appliedTheme() === 'light' ? 'dark' : 'light', true);
+      });
+    }
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var onChange = function () {
+        var saved = null;
+        try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+        if (saved !== 'light' && saved !== 'dark') setTheme(mq.matches ? 'light' : 'dark', false);
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
+  }
 
   function render(doc) {
     var design = doc.design_mah;
@@ -314,7 +439,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     if (!rows.length) {
       var empty = document.createElement('div');
       empty.className = 'row empty';
-      empty.textContent = '暂无采样记录';
+      empty.textContent = '暂无估算记录';
       list.appendChild(empty);
     } else {
       rows.forEach(function (r) {
@@ -322,7 +447,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         li.className = 'row';
         var t = document.createElement('span');
         t.className = 't';
-        t.textContent = hhmm(r && r.ts);
+        t.textContent = fmtTs(r && r.ts);
         var m = document.createElement('span');
         m.textContent = fmtInt(r && r.mah) + ' mAh';
         li.appendChild(t);
@@ -336,7 +461,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   var CHART_W = 320;
   var CHART_H = 110;
 
-  function chartPending() { return '<div class="row empty">采集中</div>'; }
+  function emptyRow(msg) { return '<div class="row empty">' + msg + '</div>'; }
 
   // 归一化结果内缩，避免描边/圆点贴边被 viewBox 裁切
   function spanPad(p) { return 0.05 + p * 0.9; }
@@ -351,7 +476,11 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   }
 
   function chartBase(w, h) {
-    return '<line x1="0" y1="' + (h - 0.5) + '" x2="' + w + '" y2="' + (h - 0.5) + '" stroke="#232a36" stroke-width="1"/>';
+    return '<line x1="0" y1="' + (h - 0.5) + '" x2="' + w + '" y2="' + (h - 0.5) + '" style="stroke:var(--chart-base)" stroke-width="1"/>';
+  }
+
+  function dotEl(x, y, colorVar) {
+    return '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3" style="fill:' + colorVar + '" fill-opacity=".9"/>';
   }
 
   function pickPairs(rows, kx, ky) {
@@ -379,12 +508,15 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return (v - mn) / (mx - mn);
   }
 
-  // data: [{ts,v}]，自动 min/max 归一化；不足 2 点返回提示文案
+  // data: [{ts,v}]，自动 min/max 归一化；0 点返回 ''（由调用方决定占位/隐藏），仅 1 点渲染单点
   // trendMpw: mAh/周 斜率；有效时按首尾 ts 两端点叠一条拟合虚线（下置于主折线之下，颜色区分）
   function svgLine(data, w, h, color, trendMpw) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
-    if (raw.length < 2) return chartPending();
+    if (!raw.length) return '';
     raw.sort(function (a, b) { return a.x - b.x; });
+    if (raw.length === 1) {
+      return svgOpen(w, h) + chartBase(w, h) + dotEl(spanPad(0.5) * w, (1 - spanPad(0.5)) * h, color) + '</svg>';
+    }
     var tx = minMax(raw.map(function (p) { return p.x; }));
     var ys = raw.map(function (p) { return p.y; });
     var trendPts = null;
@@ -398,28 +530,28 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     var pts = raw.map(toXY);
     var overlay = '';
     if (trendPts) {
-      overlay = '<path d="' + ptsToPath(trendPts.map(toXY), w, h) + '" fill="none" stroke="#79c0ff" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>';
+      overlay = '<path d="' + ptsToPath(trendPts.map(toXY), w, h) + '" fill="none" style="stroke:var(--blue)" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>';
     }
     return svgOpen(w, h) + chartBase(w, h) + overlay +
-      '<path d="' + ptsToPath(pts, w, h) + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="' + ptsToPath(pts, w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</svg>';
   }
 
-  // rest_points 散点：每点一个 <circle>
+  // rest_points 散点：每点一个 <circle>；仅 1 点也渲染（单点居中）
   function svgScatter(data, w, h, color) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'uv');
-    if (raw.length < 2) return chartPending();
+    if (!raw.length) return '';
     var tx = minMax(raw.map(function (p) { return p.x; }));
     var ty = minMax(raw.map(function (p) { return p.y; }));
     var dots = raw.map(function (p) {
       var cx = (spanPad(normPt(p.x, tx.min, tx.max)) * w).toFixed(1);
       var cy = ((1 - spanPad(normPt(p.y, ty.min, ty.max))) * h).toFixed(1);
-      return '<circle cx="' + cx + '" cy="' + cy + '" r="3" fill="' + color + '" fill-opacity=".85"/>';
+      return '<circle cx="' + cx + '" cy="' + cy + '" r="3" style="fill:' + color + '" fill-opacity=".85"/>';
     }).join('');
     return svgOpen(w, h) + chartBase(w, h) + dots + '</svg>';
   }
 
-  // sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比
+  // sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比；仅 1 条也渲染
   function svgBars(data, w, h, color) {
     var rows = Array.isArray(data) ? data : [];
     var vals = [], i, v;
@@ -427,7 +559,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       v = Number(rows[i] == null ? null : rows[i].delta_pct);
       if (isFinite(v)) vals.push(v);
     }
-    if (vals.length < 2) return chartPending();
+    if (!vals.length) return '';
     var mx = minMax(vals).max;
     if (!(mx > 0)) mx = 1;
     var slot = w / vals.length;
@@ -436,15 +568,16 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     for (i = 0; i < vals.length; i++) {
       var bh = Math.max(vals[i] / mx * (h - 6), 2);
       rects += '<rect x="' + (i * slot + (slot - bw) / 2).toFixed(1) + '" y="' + (h - bh).toFixed(1) +
-        '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="3" fill="' + color + '"/>';
+        '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="3" style="fill:' + color + '"/>';
     }
     return svgOpen(w, h) + chartBase(w, h) + rects + '</svg>';
   }
 
-  // ts→key 通用折线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线
+  // ts→key 通用折线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线；
+  // 仅 1 点渲染单点（含参考线）
   function svgTsLine(data, w, h, color, key, refY) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', key);
-    if (raw.length < 2) return chartPending();
+    if (!raw.length) return '';
     raw.sort(function (a, b) { return a.x - b.x; });
     var tx = minMax(raw.map(function (p) { return p.x; }));
     var ys = raw.map(function (p) { return p.y; });
@@ -456,11 +589,16 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     if (hasRef) {
       var ry = ((1 - toXY({ x: 0, y: refY }).y) * h).toFixed(1);
       refLine = '<line x1="' + (w * 0.05).toFixed(1) + '" y1="' + ry + '" x2="' + (w * 0.95).toFixed(1) +
-        '" y2="' + ry + '" stroke="#6e7681" stroke-width="1.5" stroke-dasharray="5,4"/>';
+        '" y2="' + ry + '" style="stroke:var(--chart-ref)" stroke-width="1.5" stroke-dasharray="5,4"/>';
     }
-    return svgOpen(w, h) + chartBase(w, h) + refLine +
-      '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '</svg>';
+    var body;
+    if (raw.length >= 2) {
+      body = '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+    } else {
+      var p0 = toXY(raw[0]);
+      body = dotEl(p0.x * w, (1 - p0.y) * h, color);
+    }
+    return svgOpen(w, h) + chartBase(w, h) + refLine + body + '</svg>';
   }
 
   // key 字段可数值化的行数（口径与 pickPairs 一致）
@@ -480,20 +618,75 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     setText(id + '_cap', cap || '');
   }
 
+  // 卡片三态：有数据=渲染 / 结构性无数据=隐藏 / 暂时无数据=保留+等待说明
+  function setPanel(id, mode) {
+    var el = $(id);
+    if (el) el.style.display = (mode === 'hide') ? 'none' : '';
+  }
+
+  // 未参与估算原因（与 estimator 侧 RejectError.Reason / events.kind 同码表）
+  var REASONS = {
+    temp_out_of_range: '温度出界',
+    delta_lt_20: '涨幅不足 20%',
+    out_of_window: '估算超界',
+    outlier: '离群丢弃'
+  };
+
+  function renderSessionList(doc) {
+    var host = $('ses_list');
+    if (!host) return;
+    host.textContent = '';
+    var rows = Array.isArray(doc.sessions) ? doc.sessions : [];
+    rows.forEach(function (s) {
+      var li = document.createElement('div');
+      li.className = 'row';
+      var t = document.createElement('span');
+      t.className = 't';
+      t.textContent = fmtTs(s && s.start_ts);
+      var st = document.createElement('span');
+      if (s && s.valid) {
+        st.className = 'ok';
+        st.textContent = '参与估算';
+      } else {
+        st.className = 'bad';
+        var r = s ? s.invalid_reason : null;
+        st.textContent = (r && REASONS[r]) || '未参与估算';
+      }
+      li.appendChild(t);
+      li.appendChild(st);
+      host.appendChild(li);
+    });
+  }
+
   function renderCharts(doc) {
     if (!doc || typeof doc !== 'object') doc = {};
     var W = CHART_W, H = CHART_H;
 
-    var recent = Array.isArray(doc.recent) ? doc.recent : [];
-    var estParts = [];
-    // RecentEstimates 按 ts DESC 返回，首元素即最新
-    var latest = recent.length ? recent[0] : null;
-    if (recent.length >= 2 && latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
-    if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
-    var tw = Number(doc.trend_mah_per_week);
-    setChart('chart_est', svgLine(recent, W, H, '#4ade80',
-      (doc.trend_mah_per_week != null && isFinite(tw)) ? tw : null), estParts.join(' · '));
+    // 结构性判定：设计容量缺失 ⇒ 估算/ccct/ica 永远不可能采到（倍率门控无从判定）
+    var designOK = doc.design_mah != null && Number(doc.design_mah) > 0;
+    // 有会话记录 ⇒ 采样管道在正常运转
+    var hasSess = Array.isArray(doc.sessions) && doc.sessions.length > 0;
 
+    var recent = Array.isArray(doc.recent) ? doc.recent : [];
+    if (!designOK && !recent.length) {
+      // 设计容量缺失：实测估算结构性不可能，估算类卡片整体隐藏
+      setPanel('panel_recent', 'hide');
+      setPanel('panel_est', 'hide');
+    } else {
+      setPanel('panel_recent', 'show');
+      setPanel('panel_est', 'show');
+      var estParts = [];
+      var latest = recent.length ? recent[0] : null;
+      if (latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
+      if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
+      var tw = Number(doc.trend_mah_per_week);
+      setChart('chart_est', svgLine(recent, W, H, 'var(--accent)',
+        (doc.trend_mah_per_week != null && isFinite(tw)) ? tw : null) || emptyRow('等待首次有效结算'),
+        estParts.join(' · '));
+    }
+
+    // 充电会话：无设计容量也会记录被拒会话，不存在结构性不支持
+    setPanel('panel_ses', 'show');
     var sesRows = (Array.isArray(doc.sessions) ? doc.sessions : []).filter(function (s) {
       return !!(s && s.valid);
     });
@@ -502,26 +695,53 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       dv = Number(sesRows[i].delta_pct);
       if (isFinite(dv)) sesSum += dv;
     }
-    setChart('chart_ses', svgBars(sesRows, W, H, '#79c0ff'),
-      sesRows.length >= 2 ? '有效会话 ' + sesRows.length + ' 次 · 合计 ' + fmtInt(Math.round(sesSum)) + ' %' : '');
+    setChart('chart_ses', svgBars(sesRows, W, H, 'var(--blue)') || emptyRow('等待下一次充电结算'),
+      sesRows.length >= 1 ? '有效会话 ' + sesRows.length + ' 次 · 合计 ' + fmtInt(Math.round(sesSum)) + '%' : '');
+    renderSessionList(doc);
 
+    // 静置电压：需 Discharging 下连续静置才采集；管道已运转（有会话）却恒空 ⇒ 结构性隐藏
     var restRows = Array.isArray(doc.rest_points) ? doc.rest_points : [];
-    var uvs = [];
-    for (i = 0; i < restRows.length; i++) {
-      dv = Number(restRows[i] == null ? null : restRows[i].uv);
-      if (isFinite(dv)) uvs.push(dv);
+    if (restRows.length) {
+      setPanel('panel_rest', 'show');
+      var uvs = [];
+      for (i = 0; i < restRows.length; i++) {
+        dv = Number(restRows[i] == null ? null : restRows[i].uv);
+        if (isFinite(dv)) uvs.push(dv);
+      }
+      var restCap = '';
+      if (uvs.length >= 2) {
+        var ur = minMax(uvs);
+        restCap = '区间 ' + (ur.min / 1e6).toFixed(3) + ' ~ ' + (ur.max / 1e6).toFixed(3) + ' V';
+      } else if (uvs.length === 1) {
+        restCap = '已采集 1 条静置点';
+      }
+      setChart('chart_rest', svgScatter(restRows, W, H, 'var(--rest-dot)'), restCap);
+    } else if (hasSess) {
+      setPanel('panel_rest', 'hide');
+    } else {
+      setPanel('panel_rest', 'show');
+      setChart('chart_rest', emptyRow('等待放电静置采样'), '');
     }
-    var ur = uvs.length >= 2 ? minMax(uvs) : null;
-    setChart('chart_rest', svgScatter(restRows, W, H, '#e6edf3'),
-      ur ? '区间 ' + (ur.min / 1e6).toFixed(3) + ' ~ ' + (ur.max / 1e6).toFixed(3) + ' V' : '');
 
+    // 恒流时长：倍率门控（≤C/2）需设计容量；缺失 ⇒ 结构性隐藏
     var ccctRows = Array.isArray(doc.ccct) ? doc.ccct : [];
-    setChart('chart_ccct', svgTsLine(ccctRows, W, H, '#d2a8ff', 'secs'),
-      validCount(ccctRows, 'secs') >= 8 ? '方向指示，非绝对 SoH' : '');
+    if (!designOK && !ccctRows.length) {
+      setPanel('panel_ccct', 'hide');
+    } else {
+      setPanel('panel_ccct', 'show');
+      setChart('chart_ccct', svgTsLine(ccctRows, W, H, 'var(--purple)', 'secs') || emptyRow('等待符合条件的恒流充电段'),
+        validCount(ccctRows, 'secs') >= 8 ? '方向指示，非绝对 SoH' : '');
+    }
 
+    // 容量主峰：与 CCCT 同源门控（复用其过倍率门控的恒流段样本）
     var icaRows = Array.isArray(doc.ica_peaks) ? doc.ica_peaks : [];
-    setChart('chart_ica', svgTsLine(icaRows, W, H, '#ffa657', 'peak_h_rel', 1),
-      validCount(icaRows, 'peak_h_rel') >= 8 ? '方向指示，非绝对 SoH' : '');
+    if (!designOK && !icaRows.length) {
+      setPanel('panel_ica', 'hide');
+    } else {
+      setPanel('panel_ica', 'show');
+      setChart('chart_ica', svgTsLine(icaRows, W, H, 'var(--orange)', 'peak_h_rel', 1) || emptyRow('等待合格充电会话的主峰'),
+        validCount(icaRows, 'peak_h_rel') >= 8 ? '方向指示，非绝对 SoH' : '');
+    }
   }
 
   function fetchData() {
@@ -571,6 +791,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   }
 
   function init() {
+    initTheme();
     if (!hasExec()) {
       $('app').style.display = 'none';
       $('err').style.display = 'none';
