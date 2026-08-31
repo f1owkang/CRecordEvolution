@@ -13,7 +13,7 @@ const (
 	kvKeyRatioHist = "ratio_hist"
 
 	rlsLambda     = 0.99
-	rlsP0         = 1e4
+	rlsP0         = 100
 	ratioHistCap  = 40
 	iqrMinSamples = 8
 	clipLo        = 0.7
@@ -62,20 +62,34 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	w := mlWeight(samples)
 	est := int64((1-w)*float64(ema) + w*corrected)
 
-	// RLS 预测方差 σ_rel = √(φᵀPφ)（rlsUpdate 之后的新 P），下限保护 0.005（0.5%）；
-	// σ_mAh = σ_rel × 校正容量/1000，mL→mAh 域换算
-	sigmaRel := math.Sqrt(quadForm(p, phi))
-	if sigmaRel < sigmaRelFloor {
-		sigmaRel = sigmaRelFloor
-	}
-	sigmaMah := sigmaRel * corrected / 1000
-
-	samples++
-
 	hist = append(hist, r)
 	if len(hist) > ratioHistCap {
 		hist = hist[len(hist)-ratioHistCap:]
 	}
+
+	// σ（mAh 域）：
+	// - 学习期（samples ≤ 30，θ 未参与输出）：φᵀPφ 无预测意义，直接用实测相对散布；
+	//   散布不足 8 个样本时 σ=0，由 main.go 现有 ≤0 → nil 降级隐藏 ±
+	// - 正式期：σ_rel = √(φᵀPφ)，保持 0.005 下限，再用实测相对散布封顶，
+	//   避免 P0 与激励不足导致 σ 长期虚高
+	spread, hasSpread := histRelStd(hist)
+	var sigmaMah float64
+	if samples <= 30 {
+		if hasSpread {
+			sigmaMah = spread * corrected / 1000
+		}
+	} else {
+		sigmaRel := math.Sqrt(quadForm(p, phi))
+		if sigmaRel < sigmaRelFloor {
+			sigmaRel = sigmaRelFloor
+		}
+		if hasSpread && spread < sigmaRel {
+			sigmaRel = spread
+		}
+		sigmaMah = sigmaRel * corrected / 1000
+	}
+
+	samples++
 
 	if err := l.persist(theta, p, hist, est, samples, sigmaMah); err != nil {
 		return EstUpdate{}, err
@@ -246,6 +260,28 @@ func symToP(sym []float64) [4][4]float64 {
 		}
 	}
 	return p
+}
+
+// histRelStd 计算比值历史的总体相对标准差（std/均值，除以 N），
+// 作为 σ 的实测散布封顶。样本不足 iqrMinSamples 个或均值非正时 ok=false 表示不可用
+func histRelStd(hist []float64) (rel float64, ok bool) {
+	if len(hist) < iqrMinSamples {
+		return 0, false
+	}
+	var sum float64
+	for _, r := range hist {
+		sum += r
+	}
+	mean := sum / float64(len(hist))
+	if mean <= 0 {
+		return 0, false
+	}
+	var ss float64
+	for _, r := range hist {
+		d := r - mean
+		ss += d * d
+	}
+	return math.Sqrt(ss/float64(len(hist))) / mean, true
 }
 
 func iqrBounds(hist []float64) (float64, float64) {

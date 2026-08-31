@@ -5,7 +5,6 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -99,8 +98,10 @@ func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 	kvFloats(t, st, kvKeyRlsPSym, 10)
 	hist := kvFloats(t, st, kvKeyRatioHist, 40)
 
-	if got := dot4(mlPhi(lastSess), theta); math.Abs(got-1) > 1e-6 {
-		t.Fatalf("θᵀφ = %.12f, 与常数 y=1 的偏差超过 1e-6", got)
+	// P0 从 1e4 收紧到 100 后 RLS 每步增益变小，60 会话对常数 y=1 的
+	// 收敛精度由 1e-6 量级放宽到 1e-4 量级（实测偏差 ≈ 4.7e-5）
+	if got := dot4(mlPhi(lastSess), theta); math.Abs(got-1) > 1e-4 {
+		t.Fatalf("θᵀφ = %.12f, 与常数 y=1 的偏差超过 1e-4", got)
 	}
 	for _, r := range hist {
 		if math.Abs(r-1) > 1e-9 {
@@ -259,21 +260,160 @@ func TestLearningSigma(t *testing.T) {
 		t.Fatalf("种子后 kv[%s] = %q, want \"0\"", kvKeyEmaSigma, v)
 	}
 
+	// 种子后首批会话仍处学习期（samples≤30）且 ratio_hist 不足 8 个：
+	// φᵀPφ 尚无意义、实测散布也不可用，σ 应为 0（由上层 ≤0→nil 降级隐藏 ±）
 	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
 	if err != nil {
 		t.Fatalf("会话应被接受: %v", err)
 	}
-	if upd.SigmaMah <= 0 {
-		t.Fatalf("SigmaMah = %v, want > 0（rlsUpdate 后新 P 的 φᵀPφ）", upd.SigmaMah)
+	if upd.SigmaMah != 0 {
+		t.Fatalf("散布不足 8 个样本时 SigmaMah = %v, want 0", upd.SigmaMah)
+	}
+	if v, _ := st.KVGet(kvKeyEmaSigma); v != "0" {
+		t.Fatalf("散布不足时 kv[%s] = %q, want \"0\"", kvKeyEmaSigma, v)
+	}
+}
+
+// popRelStd 测试内独立实现：总体口径相对标准差（std/均值，除以 N），
+// 与生产实现分开，避免用被测代码自证期望值
+func popRelStd(xs []float64) float64 {
+	var sum float64
+	for _, x := range xs {
+		sum += x
+	}
+	mean := sum / float64(len(xs))
+	var ss float64
+	for _, x := range xs {
+		d := x - mean
+		ss += d * d
+	}
+	return math.Sqrt(ss/float64(len(xs))) / mean
+}
+
+// correctedFromKV 从 kv 读回更新后的 θ，与 σ 计算时刻的 EMA（喂入前的 ema_ua）
+// 重算校正容量（mAh 域 σ 的换算基数；persist 后 kv[ema_ua] 已是混合输出 est，不可直接用）
+func correctedFromKV(t *testing.T, st *Store, sess Session, emaUA int64) float64 {
+	t.Helper()
+	var theta [4]float64
+	copy(theta[:], kvFloats(t, st, kvKeyRlsTheta, 4))
+	return float64(emaUA) * clipRatio(dot4(mlPhi(sess), theta))
+}
+
+func setKVJSON(t *testing.T, st *Store, key string, v any) {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal kv[%s]: %v", key, err)
+	}
+	if err := st.KVSet(key, string(b)); err != nil {
+		t.Fatalf("写 kv[%s]: %v", key, err)
+	}
+}
+
+func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
+	est, st := newTestLearning(t)
+	seedML(t, est)
+
+	// 学习期（samples≤30）内、hist 长度 1..7 不足 8：实测散布不可用，σ 恒为 0
+	for i := 0; i < 7; i++ {
+		upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
+		if err != nil {
+			t.Fatalf("第 %d 条正常会话应被接受: %v", i+1, err)
+		}
+		if upd.SigmaMah != 0 {
+			t.Fatalf("第 %d 条会话 hist 长度 %d < 8, SigmaMah = %v, want 0", i+1, i+1, upd.SigmaMah)
+		}
 	}
 
-	v, ok := st.KVGet(kvKeyEmaSigma)
-	if !ok {
-		t.Fatalf("缺少 kv[%s]", kvKeyEmaSigma)
+	// 第 8 条会话构造微散布（r=1.02）：hist 恰满 8 个，学习期出口应给出
+	// σ = 实测相对散布 × corrected/1000（而非 φᵀPφ 的巨大值）
+	sess := baseSession()
+	emaBefore := kvInt(st, kvKeyEmaUA)
+	sr := SettledSession{Session: sess, AccUA: 6609600000, DesignUA: 4000000}
+	upd, err := est.OnSession(sr)
+	if err != nil {
+		t.Fatalf("第 8 条会话应被接受: %v", err)
 	}
-	f, perr := strconv.ParseFloat(v, 64)
-	if perr != nil || f <= 0 || f != upd.SigmaMah {
-		t.Fatalf("kv[%s] = %q (err=%v), want 与 SigmaMah=%v 同一正值", kvKeyEmaSigma, v, perr, upd.SigmaMah)
+	if upd.SigmaMah <= 0 {
+		t.Fatalf("hist 满 8 后 SigmaMah = %v, want > 0", upd.SigmaMah)
+	}
+	hist := kvFloats(t, st, kvKeyRatioHist, 8)
+	want := popRelStd(hist) * correctedFromKV(t, st, sess, emaBefore) / 1000
+	if math.Abs(upd.SigmaMah-want) > 1e-6 {
+		t.Fatalf("学习期出口 SigmaMah = %v, want 实测散布换算 %v", upd.SigmaMah, want)
+	}
+}
+
+func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
+	est, st := newTestLearning(t)
+
+	// 预置一个「P 矩阵远未收敛」的正式期状态：samples=50（>30），
+	// P 对角仍为旧量级 1e4，ratio_hist 为 12 个有散布的固定比值
+	if err := st.KVSet(kvKeySamples, "50"); err != nil {
+		t.Fatalf("写 kv[samples]: %v", err)
+	}
+	if err := st.KVSet(kvKeyEmaUA, "3000000"); err != nil {
+		t.Fatalf("写 kv[ema_ua]: %v", err)
+	}
+	setKVJSON(t, st, kvKeyRlsPSym, []float64{1e4, 0, 0, 0, 1e4, 0, 0, 1e4, 0, 1e4})
+	setKVJSON(t, st, kvKeyRatioHist, []float64{0.96, 0.97, 0.98, 0.99, 1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07})
+
+	sess := baseSession()
+	emaBefore := kvInt(st, kvKeyEmaUA)
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 6480000000, DesignUA: 4000000})
+	if err != nil {
+		t.Fatalf("会话应被接受: %v", err)
+	}
+
+	// σ 不得超过实测相对散布对应的 mAh 上界
+	hist := kvFloats(t, st, kvKeyRatioHist, 13)
+	corrected := correctedFromKV(t, st, sess, emaBefore)
+	upper := popRelStd(hist) * corrected / 1000
+	if upd.SigmaMah <= 0 || upd.SigmaMah > upper+1e-9 {
+		t.Fatalf("SigmaMah = %v, want ∈ (0, 实测散布上界 %v]", upd.SigmaMah, upper)
+	}
+
+	// 且确实压低了 P 通道：封顶后的 σ_rel 应小于 √(φᵀPφ)
+	var p [4][4]float64
+	p = symToP(kvFloats(t, st, kvKeyRlsPSym, 10))
+	sigmaRelP := math.Sqrt(quadForm(p, mlPhi(sess)))
+	if got := upd.SigmaMah * 1000 / corrected; got >= sigmaRelP {
+		t.Fatalf("封顶后 σ_rel = %v, 应小于 P 通道 √(φᵀPφ) = %v", got, sigmaRelP)
+	}
+}
+
+func TestLearningSigmaConvergesWithTighterP0(t *testing.T) {
+	est, st := newTestLearning(t)
+	seedML(t, est)
+
+	// 正常收敛场景：r 围绕 1.0 以 ±2% 真实感噪声波动（固定 5 点循环，
+	// 实测相对散布 ≈ 0.014）。旧实现（P0=1e4 且无封顶）60 次后 σ_rel ≈ 0.15；
+	// P0 收紧 + 实测散布封顶后应明显小于 0.05
+	pattern := []float64{1.000, 1.020, 0.980, 1.010, 0.990}
+	var sess Session
+	var upd EstUpdate
+	var emaBefore int64
+	for i := 0; i < 60; i++ {
+		sess = baseSession()
+		emaBefore = kvInt(st, kvKeyEmaUA)
+		var err error
+		upd, err = est.OnSession(SettledSession{
+			Session:  sess,
+			AccUA:    int64(math.Round(pattern[i%len(pattern)] * float64(emaBefore) * 2160)),
+			DesignUA: 4000000,
+		})
+		if err != nil {
+			t.Fatalf("第 %d 次喂入应被接受: %v", i+1, err)
+		}
+	}
+
+	corrected := correctedFromKV(t, st, sess, emaBefore)
+	sigmaRel := upd.SigmaMah * 1000 / corrected
+	if sigmaRel >= 0.05 {
+		t.Fatalf("60 次会话后 σ_rel = %v, want < 0.05（P0 收紧后应明显收敛）", sigmaRel)
+	}
+	if sigmaRel <= 0 {
+		t.Fatalf("60 次会话后 σ_rel = %v, want > 0（不应走 σ=0 降级路径）", sigmaRel)
 	}
 }
 
