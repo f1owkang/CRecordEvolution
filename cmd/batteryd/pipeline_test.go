@@ -132,12 +132,13 @@ func TestPipelineSealsOnceAtFullCharge(t *testing.T) {
 	if sess.StartCap != 20 || sess.EndCap != 100 {
 		t.Fatalf("cap 区间 = [%d,%d], want [20,100]", sess.StartCap, sess.EndCap)
 	}
-	if sess.Ua != 6120000000 || sess.AvgI != 6000000 || sess.Duration != 1020 {
-		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (6120000000,6000000,1020)",
+	// 新语义：duration=墙钟差(+60→+1020)=960，avgI=6.12G/960
+	if sess.Ua != 6120000000 || sess.AvgI != 6375000 || sess.Duration != 960 {
+		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (6120000000,6375000,960)",
 			sess.Ua, sess.AvgI, sess.Duration)
 	}
-	if math.Abs(sess.CRate-1.5) > 1e-9 {
-		t.Fatalf("c_rate = %v, want 1.5", sess.CRate)
+	if math.Abs(sess.CRate-1.59375) > 1e-9 {
+		t.Fatalf("c_rate = %v, want 1.59375", sess.CRate)
 	}
 	if sess.TempMin != 25 || sess.TempMax != 25 || sess.TempAvg != 25 {
 		t.Fatalf("temp 三元 = (%d,%d,%d), want 全为 25", sess.TempMin, sess.TempMax, sess.TempAvg)
@@ -228,12 +229,13 @@ func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 	if sess.StartCap != 10 || sess.EndCap != 70 {
 		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
 	}
-	if sess.Ua != 4320000000 || sess.AvgI != 12000000 || sess.Duration != 360 {
-		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (4320000000,12000000,360)",
+	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量只按充电拍累积
+	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
+		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (4320000000,9000000,480)",
 			sess.Ua, sess.AvgI, sess.Duration)
 	}
-	if math.Abs(sess.CRate-3.0) > 1e-9 {
-		t.Fatalf("c_rate = %v, want 3.0", sess.CRate)
+	if math.Abs(sess.CRate-2.25) > 1e-9 {
+		t.Fatalf("c_rate = %v, want 2.25", sess.CRate)
 	}
 	if sess.TempMin != 25 || sess.TempMax != 25 || sess.TempAvg != 25 {
 		t.Fatalf("temp 三元 = (%d,%d,%d), want 全为 25", sess.TempMin, sess.TempMax, sess.TempAvg)
@@ -296,9 +298,10 @@ func TestPipelineDebounceReturnsToCharging(t *testing.T) {
 		t.Fatalf("抖动+续充+拔出应合并为 1 行, rows = %d", n)
 	}
 	sess := onlySession(t, r.st)
-	// Charging 累积拍: cap10,22,34,46,58,70 共 6 拍（去抖 2 拍不计电量）
-	if sess.Ua != 6*12000000*60 || sess.Duration != 360 {
-		t.Fatalf("ua/duration = (%d,%d), want (4320000000,360)", sess.Ua, sess.Duration)
+	// Charging 累积拍: cap10,22,34,46,58,70 共 6 拍（去抖 2 拍不计电量）；
+	// duration=墙钟差(+60→+660)=600，含抖动与拔出去抖期
+	if sess.Ua != 6*12000000*60 || sess.Duration != 600 {
+		t.Fatalf("ua/duration = (%d,%d), want (4320000000,600)", sess.Ua, sess.Duration)
 	}
 	if sess.StartCap != 10 || sess.EndCap != 70 {
 		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
@@ -344,8 +347,9 @@ func TestPipelineRestoresSessionAcrossRestart(t *testing.T) {
 	if sess.StartCap != 10 || sess.EndCap != 70 {
 		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
 	}
-	if sess.Ua != 4320000000 || sess.AvgI != 12000000 || sess.Duration != 360 {
-		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want 两段合计 (4320000000,12000000,360)",
+	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量两段合计不变
+	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
+		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want 两段合计 (4320000000,9000000,480)",
 			sess.Ua, sess.AvgI, sess.Duration)
 	}
 	if !sess.Valid {

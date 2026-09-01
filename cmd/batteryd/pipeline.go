@@ -39,6 +39,7 @@ const (
 	kvSessTempSum  = "sess_temp_sum"
 	kvSessTempN    = "sess_temp_n"
 	kvSessLastCap  = "sess_last_cap"
+	kvSessLastTs   = "sess_last_tick_ts"
 )
 
 type TickOutcome struct{ SessionSettled bool }
@@ -57,11 +58,14 @@ type sessionState struct {
 	vStartUV int64
 	accUAs   int64
 	ticks    int64
-	tempMin  int64
-	tempMax  int64
-	tempSum  float64
-	tempN    int64
-	lastCap  int64
+	// lastTickTs 上一拍充电 tick 的墙钟（秒）：变步长采样下电量按真实
+	// 时间差累积，不再假设固定 tickSeconds。0 表示本会话尚无上一拍。
+	lastTickTs int64
+	tempMin    int64
+	tempMax    int64
+	tempSum    float64
+	tempN      int64
+	lastCap    int64
 }
 
 type Pipeline struct {
@@ -141,17 +145,18 @@ func (p *Pipeline) restoreSession() {
 		return
 	}
 	p.sess = sessionState{
-		active:   true,
-		startTs:  kvInt(p.st, kvSessStartTs),
-		startCap: kvInt(p.st, kvSessStartCap),
-		vStartUV: kvInt(p.st, kvSessVStart),
-		accUAs:   kvInt(p.st, kvSessAcc),
-		ticks:    kvInt(p.st, kvSessTicks),
-		tempMin:  kvInt(p.st, kvSessTempMin),
-		tempMax:  kvInt(p.st, kvSessTempMax),
-		tempSum:  kvFloat(p.st, kvSessTempSum),
-		tempN:    kvInt(p.st, kvSessTempN),
-		lastCap:  kvInt(p.st, kvSessLastCap),
+		active:     true,
+		startTs:    kvInt(p.st, kvSessStartTs),
+		startCap:   kvInt(p.st, kvSessStartCap),
+		vStartUV:   kvInt(p.st, kvSessVStart),
+		accUAs:     kvInt(p.st, kvSessAcc),
+		ticks:      kvInt(p.st, kvSessTicks),
+		tempMin:    kvInt(p.st, kvSessTempMin),
+		tempMax:    kvInt(p.st, kvSessTempMax),
+		tempSum:    kvFloat(p.st, kvSessTempSum),
+		tempN:      kvInt(p.st, kvSessTempN),
+		lastCap:    kvInt(p.st, kvSessLastCap),
+		lastTickTs: kvInt(p.st, kvSessLastTs),
 	}
 	p.sess.sealed = kvText(p.st, kvSessSealed) == "1"
 }
@@ -256,6 +261,17 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 
 	s := &p.sess
+	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
+	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
+	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
+	dt := tickSeconds
+	now := p.now().Unix()
+	if s.lastTickTs > 0 {
+		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
+			dt = d
+		}
+	}
+	s.lastTickTs = now
 	if !s.active {
 		// 已满（cap≥sealCapacity）时插入充电器：米系满电保护下 delta 恒为 0，
 		// 该会话必被 delta_lt_20 拒收，只产生垃圾行——不开启会话，等真实回落。
@@ -263,12 +279,12 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			return nil
 		}
 		s.active = true
-		s.startTs = p.now().Unix()
+		s.startTs = now
 		s.startCap = capVal
 		s.vStartUV = vUV
 	}
 	if !s.sealed {
-		s.accUAs += iUA * tickSeconds
+		s.accUAs += iUA * dt
 		s.ticks++
 		s.lastCap = capVal
 		if haveTemp {
@@ -288,7 +304,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 		}
 	}
 
-	total := kvInt(p.st, kvChargedTotal) + iUA*tickSeconds
+	total := kvInt(p.st, kvChargedTotal) + iUA*dt
 	if err := p.st.KVSet(kvChargedTotal, strconv.FormatInt(total, 10)); err != nil {
 		return &SettleError{Err: err}
 	}
@@ -329,6 +345,7 @@ func (p *Pipeline) persistSession() error {
 		{kvSessTempSum, strconv.FormatFloat(s.tempSum, 'f', -1, 64)},
 		{kvSessTempN, strconv.FormatInt(s.tempN, 10)},
 		{kvSessLastCap, strconv.FormatInt(s.lastCap, 10)},
+		{kvSessLastTs, strconv.FormatInt(s.lastTickTs, 10)},
 	}
 	for _, it := range sets {
 		if err := p.st.KVSet(it.key, it.val); err != nil {
@@ -350,7 +367,9 @@ func (p *Pipeline) settle() error {
 	if err := p.st.KVSet(kvSessActive, "0"); err != nil {
 		return &SettleError{Err: err}
 	}
-	duration := s.ticks * tickSeconds
+	// duration 用墙钟差：变步长采样下拍数×固定秒数不再成立；墙钟口径
+	// 同时覆盖浮充/去抖期，avgI 口径随之更贴近真实平均电流。
+	duration := p.now().Unix() - s.startTs
 	var avgI int64
 	if duration > 0 {
 		avgI = s.accUAs / duration
