@@ -1,7 +1,7 @@
 id=CRecordEvolution
 name=ChargingRecord Evolution
-version=1.2.7
-versionCode=20
+version=1.2.8
+versionCode=21
 author=f1owkang、不会梦游的鱼
 description=Magisk模块，通过读取系统容量估算电池健康度
 updateJson=https://raw.githubusercontent.com/f1owkang/CRecordEvolution/main/update.json
