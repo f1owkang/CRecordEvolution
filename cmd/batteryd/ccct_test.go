@@ -175,13 +175,16 @@ func TestSettleRecordsCCCTWithinGatedRate(t *testing.T) {
 func TestSettleSkipsCCCTWhenRateExceedsDesign(t *testing.T) {
 	r := newPipeRig(t)
 
-	r.put(76, 3000000, 3_850_000+6_250)
+	// 段均值 4.5A / 设计容量 4A = 1.125C > 1C 门限，应被拒收；同时不触
+	// 估算器 1.5C 上界保证会话本身有效（旧 ≤C/2 门限用 0.75C 即被拒，
+	// 放宽到 1C 后须用真超限倍率）
+	r.put(76, 4500000, 3_850_000+6_250)
 	r.step("Charging")
 	for k := 2; k <= 18; k++ {
-		r.put(90, 3000000, 3_850_000+int64(k)*6_250)
+		r.put(90, 4500000, 3_850_000+int64(k)*6_250)
 		r.step("Charging")
 	}
-	r.put(100, 3000000, 4_100_000)
+	r.put(100, 4500000, 4_100_000)
 	if out := r.step("Charging"); !out.SessionSettled {
 		t.Fatal("cap=100 应封账结算")
 	}

@@ -365,6 +365,20 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
+  // 会话时间区间：同日折叠为「MM-DD HH:MM~HH:MM」，跨日展开两端，缺端回退 fmtTs
+  function fmtRange(startTs, endTs) {
+    if (!startTs) return '--';
+    if (!endTs) return fmtTs(startTs);
+    var a = new Date(Number(startTs) * 1000), b = new Date(Number(endTs) * 1000);
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return '--';
+    var head = pad(a.getMonth() + 1) + '-' + pad(a.getDate()) + ' ' + pad(a.getHours()) + ':' + pad(a.getMinutes());
+    var sameDay = a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    var tail = sameDay
+      ? pad(b.getHours()) + ':' + pad(b.getMinutes())
+      : pad(b.getMonth() + 1) + '-' + pad(b.getDate()) + ' ' + pad(b.getHours()) + ':' + pad(b.getMinutes());
+    return head + '~' + tail;
+  }
+
   function setText(id, v) { var el = $(id); if (el) el.textContent = v; }
   function fmtInt(v) { return v == null ? '—' : String(v); }
   function fmtFix(v, n) { return v == null ? '—' : Number(v).toFixed(n); }
@@ -642,7 +656,8 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       li.className = 'row';
       var t = document.createElement('span');
       t.className = 't';
-      t.textContent = fmtTs(s && s.start_ts);
+      // 区间显示：同日折叠为「MM-DD HH:MM~HH:MM」，跨日「MM-DD HH:MM~MM-DD HH:MM」
+      t.textContent = fmtRange(s && s.start_ts, s && s.end_ts);
       var st = document.createElement('span');
       if (s && s.valid) {
         st.className = 'ok';

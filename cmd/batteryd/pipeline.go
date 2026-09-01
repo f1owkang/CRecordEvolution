@@ -75,6 +75,10 @@ type Pipeline struct {
 
 	sess sessionState
 
+	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
+	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）
+	notChargStreak int
+
 	winI []int64
 	winV []int64
 
@@ -181,10 +185,24 @@ func (p *Pipeline) readNodeSigned(name string) (int64, error) {
 	return p.fs.ReadIntSigned(path)
 }
 
+// notChargDebounce 非充电状态去抖：status 连续非 Charging 达到该拍数才真正
+// 结算会话。米系满电保护/优化充电会让 status 在充电过程中间歇抖为
+// Not charging/Full，单拍即断会把同一晚充电切碎成一串涨幅不足的废会话
+// （实测：4 条 delta=0 垃圾行全部源于连续 2 拍抖动）。3 拍≈3 分钟，与
+// ACC「多次采样确认、不信单拍 status」的策略同源。
+const notChargDebounce = 3
+
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
 	if status == "Charging" {
+		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
+		p.notChargStreak = 0
 		return outcome, p.tickCharging(&outcome)
+	}
+	p.notChargStreak++
+	// 去抖期内不算断开：保留会话，等下一拍
+	if p.sess.active && p.notChargStreak < notChargDebounce {
+		return outcome, nil
 	}
 	if err := p.tickResting(status); err != nil {
 		return outcome, err
@@ -239,6 +257,11 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 
 	s := &p.sess
 	if !s.active {
+		// 已满（cap≥sealCapacity）时插入充电器：米系满电保护下 delta 恒为 0，
+		// 该会话必被 delta_lt_20 拒收，只产生垃圾行——不开启会话，等真实回落。
+		if capVal >= sealCapacity {
+			return nil
+		}
 		s.active = true
 		s.startTs = p.now().Unix()
 		s.startCap = capVal
@@ -380,7 +403,7 @@ func (p *Pipeline) settle() error {
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控
-// ≤C/2：段均值 ×2 超过设计容量不采信；designUA 缺失时无从判定倍率，
+// ≤1C：段均值超过设计容量不采信；designUA 缺失时无从判定倍率，
 // 同样视为不采信。0/≥2 个跨界段、查询失败等均以事件落痕后静默返回。
 // 返回通过倍率门控的恒流段覆盖样本行，供同源特征（ICA）顺延复用；
 // 门控不成立（设计容量缺失 / 读样本出错 / 无过门段）时返回 nil。
@@ -401,7 +424,10 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	var loS, hiS SampleRow
 	var gatedRows []SampleRow
 	for _, g := range segs {
-		if g.MeanUA*2 > p.designUA {
+		// 倍率门控 ≤1C：实测本机正常快充恒流段均值 0.9~1.25C，旧 ≤C/2
+		// 门限把合法快充一票否决（ccct_skip「段均值×2>设计容量」），
+		// 依 Fly & Chen 速率约束口径放宽到 1C。
+		if g.MeanUA > p.designUA {
 			gateRejected++
 			continue
 		}
@@ -419,7 +445,7 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 			ev("ccct_skip", ierr.Error())
 		}
 	case crossings == 0 && gateRejected > 0:
-		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值×2>%d µA)，未采信", gateRejected, p.designUA))
+		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值>%d µA)，未采信", gateRejected, p.designUA))
 	case crossings == 0:
 		ev("cc_unstable", "无可跨越整窗的恒流段")
 	default:
