@@ -39,6 +39,7 @@ const (
 	kvSessTempSum  = "sess_temp_sum"
 	kvSessTempN    = "sess_temp_n"
 	kvSessLastCap  = "sess_last_cap"
+	kvSessLastTs   = "sess_last_tick_ts"
 )
 
 type TickOutcome struct{ SessionSettled bool }
@@ -57,11 +58,14 @@ type sessionState struct {
 	vStartUV int64
 	accUAs   int64
 	ticks    int64
-	tempMin  int64
-	tempMax  int64
-	tempSum  float64
-	tempN    int64
-	lastCap  int64
+	// lastTickTs 上一拍充电 tick 的墙钟（秒）：变步长采样下电量按真实
+	// 时间差累积，不再假设固定 tickSeconds。0 表示本会话尚无上一拍。
+	lastTickTs int64
+	tempMin    int64
+	tempMax    int64
+	tempSum    float64
+	tempN      int64
+	lastCap    int64
 }
 
 type Pipeline struct {
@@ -75,12 +79,33 @@ type Pipeline struct {
 
 	sess sessionState
 
+	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
+	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）
+	notChargStreak int
+
 	winI []int64
 	winV []int64
 
 	restStreak  int
 	lastRestUV  int64
 	lastRestCap int64
+
+	// logf 决策点日志通道（main 注入 appendLog，nil 安全）：只记会话级
+	// 事件——开启/满电跳过/去抖/结算/CCCT 采信，不逐拍刷屏
+	logf   func(format string, args ...any)
+	logOn  bool // 上拍是否处于充电会话（满电跳过去重）
+	logDeb bool // 已打过「进入去抖」标记（同一轮去抖只打一次）
+}
+
+// Logf 注入决策点日志通道；在 NewPipeline 之后调用。
+func (p *Pipeline) Logf(fn func(format string, args ...any)) {
+	p.logf = fn
+}
+
+func (p *Pipeline) log(format string, args ...any) {
+	if p.logf != nil {
+		p.logf(format, args...)
+	}
 }
 
 func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, clock func() time.Time) *Pipeline {
@@ -137,17 +162,18 @@ func (p *Pipeline) restoreSession() {
 		return
 	}
 	p.sess = sessionState{
-		active:   true,
-		startTs:  kvInt(p.st, kvSessStartTs),
-		startCap: kvInt(p.st, kvSessStartCap),
-		vStartUV: kvInt(p.st, kvSessVStart),
-		accUAs:   kvInt(p.st, kvSessAcc),
-		ticks:    kvInt(p.st, kvSessTicks),
-		tempMin:  kvInt(p.st, kvSessTempMin),
-		tempMax:  kvInt(p.st, kvSessTempMax),
-		tempSum:  kvFloat(p.st, kvSessTempSum),
-		tempN:    kvInt(p.st, kvSessTempN),
-		lastCap:  kvInt(p.st, kvSessLastCap),
+		active:     true,
+		startTs:    kvInt(p.st, kvSessStartTs),
+		startCap:   kvInt(p.st, kvSessStartCap),
+		vStartUV:   kvInt(p.st, kvSessVStart),
+		accUAs:     kvInt(p.st, kvSessAcc),
+		ticks:      kvInt(p.st, kvSessTicks),
+		tempMin:    kvInt(p.st, kvSessTempMin),
+		tempMax:    kvInt(p.st, kvSessTempMax),
+		tempSum:    kvFloat(p.st, kvSessTempSum),
+		tempN:      kvInt(p.st, kvSessTempN),
+		lastCap:    kvInt(p.st, kvSessLastCap),
+		lastTickTs: kvInt(p.st, kvSessLastTs),
 	}
 	p.sess.sealed = kvText(p.st, kvSessSealed) == "1"
 }
@@ -181,10 +207,29 @@ func (p *Pipeline) readNodeSigned(name string) (int64, error) {
 	return p.fs.ReadIntSigned(path)
 }
 
+// notChargDebounce 非充电状态去抖：status 连续非 Charging 达到该拍数才真正
+// 结算会话。米系满电保护/优化充电会让 status 在充电过程中间歇抖为
+// Not charging/Full，单拍即断会把同一晚充电切碎成一串涨幅不足的废会话
+// （实测：4 条 delta=0 垃圾行全部源于连续 2 拍抖动）。3 拍≈3 分钟，与
+// ACC「多次采样确认、不信单拍 status」的策略同源。
+const notChargDebounce = 3
+
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
 	if status == "Charging" {
+		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
+		p.notChargStreak = 0
+		p.logDeb = false
 		return outcome, p.tickCharging(&outcome)
+	}
+	p.notChargStreak++
+	// 去抖期内不算断开：保留会话，等下一拍
+	if p.sess.active && p.notChargStreak < notChargDebounce {
+		if !p.logDeb {
+			p.logDeb = true
+			p.log("[会话] status=%s，去抖等待（第 %d/%d 拍）", status, p.notChargStreak, notChargDebounce)
+		}
+		return outcome, nil
 	}
 	if err := p.tickResting(status); err != nil {
 		return outcome, err
@@ -199,6 +244,7 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 		if err := p.resetSession(); err != nil {
 			return outcome, &SettleError{Err: err}
 		}
+		p.logOn = false
 	}
 	return outcome, nil
 }
@@ -238,14 +284,36 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 
 	s := &p.sess
+	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
+	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
+	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
+	dt := tickSeconds
+	now := p.now().Unix()
+	if s.lastTickTs > 0 {
+		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
+			dt = d
+		}
+	}
+	s.lastTickTs = now
 	if !s.active {
+		// 已满（cap≥sealCapacity）时插入充电器：米系满电保护下 delta 恒为 0，
+		// 该会话必被 delta_lt_20 拒收，只产生垃圾行——不开启会话，等真实回落。
+		if capVal >= sealCapacity {
+			if !p.logOn {
+				p.logOn = true
+				p.log("[会话] 满电插入（cap=%d%%），不开会话", capVal)
+			}
+			return nil
+		}
 		s.active = true
-		s.startTs = p.now().Unix()
+		s.startTs = now
 		s.startCap = capVal
 		s.vStartUV = vUV
+		p.logOn = true
+		p.log("[会话] 开始于 %s cap=%d%%", p.now().Format("01-02 15:04:05"), capVal)
 	}
 	if !s.sealed {
-		s.accUAs += iUA * tickSeconds
+		s.accUAs += iUA * dt
 		s.ticks++
 		s.lastCap = capVal
 		if haveTemp {
@@ -265,7 +333,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 		}
 	}
 
-	total := kvInt(p.st, kvChargedTotal) + iUA*tickSeconds
+	total := kvInt(p.st, kvChargedTotal) + iUA*dt
 	if err := p.st.KVSet(kvChargedTotal, strconv.FormatInt(total, 10)); err != nil {
 		return &SettleError{Err: err}
 	}
@@ -278,6 +346,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			if err := p.settle(); err != nil {
 				return err
 			}
+			p.log("[会话] 充至满电封账")
 			outcome.SessionSettled = true
 			s.sealed = true
 			if err := p.persistSession(); err != nil {
@@ -306,6 +375,7 @@ func (p *Pipeline) persistSession() error {
 		{kvSessTempSum, strconv.FormatFloat(s.tempSum, 'f', -1, 64)},
 		{kvSessTempN, strconv.FormatInt(s.tempN, 10)},
 		{kvSessLastCap, strconv.FormatInt(s.lastCap, 10)},
+		{kvSessLastTs, strconv.FormatInt(s.lastTickTs, 10)},
 	}
 	for _, it := range sets {
 		if err := p.st.KVSet(it.key, it.val); err != nil {
@@ -327,7 +397,9 @@ func (p *Pipeline) settle() error {
 	if err := p.st.KVSet(kvSessActive, "0"); err != nil {
 		return &SettleError{Err: err}
 	}
-	duration := s.ticks * tickSeconds
+	// duration 用墙钟差：变步长采样下拍数×固定秒数不再成立；墙钟口径
+	// 同时覆盖浮充/去抖期，avgI 口径随之更贴近真实平均电流。
+	duration := p.now().Unix() - s.startTs
 	var avgI int64
 	if duration > 0 {
 		avgI = s.accUAs / duration
@@ -357,6 +429,9 @@ func (p *Pipeline) settle() error {
 		}
 		row.Valid = false
 		row.InvalidReason = re.Result.Reason
+		p.log("[结算] 拒绝 reason=%s cap=%d→%d dur=%s avgI=%dmA",
+			re.Result.Reason, row.StartCap, row.EndCap,
+			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000)
 		if _, insErr := p.st.InsertSession(row); insErr != nil {
 			return &SettleError{Err: insErr}
 		}
@@ -366,6 +441,10 @@ func (p *Pipeline) settle() error {
 		return nil
 	}
 	row.Valid = true
+	p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh σ=%.1f",
+		row.StartCap, row.EndCap,
+		(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
+		upd.EstUA/1000, upd.SigmaMah)
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
 		return &SettleError{Err: insErr}
 	}
@@ -380,7 +459,7 @@ func (p *Pipeline) settle() error {
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控
-// ≤C/2：段均值 ×2 超过设计容量不采信；designUA 缺失时无从判定倍率，
+// ≤1C：段均值超过设计容量不采信；designUA 缺失时无从判定倍率，
 // 同样视为不采信。0/≥2 个跨界段、查询失败等均以事件落痕后静默返回。
 // 返回通过倍率门控的恒流段覆盖样本行，供同源特征（ICA）顺延复用；
 // 门控不成立（设计容量缺失 / 读样本出错 / 无过门段）时返回 nil。
@@ -401,7 +480,10 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	var loS, hiS SampleRow
 	var gatedRows []SampleRow
 	for _, g := range segs {
-		if g.MeanUA*2 > p.designUA {
+		// 倍率门控 ≤1C：实测本机正常快充恒流段均值 0.9~1.25C，旧 ≤C/2
+		// 门限把合法快充一票否决（ccct_skip「段均值×2>设计容量」），
+		// 依 Fly & Chen 速率约束口径放宽到 1C。
+		if g.MeanUA > p.designUA {
 			gateRejected++
 			continue
 		}
@@ -415,11 +497,12 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	}
 	switch {
 	case crossings == 1:
+		p.log("[CCCT] 采信穿窗 %dmV→%dmV 耗时 %d 分钟", loS.UV/1000, hiS.UV/1000, (hiS.TS-loS.TS)/60)
 		if ierr := p.st.InsertCCCT(hiS.TS, loS.UV, hiS.UV, hiS.TS-loS.TS); ierr != nil {
 			ev("ccct_skip", ierr.Error())
 		}
 	case crossings == 0 && gateRejected > 0:
-		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值×2>%d µA)，未采信", gateRejected, p.designUA))
+		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值>%d µA)，未采信", gateRejected, p.designUA))
 	case crossings == 0:
 		ev("cc_unstable", "无可跨越整窗的恒流段")
 	default:

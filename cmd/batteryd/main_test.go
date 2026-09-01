@@ -63,8 +63,17 @@ func TestTickStoreFailureWrappedAsSettleError(t *testing.T) {
 
 	_ = r.st.Close()
 	r.put(30, 500000, 4300000)
-	_, err := r.p.Tick("Discharging")
 	var se *SettleError
+	// 去抖期内不触库；3 拍后进入结算路径才会写库失败
+	_, err := r.p.Tick("Discharging")
+	if err != nil {
+		t.Fatalf("去抖第 1 拍不应触库, got %v", err)
+	}
+	_, err = r.p.Tick("Discharging")
+	if err != nil {
+		t.Fatalf("去抖第 2 拍不应触库, got %v", err)
+	}
+	_, err = r.p.Tick("Discharging")
 	if !errors.As(err, &se) {
 		t.Fatalf("落库失败应包成 SettleError, got %v", err)
 	}

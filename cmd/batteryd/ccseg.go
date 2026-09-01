@@ -33,6 +33,7 @@ func DetectCCSegs(samps []SampleRow, win int) []CCSeg {
 	if win <= 0 || len(samps) < win {
 		return nil
 	}
+	samps = medianFilterUA(samps)
 	nBlk := len(samps) / win
 	fn := float64(win)
 	stat := make([]bool, nBlk)
@@ -96,6 +97,30 @@ func DetectCCSegs(samps []SampleRow, win int) []CCSeg {
 		b = e + 1
 	}
 	return segs
+}
+
+// medianFilterUA 对电流序列做 k=3 滑动中值滤波（首尾样本保留原值）：低电量
+// 区充电电流常见单拍离群（实测 0.3A↔11.8A 相邻跳变），单拍尖峰把 5 样本窗的
+// 变异系数顶破平稳门槛，恒流段整体识别失败（cc_unstable）。中值滤除单拍离群
+// 而不改变缓变趋势，对真平稳段的中值几乎无影响。
+func medianFilterUA(samps []SampleRow) []SampleRow {
+	if len(samps) < 3 {
+		return samps
+	}
+	out := make([]SampleRow, len(samps))
+	copy(out, samps)
+	for i := 1; i < len(samps)-1; i++ {
+		a, b, c := samps[i-1].UA, samps[i].UA, samps[i+1].UA
+		switch {
+		case (a >= b && b >= c) || (c >= b && b >= a):
+			out[i].UA = b
+		case (b >= a && a >= c) || (c >= a && a >= b):
+			out[i].UA = a
+		default:
+			out[i].UA = c
+		}
+	}
+	return out
 }
 
 // voltTopThreshold 返回观察序列 UV 的最高 ccTopVoltFrac 区间下界：升序数组中
