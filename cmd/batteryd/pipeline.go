@@ -89,6 +89,23 @@ type Pipeline struct {
 	restStreak  int
 	lastRestUV  int64
 	lastRestCap int64
+
+	// logf 决策点日志通道（main 注入 appendLog，nil 安全）：只记会话级
+	// 事件——开启/满电跳过/去抖/结算/CCCT 采信，不逐拍刷屏
+	logf   func(format string, args ...any)
+	logOn  bool // 上拍是否处于充电会话（满电跳过去重）
+	logDeb bool // 已打过「进入去抖」标记（同一轮去抖只打一次）
+}
+
+// Logf 注入决策点日志通道；在 NewPipeline 之后调用。
+func (p *Pipeline) Logf(fn func(format string, args ...any)) {
+	p.logf = fn
+}
+
+func (p *Pipeline) log(format string, args ...any) {
+	if p.logf != nil {
+		p.logf(format, args...)
+	}
 }
 
 func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, clock func() time.Time) *Pipeline {
@@ -202,11 +219,16 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	if status == "Charging" {
 		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
 		p.notChargStreak = 0
+		p.logDeb = false
 		return outcome, p.tickCharging(&outcome)
 	}
 	p.notChargStreak++
 	// 去抖期内不算断开：保留会话，等下一拍
 	if p.sess.active && p.notChargStreak < notChargDebounce {
+		if !p.logDeb {
+			p.logDeb = true
+			p.log("[会话] status=%s，去抖等待（第 %d/%d 拍）", status, p.notChargStreak, notChargDebounce)
+		}
 		return outcome, nil
 	}
 	if err := p.tickResting(status); err != nil {
@@ -222,6 +244,7 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 		if err := p.resetSession(); err != nil {
 			return outcome, &SettleError{Err: err}
 		}
+		p.logOn = false
 	}
 	return outcome, nil
 }
@@ -276,12 +299,18 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 		// 已满（cap≥sealCapacity）时插入充电器：米系满电保护下 delta 恒为 0，
 		// 该会话必被 delta_lt_20 拒收，只产生垃圾行——不开启会话，等真实回落。
 		if capVal >= sealCapacity {
+			if !p.logOn {
+				p.logOn = true
+				p.log("[会话] 满电插入（cap=%d%%），不开会话", capVal)
+			}
 			return nil
 		}
 		s.active = true
 		s.startTs = now
 		s.startCap = capVal
 		s.vStartUV = vUV
+		p.logOn = true
+		p.log("[会话] 开始于 %s cap=%d%%", p.now().Format("01-02 15:04:05"), capVal)
 	}
 	if !s.sealed {
 		s.accUAs += iUA * dt
@@ -317,6 +346,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			if err := p.settle(); err != nil {
 				return err
 			}
+			p.log("[会话] 充至满电封账")
 			outcome.SessionSettled = true
 			s.sealed = true
 			if err := p.persistSession(); err != nil {
@@ -399,6 +429,9 @@ func (p *Pipeline) settle() error {
 		}
 		row.Valid = false
 		row.InvalidReason = re.Result.Reason
+		p.log("[结算] 拒绝 reason=%s cap=%d→%d dur=%s avgI=%dmA",
+			re.Result.Reason, row.StartCap, row.EndCap,
+			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000)
 		if _, insErr := p.st.InsertSession(row); insErr != nil {
 			return &SettleError{Err: insErr}
 		}
@@ -408,6 +441,10 @@ func (p *Pipeline) settle() error {
 		return nil
 	}
 	row.Valid = true
+	p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh σ=%.1f",
+		row.StartCap, row.EndCap,
+		(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
+		upd.EstUA/1000, upd.SigmaMah)
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
 		return &SettleError{Err: insErr}
 	}
@@ -460,6 +497,7 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	}
 	switch {
 	case crossings == 1:
+		p.log("[CCCT] 采信穿窗 %dmV→%dmV 耗时 %d 分钟", loS.UV/1000, hiS.UV/1000, (hiS.TS-loS.TS)/60)
 		if ierr := p.st.InsertCCCT(hiS.TS, loS.UV, hiS.UV, hiS.TS-loS.TS); ierr != nil {
 			ev("ccct_skip", ierr.Error())
 		}
