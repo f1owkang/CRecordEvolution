@@ -293,6 +293,7 @@ func runDaemon() error {
 	}
 
 	p := NewPipeline(a.fs, a.st, a.est, a.designUA, time.Now)
+	p.Logf(a.appendLog)
 	lastStatus := ""
 	count := 0
 	failStreak := 0
@@ -327,6 +328,11 @@ func runDaemon() error {
 			}
 			ticker.Reset(step)
 			chargingStep = wantStep
+			if wantStep {
+				a.appendLog("[采样] 进入充电期，步长 60s→15s")
+			} else {
+				a.appendLog("[采样] 退出充电期，步长 15s→60s")
+			}
 		}
 
 		if _, err := p.Tick(status); err != nil {
