@@ -19,9 +19,13 @@ var channel = "stable"
 const (
 	usageText = "用法: batteryd <daemon|once|json>\n"
 
-	refreshRetryMax   = 10
-	refreshRetryWait  = 30 * time.Second
-	tickInterval      = 60 * time.Second
+	refreshRetryMax  = 10
+	refreshRetryWait = 30 * time.Second
+	tickInterval     = 60 * time.Second
+	// chargeSampleStep 充电期采样步长：快充电压每 60s 可爬 ~350mV（实测
+	// 3835→4189mV/拍），60s 步长会整段跳过 3.90→4.00V 观察窗，CCCT 永远
+	// 采不到跨窗点；15s 步长下窗内必有 1~2 个样本。
+	chargeSampleStep  = 15 * time.Second
 	refreshEveryTicks = 1440
 	retainDays        = 90
 	jsonRecentLimit   = 10
@@ -294,6 +298,7 @@ func runDaemon() error {
 	failStreak := 0
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
+	chargingStep := false // 当前 ticker 是否处于充电期 15s 快步长
 	for range ticker.C {
 		raw, err := os.ReadFile(statusNode)
 		if err != nil {
@@ -310,6 +315,19 @@ func runDaemon() error {
 			continue
 		}
 		status := strings.TrimSpace(string(raw))
+
+		// 变步长：充电期 15s 快采样（CCCT 观察窗在快充下每 60s 爬 ~350mV，
+		// 60s 步长会整段跳过 3.90→4.00V 窗）；其余维持 60s。电量按真实
+		// 时间差累积（pipeline 内），步长切换不产生计量偏差。
+		wantStep := status == "Charging"
+		if wantStep != chargingStep {
+			step := tickInterval
+			if wantStep {
+				step = chargeSampleStep
+			}
+			ticker.Reset(step)
+			chargingStep = wantStep
+		}
 
 		if _, err := p.Tick(status); err != nil {
 			streak, dead := tickStrike(failStreak, err)
