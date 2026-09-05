@@ -11,12 +11,12 @@ import (
 func TestAnalyzeCCCTCrossesWindowOnceSecs960(t *testing.T) {
 	var rows []SampleRow
 	base := int64(1000)
-	// 步长 6_250 µV/tick：首个 ≥3_900_000 与首个 ≥4_000_000 相差 16 tick。
+	// 步长 6_250 µV/tick：首个 ≥4_200_000 与首个 ≥4_300_000 相差 16 tick。
 	for i := 0; i < 60; i++ {
 		rows = append(rows, SampleRow{
 			TS:  base + int64(i)*tickSeconds,
 			UA:  500_000,
-			UV:  3_850_000 + int64(i)*6_250,
+			UV:  4_150_000 + int64(i)*6_250,
 			Cap: int64(50 + i),
 		})
 	}
@@ -42,20 +42,20 @@ func TestAnalyzeCCCTBrokenCurrentNoCross(t *testing.T) {
 	for i := 0; i < 30; i++ { // 平稳但电压低于窗下沿
 		rows = append(rows, SampleRow{
 			TS: base + int64(i)*tickSeconds, UA: 500_000,
-			UV: 3_600_000 + int64(i)*10_000, Cap: int64(i),
+			UV: 3_900_000 + int64(i)*10_000, Cap: int64(i),
 		})
 	}
 	for i := 30; i < 35; i++ { // 跳变窗口：σ/μ 远超 0.10
 		jolt := []int64{200_000, 700_000, 250_000, 650_000, 180_000}[i-30]
 		rows = append(rows, SampleRow{
 			TS: base + int64(i)*tickSeconds, UA: jolt,
-			UV: 3_900_000 + int64(i-30)*10_000, Cap: 30,
+			UV: 4_200_000 + int64(i-30)*10_000, Cap: 30,
 		})
 	}
 	for i := 35; i < 60; i++ { // 恢复平稳，但电压已高于窗下沿且不复回
 		rows = append(rows, SampleRow{
 			TS: base + int64(i)*tickSeconds, UA: 500_000,
-			UV: 3_950_000 + int64(i-35)*10_000, Cap: 35,
+			UV: 4_250_000 + int64(i-35)*10_000, Cap: 35,
 		})
 	}
 	segs := DetectCCSegs(rows, 5)
@@ -71,9 +71,9 @@ func TestAnalyzeCCCTBrokenCurrentNoCross(t *testing.T) {
 func TestAnalyzeCCCTMultipleCrossingSegmentsRejected(t *testing.T) {
 	var rows []SampleRow
 	for j := 0; j < 40; j++ {
-		uv := 3_850_000 + int64(j)*10_000
+		uv := 4_150_000 + int64(j)*10_000
 		if j >= 16 {
-			uv = 3_850_000 + int64(j-16)*10_000 // 回落后二次爬窗
+			uv = 4_150_000 + int64(j-16)*10_000 // 回落后二次爬窗
 		}
 		rows = append(rows, SampleRow{TS: int64(j) * tickSeconds, UA: 500_000, UV: uv, Cap: 30})
 	}
@@ -90,7 +90,7 @@ func TestAnalyzeCCCTInsufficientInput(t *testing.T) {
 	if _, ok := AnalyzeCCCT(nil, nil); ok {
 		t.Fatal("空输入应 ok=false")
 	}
-	rows := []SampleRow{{TS: 0, UA: 500_000, UV: 3_950_000}}
+	rows := []SampleRow{{TS: 0, UA: 500_000, UV: 4_250_000}}
 	if _, ok := AnalyzeCCCT(rows, []CCSeg{{FromTs: 0, ToTs: 60, MeanUA: 500_000}}); ok {
 		t.Fatal("单点不足跨窗，应 ok=false")
 	}
@@ -135,13 +135,13 @@ func TestRecordCCCTSkipsWithoutDesignCapacity(t *testing.T) {
 func TestSettleRecordsCCCTWithinGatedRate(t *testing.T) {
 	r := newPipeRig(t)
 
-	r.put(76, 1800000, 3_856_250) // k=1：uv=3_850_000+6_250
+	r.put(76, 1800000, 4_156_250) // k=1：uv=4_150_000+6_250
 	r.step("Charging")
 	for k := 2; k <= 31; k++ {
-		r.put(88, 1800000, 3_850_000+int64(k)*6_250)
+		r.put(88, 1800000, 4_150_000+int64(k)*6_250)
 		r.step("Charging")
 	}
-	r.put(100, 1800000, 3_850_000+32*6_250)
+	r.put(100, 1800000, 4_150_000+32*6_250)
 	if out := r.step("Charging"); !out.SessionSettled {
 		t.Fatal("cap=100 应封账结算")
 	}
@@ -160,10 +160,10 @@ func TestSettleRecordsCCCTWithinGatedRate(t *testing.T) {
 	if err := r.st.db.QueryRow(`SELECT ts,vw_lo,vw_hi,secs FROM ccct`).Scan(&ts, &vwLo, &vwHi, &secs); err != nil {
 		t.Fatalf("读取 ccct: %v", err)
 	}
-	wantLoTs := tickBaseTs + 8*tickSeconds // 第 8 tick 恰为 3_900_000
+	wantLoTs := tickBaseTs + 8*tickSeconds // 第 8 tick 恰为 4_200_000
 	wantHiTs := tickBaseTs + 24*tickSeconds
-	if ts != wantHiTs || vwLo != 3_900_000 || vwHi != 4_000_000 || secs != wantHiTs-wantLoTs {
-		t.Fatalf("ccct = (%d,%d,%d,%d), want (%d,3900000,4000000,960)",
+	if ts != wantHiTs || vwLo != 4_200_000 || vwHi != 4_300_000 || secs != wantHiTs-wantLoTs {
+		t.Fatalf("ccct = (%d,%d,%d,%d), want (%d,4200000,4300000,960)",
 			ts, vwLo, vwHi, secs, wantHiTs)
 	}
 	if n := countRows(t, r.st, "events"); n != 0 {
@@ -171,20 +171,19 @@ func TestSettleRecordsCCCTWithinGatedRate(t *testing.T) {
 	}
 }
 
-// 段均值 ×2 超过设计容量（>C/2）：不采信，记一条 ccct_skip 且不落 ccct 行。
+// 段均值超过设计容量（>1C）：不采信，记一条 ccct_skip 且不落 ccct 行。
 func TestSettleSkipsCCCTWhenRateExceedsDesign(t *testing.T) {
 	r := newPipeRig(t)
 
 	// 段均值 4.5A / 设计容量 4A = 1.125C > 1C 门限，应被拒收；同时不触
-	// 估算器 1.5C 上界保证会话本身有效（旧 ≤C/2 门限用 0.75C 即被拒，
-	// 放宽到 1C 后须用真超限倍率）
-	r.put(76, 4500000, 3_850_000+6_250)
+	// 估算器 1.5C 上界保证会话本身有效
+	r.put(76, 4500000, 4_150_000+6_250)
 	r.step("Charging")
 	for k := 2; k <= 18; k++ {
-		r.put(90, 4500000, 3_850_000+int64(k)*6_250)
+		r.put(90, 4500000, 4_150_000+int64(k)*6_250)
 		r.step("Charging")
 	}
-	r.put(100, 4500000, 4_100_000)
+	r.put(100, 4500000, 4_400_000)
 	if out := r.step("Charging"); !out.SessionSettled {
 		t.Fatal("cap=100 应封账结算")
 	}
@@ -196,8 +195,8 @@ func TestSettleSkipsCCCTWhenRateExceedsDesign(t *testing.T) {
 		t.Fatalf("倍率超标不应落 ccct 行, rows = %d", n)
 	}
 	detail, kind := queryEventOnce(t, r.st, "ccct_skip")
-	if !strings.Contains(detail, "倍率") {
-		t.Fatalf("ccct_skip 细节应说明倍率缘由: %q (kind=%s)", detail, kind)
+	if !strings.Contains(detail, "超限") {
+		t.Fatalf("ccct_skip 细节应说明倍率超限缘由: %q (kind=%s)", detail, kind)
 	}
 }
 

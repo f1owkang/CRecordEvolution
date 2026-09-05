@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ const (
 	refreshRetryWait = 30 * time.Second
 	tickInterval     = 60 * time.Second
 	// chargeSampleStep 充电期采样步长：快充电压每 60s 可爬 ~350mV（实测
-	// 3835→4189mV/拍），60s 步长会整段跳过 3.90→4.00V 观察窗，CCCT 永远
+	// 3835→4189mV/拍），60s 步长会整段跳过 4.20→4.30V 观察窗，CCCT 永远
 	// 采不到跨窗点；15s 步长下窗内必有 1~2 个样本。
 	chargeSampleStep  = 15 * time.Second
 	refreshEveryTicks = 1440
@@ -154,6 +155,16 @@ func healthPct(fullUA, designUA int64) int64 {
 	return fullUA * 100 / designUA
 }
 
+// cycleEquiv 循环当量：累计充入电量 ÷ 设计容量。charged_ua_total 单位 µA·s，
+// 须先 ÷3600 折算 µAh 再与 designUA（µAh）同纲相除，否则差 3600 倍；
+// designUA 缺失时返回 +Inf，由出口按非有限值降级省略。
+func cycleEquiv(totalUAs, designUA int64) float64 {
+	if designUA <= 0 {
+		return math.Inf(1)
+	}
+	return float64(totalUAs) / (float64(designUA) * 3600)
+}
+
 func (a *app) basics() Design {
 	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
@@ -203,7 +214,7 @@ func (a *app) refreshPruned() error {
 func (a *app) stats() (Design, Snapshot, error) {
 	d := a.basics()
 	snap := Snapshot{
-		CycleEquiv: float64(kvInt(a.st, kvChargedTotal)) / float64(a.designUA),
+		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUA),
 		RMoh:       a.rMoh(),
 	}
 	if ema, samples, ok := a.estimate(); ok {
@@ -241,16 +252,37 @@ func (a *app) estimate() (int64, int64, bool) {
 	return ema, samples, true
 }
 
+// resDisplayN 内阻显示取最近 N 条样本的中位数：单窗回归值受电流阶跃污染可达
+// 真值的 5~10 倍，在线 EMA（α=0.2、无稳健机制）实测被持续踢高 7 倍，中位数口径
+// 无状态且自愈；样本不足（含 90 天清理后无近期充电）按缺失省略。
+const resDisplayN = 16
+
 func (a *app) rMoh() *float64 {
-	v, ok := a.st.KVGet(kvREmaMOhm)
-	if !ok {
+	mos, err := a.st.RecentResistance(resDisplayN)
+	if err != nil || len(mos) == 0 {
 		return nil
 	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f <= 0 {
+	return medianMoh(mos)
+}
+
+// medianMoh 取中位内阻（偶数个取中间两值均值）；无正值返回 nil。
+func medianMoh(mos []float64) *float64 {
+	if len(mos) == 0 {
 		return nil
 	}
-	return &f
+	sorted := append([]float64(nil), mos...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	var median float64
+	if n%2 == 1 {
+		median = sorted[n/2]
+	} else {
+		median = (sorted[n/2-1] + sorted[n/2]) / 2
+	}
+	if median <= 0 {
+		return nil
+	}
+	return &median
 }
 
 // sigmaMah 从 kv 读置信区间；解析失败、≤0 或非有限值（学习期/种子重置）⇒ nil
@@ -318,7 +350,7 @@ func runDaemon() error {
 		status := strings.TrimSpace(string(raw))
 
 		// 变步长：充电期 15s 快采样（CCCT 观察窗在快充下每 60s 爬 ~350mV，
-		// 60s 步长会整段跳过 3.90→4.00V 窗）；其余维持 60s。电量按真实
+		// 60s 步长会整段跳过 4.20→4.30V 窗）；其余维持 60s。电量按真实
 		// 时间差累积（pipeline 内），步长切换不产生计量偏差。
 		wantStep := status == "Charging"
 		if wantStep != chargingStep {

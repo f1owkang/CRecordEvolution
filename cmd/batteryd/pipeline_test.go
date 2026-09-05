@@ -201,7 +201,7 @@ func TestPipelineSealsOnceAtFullCharge(t *testing.T) {
 func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 	r := newPipeRig(t)
 
-	for _, capV := range []int64{10, 22, 34, 46, 58, 70} {
+	for _, capV := range []int64{39, 51, 63, 75, 87, 99} {
 		r.put(capV, 12000000, 4200000)
 		if out := r.step("Charging"); out.SessionSettled {
 			t.Fatal("未拔出且未满电不应结算")
@@ -209,7 +209,7 @@ func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 	}
 
 	// 新语义：拔出需 3 拍去抖确认才结算，EndTs 落在第 3 拍
-	r.put(70, 500000, 4300000)
+	r.put(99, 500000, 4300000)
 	if out := r.step("Discharging"); out.SessionSettled {
 		t.Fatal("单拍拔出处于去抖期, 不应立即结算")
 	}
@@ -226,8 +226,8 @@ func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 		t.Fatalf("时间戳 = (%d,%d), want (%d,%d)", sess.StartTs, sess.EndTs,
 			tickBaseTs+60, tickBaseTs+540)
 	}
-	if sess.StartCap != 10 || sess.EndCap != 70 {
-		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
+	if sess.StartCap != 39 || sess.EndCap != 99 {
+		t.Fatalf("cap 区间 = [%d,%d], want [39,99]", sess.StartCap, sess.EndCap)
 	}
 	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量只按充电拍累积
 	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
@@ -254,7 +254,7 @@ func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 		t.Fatalf("放电大电流不应记录静息点, rows = %d", n)
 	}
 
-	r.put(69, 500000, 4310000)
+	r.put(98, 500000, 4310000)
 	if out := r.step("Discharging"); out.SessionSettled {
 		t.Fatal("无活动会话的拔出 tick 不应结算")
 	}
@@ -311,25 +311,25 @@ func TestPipelineDebounceReturnsToCharging(t *testing.T) {
 func TestPipelineRestoresSessionAcrossRestart(t *testing.T) {
 	r := newPipeRig(t)
 
-	for _, capV := range []int64{10, 22, 34} {
+	for _, capV := range []int64{39, 51, 63} {
 		r.put(capV, 12000000, 4200000)
 		r.step("Charging")
 	}
 	wantKV(t, r.st, "sess_active", "1")
 	wantKV(t, r.st, "sess_acc_uas", "2160000000")
-	wantKV(t, r.st, "sess_start_cap", "10")
+	wantKV(t, r.st, "sess_start_cap", "39")
 	wantKV(t, r.st, "sess_ticks", "3")
-	wantKV(t, r.st, "sess_last_cap", "34")
+	wantKV(t, r.st, "sess_last_cap", "63")
 
 	r.rebuildPipeline()
 
-	for _, capV := range []int64{46, 58, 70} {
+	for _, capV := range []int64{75, 87, 99} {
 		r.put(capV, 12000000, 4200000)
 		if out := r.step("Charging"); out.SessionSettled {
 			t.Fatal("恢复后的会话不应提前结算")
 		}
 	}
-	r.put(70, 500000, 4300000)
+	r.put(99, 500000, 4300000)
 	r.step("Discharging")
 	r.step("Discharging")
 	if out := r.step("Discharging"); !out.SessionSettled {
@@ -344,8 +344,8 @@ func TestPipelineRestoresSessionAcrossRestart(t *testing.T) {
 		t.Fatalf("时间戳 = (%d,%d), want (%d,%d)", sess.StartTs, sess.EndTs,
 			tickBaseTs+60, tickBaseTs+540)
 	}
-	if sess.StartCap != 10 || sess.EndCap != 70 {
-		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
+	if sess.StartCap != 39 || sess.EndCap != 99 {
+		t.Fatalf("cap 区间 = [%d,%d], want [39,99]", sess.StartCap, sess.EndCap)
 	}
 	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量两段合计不变
 	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
@@ -441,7 +441,7 @@ func TestPipelineRestOCVThreeTicksAndDedup(t *testing.T) {
 		r.put(capV, iRaw, vUV)
 		r.step("Discharging")
 	}
-	lowTickBigCurrent(78, 25000, 4094000)
+	lowTickBigCurrent(78, 150000, 4094000)
 	lowTick(77, 4090000)
 	lowTick(77, 4090000)
 	if rows := loadRestPoints(); len(rows) != 3 {
@@ -542,9 +542,6 @@ func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 		if n := countRows(t, r.st, "resistance"); n != 0 {
 			t.Fatalf("不足 20 样本不应回归, rows = %d", n)
 		}
-		if _, ok := kvString(t, r.st, "r_ema_mo"); ok {
-			t.Fatal("未回归不应写 r_ema_mo")
-		}
 	})
 
 	t.Run("恒流零方差跳过回归", func(t *testing.T) {
@@ -555,9 +552,6 @@ func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 		}
 		if n := countRows(t, r.st, "resistance"); n != 0 {
 			t.Fatalf("std(I)=0 应跳过回归, rows = %d", n)
-		}
-		if _, ok := kvString(t, r.st, "r_ema_mo"); ok {
-			t.Fatal("未产生有效内阻不应写 r_ema_mo")
 		}
 	})
 
@@ -572,16 +566,17 @@ func TestPipelineResistanceSyntheticSlopeWithinFivePercent(t *testing.T) {
 		if math.Abs(mo-50) > 50*0.05 {
 			t.Fatalf("还原内阻 = %.4f mΩ, 超出 50mΩ ±5%% 容差", mo)
 		}
-		kvVal, ok := kvString(t, r.st, "r_ema_mo")
-		if !ok {
-			t.Fatal("回归成功应写 kv.r_ema_mo")
+		// 显示口径 = 表中最近样本的中位数（无 kv EMA）：稳态序列应还原合成斜率
+		rows, err := r.st.RecentResistance(resDisplayN)
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("RecentResistance: %v (n=%d)", err, len(rows))
 		}
-		ema, err := strconv.ParseFloat(kvVal, 64)
-		if err != nil {
-			t.Fatalf("kv.r_ema_mo = %q 不是数字: %v", kvVal, err)
+		median := medianMoh(rows)
+		if median == nil || math.Abs(*median-50) > 50*0.05 {
+			t.Fatalf("中位数口径 = %v, 超出 50mΩ ±5%% 容差", median)
 		}
-		if ema <= 0 || math.Abs(ema-mo) > 1e-9 {
-			t.Fatalf("EMA 值 = %.4f, 与最新内阻 %.4f 不一致(稳态序列应收敛到新值)", ema, mo)
+		if _, ok := kvString(t, r.st, "r_ema_mo"); ok {
+			t.Fatal("EMA 口径已废弃, 不应再写 kv.r_ema_mo")
 		}
 	})
 }
@@ -714,11 +709,11 @@ func TestPipelineRejectedSessionRecorded(t *testing.T) {
 func TestPipelineValidSessionHasNoInvalidReason(t *testing.T) {
 	r := newPipeRig(t)
 
-	for _, capV := range []int64{10, 22, 34, 46, 58, 70} {
+	for _, capV := range []int64{39, 51, 63, 75, 87, 99} {
 		r.put(capV, 12000000, 4200000)
 		r.step("Charging")
 	}
-	r.put(70, 500000, 4300000)
+	r.put(99, 500000, 4300000)
 	r.step("Discharging")
 	r.step("Discharging")
 	if out := r.step("Discharging"); !out.SessionSettled {

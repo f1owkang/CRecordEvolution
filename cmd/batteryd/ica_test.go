@@ -277,22 +277,24 @@ func TestRecordICAEmptyGatedRowsNoop(t *testing.T) {
 	}
 }
 
-// 有效结算挂接：中部适度增强电流仍低于 C/2 门控，结算后同步落 ICA 行并写基准。
+// 有效结算挂接：中部适度增强电流仍低于 1C 门控，结算后同步落 ICA 行并写基准。
+// 电压基线 4_000_000：跨窗段须覆盖 CCCT 观察窗 4.20→4.30V（k20 恰达下沿、
+// k30 越上沿），ICA 主峰落在搜索域上沿 4_250_000 之内的 4_220~4_240 桶。
 func TestSettleRecordsICAWithinGatedRate(t *testing.T) {
 	r := newPipeRig(t)
 
-	boostLoK, boostHiK := 21, 35 // 到达电压 3_910_000..4_050_000，跨 3.95V 邻域
-	r.put(76, icaTestBaseUA, 3_700_000+1*icaBinUV)
+	boostLoK, boostHiK := 21, 35
+	r.put(76, icaTestBaseUA, 4_000_000+1*icaBinUV)
 	for k := 2; k <= 37; k++ {
 		ua := icaTestBaseUA
 		if k > boostLoK && k <= boostHiK {
-			ua = icaTestBoostUA // 1_400_000×2 = 2.8M < designUA 4M，门控通过
+			ua = icaTestBoostUA // 1_400_000 < designUA 4M，1C 门控通过
 		}
 		capV := int64(76 + k/4)
 		if k == 37 {
 			capV = 100
 		}
-		r.put(capV, ua, 3_700_000+int64(k)*icaBinUV)
+		r.put(capV, ua, 4_000_000+int64(k)*icaBinUV)
 		out := r.step("Charging")
 		if k == 37 && !out.SessionSettled {
 			t.Fatal("cap=100 应封账结算")
@@ -313,8 +315,8 @@ func TestSettleRecordsICAWithinGatedRate(t *testing.T) {
 	if got[0].PeakHRel != 1.0 {
 		t.Fatalf("首个会话 rel = %v, want 1", got[0].PeakHRel)
 	}
-	if got[0].PeakUV < 3_900_000 || got[0].PeakUV > 4_010_000 {
-		t.Fatalf("peakUV = %d, want 注入域 [3_900_000, 4_010_000]", got[0].PeakUV)
+	if got[0].PeakUV < 4_200_000 || got[0].PeakUV > 4_240_000 {
+		t.Fatalf("peakUV = %d, want 注入域 [4_200_000, 4_240_000]", got[0].PeakUV)
 	}
 	if txt, ok := kvString(t, r.st, kvICAPeakBase); !ok {
 		t.Fatal("settle 后应写 kv ica_peak_base")

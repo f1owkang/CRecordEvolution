@@ -13,19 +13,24 @@ const (
 	sealCapacity int64 = 100
 
 	kvChargedTotal = "charged_ua_total"
-	kvREmaMOhm     = "r_ema_mo"
 
-	restQuietUA       int64 = 20000
+	restQuietUA int64 = 100000
+	// 100mA 门限：20mA 在实机（灭屏底耗 20~80mA 且周期性唤醒）9 天零触发，
+	// rest_points 全空；100mA 下的 IR 压降（~30mΩ × 100mA = 3mV）低于去重
+	// 漂移门限 5mV，不破坏静置电压指纹语义。
 	restMinTicks            = 3
 	restDedupCapDelta int64 = 1
 	restDedupUVDrift  int64 = 5000
 	restRelaxTicks          = 10 // e-Energy '23：静置约 10 分钟电压收敛，可作 SoH 指纹
 
-	resWindowMax  int     = 30
-	resMinSamples int     = 20
-	resMinStdUA   float64 = 50000
-	resMinMOhm    float64 = 0.5
-	resMaxMOhm    float64 = 500
+	resWindowMax  int = 30
+	resMinSamples int = 20
+	// resMinStdUA 150mA：50mA 门限下电流近乎平稳的窗靠测量噪声凑方差，
+	// 回归斜率被 OCV 漂移主导（实测单值可达真值 5~10 倍，246/281 mΩ）；
+	// 收紧后两台实测设备 p99 从 181/259 降到 49/232 mΩ。
+	resMinStdUA float64 = 150000
+	resMinMOhm  float64 = 0.5
+	resMaxMOhm  float64 = 200
 
 	kvSessActive   = "sess_active"
 	kvSessSealed   = "sess_sealed"
@@ -441,10 +446,18 @@ func (p *Pipeline) settle() error {
 		return nil
 	}
 	row.Valid = true
-	p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh σ=%.1f",
-		row.StartCap, row.EndCap,
-		(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
-		upd.EstUA/1000, upd.SigmaMah)
+	// σ 仅 ML 通道产出（stable 恒为 0）：≤0 时省略段，避免打印误导性的 σ=0.0
+	if upd.SigmaMah > 0 {
+		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh σ=%.1f",
+			row.StartCap, row.EndCap,
+			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
+			upd.EstUA/1000, upd.SigmaMah)
+	} else {
+		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh",
+			row.StartCap, row.EndCap,
+			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
+			upd.EstUA/1000)
+	}
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
 		return &SettleError{Err: insErr}
 	}
@@ -501,10 +514,15 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 		if ierr := p.st.InsertCCCT(hiS.TS, loS.UV, hiS.UV, hiS.TS-loS.TS); ierr != nil {
 			ev("ccct_skip", ierr.Error())
 		}
-	case crossings == 0 && gateRejected > 0:
-		ev("ccct_skip", fmt.Sprintf("%d 个恒流段倍率超限(段均值>%d µA)，未采信", gateRejected, p.designUA))
 	case crossings == 0:
-		ev("cc_unstable", "无可跨越整窗的恒流段")
+		// 归因全量明细：恒流段总数、过门/超限分布、跨窗数。旧文案只报
+		// 「倍率超限」，实测掩盖主根因（过门段未跨整窗 / 会话起点高于窗）。
+		if gateRejected > 0 {
+			ev("ccct_skip", fmt.Sprintf("恒流段 %d 个(过门 %d/超限 %d)，均未跨越整窗，未采信",
+				len(segs), len(segs)-gateRejected, gateRejected))
+		} else {
+			ev("cc_unstable", fmt.Sprintf("恒流段 %d 个，均未跨越整窗", len(segs)))
+		}
 	default:
 		ev("ccct_skip", fmt.Sprintf("%d 个恒流段同时跨越整窗，无法唯一归因", crossings))
 	}
@@ -586,24 +604,13 @@ func (p *Pipeline) evalResistance() error {
 		return nil
 	}
 	// 内阻样本仅在充电态采集，充电时 V = OCV + I·R，斜率 dV/dI = +R，取正号。
+	// 显示口径（rMoh）对表中最近样本取中位数，这里只负责把过门限的原始值落表。
 	mo := ((fn*sumIV - sumI*sumV) / denom) * 1000
 	if mo < resMinMOhm || mo > resMaxMOhm {
 		return nil
 	}
 	ts := p.now().Unix()
-	if err := p.st.InsertResistance(ts, mo); err != nil {
-		return &SettleError{Err: err}
-	}
-	ema := mo
-	if old, ok := p.st.KVGet(kvREmaMOhm); ok {
-		if f, perr := strconv.ParseFloat(old, 64); perr == nil && f > 0 {
-			ema = f*0.8 + mo*0.2
-		}
-	}
-	if err := p.st.KVSet(kvREmaMOhm, strconv.FormatFloat(ema, 'f', -1, 64)); err != nil {
-		return &SettleError{Err: err}
-	}
-	return nil
+	return p.st.InsertResistance(ts, mo)
 }
 
 func (p *Pipeline) tickResting(status string) error {

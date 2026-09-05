@@ -165,6 +165,25 @@ func (s *Store) InsertResistance(ts int64, mo float64) error {
 	return err
 }
 
+// RecentResistance 返回最近 limit 条内阻样本值（按 ts 降序，即最新在前），
+// 供显示层做稳健统计（中位数），单条离群不影响口径。
+func (s *Store) RecentResistance(limit int) ([]float64, error) {
+	rows, err := s.db.Query(`SELECT mo FROM resistance ORDER BY ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []float64{}
+	for rows.Next() {
+		var mo float64
+		if err := rows.Scan(&mo); err != nil {
+			return nil, err
+		}
+		out = append(out, mo)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) InsertRestPoint(ts, uv, cap int64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO rest_points(ts, uv, cap) VALUES(?, ?, ?)`, ts, uv, cap)
 	return err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,42 @@ func TestSigmaMahRejectsNonFinite(t *testing.T) {
 		if got := a.sigmaMah(); got != nil {
 			t.Fatalf("σ=%q 应被判 nil, got %v", val, *got)
 		}
+	}
+}
+
+func TestCycleEquivUsesHoursBase(t *testing.T) {
+	// charged_ua_total 单位 µA·s，除以 designUA(µAh) 前必须 ÷3600 折算小时：
+	// 设备实测值 109516965000 µA·s ÷ 8600000 µAh ≈ 3.54 循环，
+	// 旧实现漏 ÷3600 会显示 12734.53
+	got := cycleEquiv(109516965000, 8600000)
+	want := 109516965000.0 / (8600000.0 * 3600)
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("cycleEquiv = %v, want %v", got, want)
+	}
+	if got := cycleEquiv(4320000000, 4000000); got != 0.3 {
+		t.Fatalf("cycleEquiv = %v, want 0.3", got)
+	}
+	if !math.IsInf(cycleEquiv(1000, 0), 1) {
+		t.Fatal("designUA=0 应返回 +Inf（出口按非有限值降级）")
+	}
+}
+
+func TestMedianMohRobust(t *testing.T) {
+	// 中位数口径：单个 5~10 倍离群值不得拉动显示值（旧 EMA 实测被踢高 7 倍）
+	mos := []float64{11.9, 12.4, 11.1, 246.3, 12.8, 11.5, 12.1}
+	got := medianMoh(mos)
+	if got == nil || math.Abs(*got-12.1) > 1e-9 {
+		t.Fatalf("medianMoh = %v, want 12.1", got)
+	}
+	even := medianMoh([]float64{10, 20})
+	if even == nil || *even != 15 {
+		t.Fatalf("偶数个中位数 = %v, want 15", even)
+	}
+	if medianMoh(nil) != nil {
+		t.Fatal("空切片应返回 nil")
+	}
+	if medianMoh([]float64{0, -1}) != nil {
+		t.Fatal("无正值应返回 nil")
 	}
 }
 

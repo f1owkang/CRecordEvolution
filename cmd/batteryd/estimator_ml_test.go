@@ -112,53 +112,81 @@ func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 
 func TestLearningClipsCorrectionAtUpperBound(t *testing.T) {
 	est, st := newTestLearning(t)
-	seedML(t, est)
 
-	hi := SettledSession{Session: baseSession(), AccUA: 9288000000, DesignUA: 4000000}
-	for i := 0; i < 30; i++ {
-		upd, err := est.OnSession(hi)
-		if err != nil {
-			t.Fatalf("第 %d 次 y≈1.43 训练会话应被接受: %v", i+1, err)
-		}
-		if upd.Samples != int64(i+2) {
-			t.Fatalf("第 %d 次训练会话 Samples = %d, want %d", i+1, upd.Samples, i+2)
-		}
+	// 预置正式期状态（samples>30）使 θᵀφ 超过 clip 上界：学习期基线随会话
+	// 移动后 r→1、θ 收敛于 ~1，clip 无法再从自然训练中触发，只能从预置
+	// 病态 θ 验证钳位路径。
+	if err := st.KVSet(kvKeySamples, "50"); err != nil {
+		t.Fatalf("写 kv[samples]: %v", err)
 	}
-	if gotSamples := kvInt(st, kvKeySamples); gotSamples != 31 {
-		t.Fatalf("训练后 samples = %d, want 31", gotSamples)
+	if err := st.KVSet(kvKeyEmaUA, "3000000"); err != nil {
+		t.Fatalf("写 kv[ema_ua]: %v", err)
 	}
-	if gotEma := kvInt(st, kvKeyEmaUA); gotEma != 3000000 {
-		t.Fatalf("w=0 阶段基线不应移动, ema_ua = %d, want 3000000", gotEma)
-	}
+	setKVJSON(t, st, kvKeyRlsTheta, []float64{2.0, 0, 0, 0})
+	setKVJSON(t, st, kvKeyRlsPSym, []float64{100, 0, 0, 0, 100, 0, 0, 100, 0, 100})
 
-	var pre [4]float64
-	copy(pre[:], kvFloats(t, st, kvKeyRlsTheta, 4))
-	if dot4(mlPhi(hi.Session), pre) <= clipHi {
-		t.Fatalf("前置条件失败：θᵀφ = %v 未超过 clip 上界 %v", dot4(mlPhi(hi.Session), pre), clipHi)
-	}
-	e31 := kvInt(st, kvKeyEmaUA)
-
-	upd, err := est.OnSession(hi)
+	sess := baseSession()
+	emaBefore := kvInt(st, kvKeyEmaUA)
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 9288000000, DesignUA: 4000000})
 	if err != nil {
 		t.Fatalf("探测会话应被接受: %v", err)
 	}
 
-	w := mlWeight(31)
-	want := int64((1-w)*float64(e31) + w*(float64(e31)*clipHi))
-	if want != 3004500 {
-		t.Fatalf("期望值自检失败：want = %d, want 3004500(w=%v)", want, w)
-	}
-	if upd.EstUA != want {
-		t.Fatalf("clip 生效时 EstUA = %d, want %d((1-%v)*%d+%v*%d*%v)", upd.EstUA, want, w, e31, w, e31, clipHi)
-	}
-	if upd.Samples != 32 {
-		t.Fatalf("探测会话 Samples = %d, want 32", upd.Samples)
-	}
-
 	var post [4]float64
 	copy(post[:], kvFloats(t, st, kvKeyRlsTheta, 4))
-	if dot4(mlPhi(hi.Session), post) <= clipHi {
-		t.Fatalf("探测后 θᵀφ = %v 应仍超过 %v", dot4(mlPhi(hi.Session), post), clipHi)
+	pred := dot4(mlPhi(sess), post)
+	if pred <= clipHi {
+		t.Fatalf("前置条件失败：更新后 θᵀφ = %v 未超过 clip 上界 %v", pred, clipHi)
+	}
+
+	w := mlWeight(50)
+	corrected := float64(emaBefore) * clipRatio(pred)
+	want := int64((1-w)*float64(emaBefore) + w*corrected)
+	if upd.EstUA != want {
+		t.Fatalf("clip 生效时 EstUA = %d, want %d((1-%v)*%d+%v*%v)", upd.EstUA, want, w, emaBefore, w, corrected)
+	}
+	if upd.Samples != 51 {
+		t.Fatalf("探测会话 Samples = %d, want 51", upd.Samples)
+	}
+}
+
+func TestLearningBaselineMovesDuringLearning(t *testing.T) {
+	// 旧实现学习期（samples≤30）基线冻结在种子值：实测设备 5 个采信会话
+	// 输出一字不变，显示信息量反而少于 stable。新实现按 stable 同式 EMA 移动。
+	est, st := newTestLearning(t)
+	seedML(t, est) // ema=3000000
+
+	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 9288000000, DesignUA: 4000000})
+	if err != nil {
+		t.Fatalf("学习期会话应被接受: %v", err)
+	}
+	// sFull = 9288000000×100/(60×3600) = 4300000；est = (3000000×7+4300000×3)/10
+	if want := int64(3390000); upd.EstUA != want {
+		t.Fatalf("学习期 EstUA = %d, want %d(基线应随会话移动)", upd.EstUA, want)
+	}
+	if v, _ := st.KVGet(kvKeyEmaUA); v != "3390000" {
+		t.Fatalf(`学习期 kv[ema_ua] = %q, want "3390000"`, v)
+	}
+}
+
+func TestLearningPartialWeightDuringLearning(t *testing.T) {
+	// 学习期未满充会话同样经 emaBlend 降权 1/10
+	est, st := newTestLearning(t)
+	seedML(t, est) // ema=3000000
+
+	sess := baseSession()
+	sess.StartCap = 78
+	sess.EndCap = 98
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 3096000000, DesignUA: 4000000})
+	if err != nil {
+		t.Fatalf("学习期未满充会话应被接受: %v", err)
+	}
+	// sFull = 3096000000×100/(20×3600) = 4300000；est = (3000000*9+4300000)/10
+	if want := int64(3130000); upd.EstUA != want {
+		t.Fatalf("学习期 EstUA = %d, want %d(未满充降权 1/10)", upd.EstUA, want)
+	}
+	if v, _ := st.KVGet(kvKeyEmaUA); v != "3130000" {
+		t.Fatalf(`学习期 kv[ema_ua] = %q, want "3130000"`, v)
 	}
 }
 
@@ -246,8 +274,9 @@ func TestLearningIQROnlyFromEighthRatio(t *testing.T) {
 	if v, _ := st.KVGet(kvKeySamples); v != "9" {
 		t.Fatalf(`剔除后 kv[samples] = %q, want "9"`, v)
 	}
-	if v, _ := st.KVGet(kvKeyEmaUA); v != "3000000" {
-		t.Fatalf(`剔除后 kv[ema_ua] = %q, want "3000000"`, v)
+	// 基线在被剔除会话前已随第 8 条离群会话移动到 3390000，剔除本身不再改写
+	if v, _ := st.KVGet(kvKeyEmaUA); v != "3390000" {
+		t.Fatalf(`剔除后 kv[ema_ua] = %q, want "3390000"`, v)
 	}
 }
 
@@ -260,7 +289,7 @@ func TestLearningSigma(t *testing.T) {
 		t.Fatalf("种子后 kv[%s] = %q, want \"0\"", kvKeyEmaSigma, v)
 	}
 
-	// 种子后首批会话仍处学习期（samples≤30）且 ratio_hist 不足 8 个：
+	// 种子后首批会话仍处学习期（samples≤30）且 sfull_hist 不足 8 个：
 	// φᵀPφ 尚无意义、实测散布也不可用，σ 应为 0（由上层 ≤0→nil 降级隐藏 ±）
 	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
 	if err != nil {
@@ -325,8 +354,8 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 		}
 	}
 
-	// 第 8 条会话构造微散布（r=1.02）：hist 恰满 8 个，学习期出口应给出
-	// σ = 实测相对散布 × corrected/1000（而非 φᵀPφ 的巨大值）
+	// 第 8 条会话构造微散布（sFull/ema=1.02）：sfull_hist 恰满 8 个，学习期
+	// 出口应给出 σ = sfull_hist 实测相对散布 × est/1000（est 为移动后的基线）
 	sess := baseSession()
 	emaBefore := kvInt(st, kvKeyEmaUA)
 	sr := SettledSession{Session: sess, AccUA: 6609600000, DesignUA: 4000000}
@@ -335,10 +364,15 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 		t.Fatalf("第 8 条会话应被接受: %v", err)
 	}
 	if upd.SigmaMah <= 0 {
-		t.Fatalf("hist 满 8 后 SigmaMah = %v, want > 0", upd.SigmaMah)
+		t.Fatalf("sfull_hist 满 8 后 SigmaMah = %v, want > 0", upd.SigmaMah)
 	}
-	hist := kvFloats(t, st, kvKeyRatioHist, 8)
-	want := popRelStd(hist) * correctedFromKV(t, st, sess, emaBefore) / 1000
+	sfull := kvFloats(t, st, kvKeySFullHist, 8)
+	sFull := int64(6609600000) * 100 / (60 * 3600) // 3060000
+	estWant := (emaBefore*7 + sFull*3) / 10        // 学习期基线随会话移动
+	if upd.EstUA != estWant {
+		t.Fatalf("学习期 EstUA = %d, want %d", upd.EstUA, estWant)
+	}
+	want := popRelStd(sfull) * float64(estWant) / 1000
 	if math.Abs(upd.SigmaMah-want) > 1e-6 {
 		t.Fatalf("学习期出口 SigmaMah = %v, want 实测散布换算 %v", upd.SigmaMah, want)
 	}
@@ -348,7 +382,7 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 	est, st := newTestLearning(t)
 
 	// 预置一个「P 矩阵远未收敛」的正式期状态：samples=50（>30），
-	// P 对角仍为旧量级 1e4，ratio_hist 为 12 个有散布的固定比值
+	// P 对角仍为旧量级 1e4，ratio_hist / sfull_hist 为 12 个有散布的固定比值
 	if err := st.KVSet(kvKeySamples, "50"); err != nil {
 		t.Fatalf("写 kv[samples]: %v", err)
 	}
@@ -357,6 +391,7 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 	}
 	setKVJSON(t, st, kvKeyRlsPSym, []float64{1e4, 0, 0, 0, 1e4, 0, 0, 1e4, 0, 1e4})
 	setKVJSON(t, st, kvKeyRatioHist, []float64{0.96, 0.97, 0.98, 0.99, 1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06, 1.07})
+	setKVJSON(t, st, kvKeySFullHist, []float64{2880000, 2910000, 2940000, 2970000, 3000000, 3030000, 3060000, 3090000, 3120000, 3150000, 3180000, 3210000})
 
 	sess := baseSession()
 	emaBefore := kvInt(st, kvKeyEmaUA)
@@ -365,10 +400,10 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 		t.Fatalf("会话应被接受: %v", err)
 	}
 
-	// σ 不得超过实测相对散布对应的 mAh 上界
-	hist := kvFloats(t, st, kvKeyRatioHist, 13)
+	// σ 不得超过 sfull_hist 实测相对散布对应的 mAh 上界
+	sfull := kvFloats(t, st, kvKeySFullHist, 13)
 	corrected := correctedFromKV(t, st, sess, emaBefore)
-	upper := popRelStd(hist) * corrected / 1000
+	upper := popRelStd(sfull) * corrected / 1000
 	if upd.SigmaMah <= 0 || upd.SigmaMah > upper+1e-9 {
 		t.Fatalf("SigmaMah = %v, want ∈ (0, 实测散布上界 %v]", upd.SigmaMah, upper)
 	}

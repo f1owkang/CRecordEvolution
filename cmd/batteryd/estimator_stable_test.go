@@ -19,7 +19,7 @@ func newTestStable(t *testing.T) (*Stable, *Store) {
 func baseSession() Session {
 	return Session{
 		StartTs: 1000, EndTs: 2000,
-		StartCap: 20, EndCap: 80,
+		StartCap: 40, EndCap: 100,
 		Ua:      8208000000,
 		AvgI:    1500000,
 		CRate:   0.375,
@@ -43,7 +43,7 @@ func TestOnSessionRejectsTempOutOfRange(t *testing.T) {
 		tempMax int64
 	}{
 		{"temp_min低于15", 12, 35},
-		{"temp_max高于40", 20, 41},
+		{"temp_max高于45", 20, 46},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,7 +101,7 @@ func TestOnSessionRejectsDeltaBelow20(t *testing.T) {
 	est, st := newTestStable(t)
 
 	sess := baseSession()
-	sess.EndCap = 39
+	sess.EndCap = 55
 	sr := SettledSession{Session: sess, AccUA: 8208000000, DesignUA: 4000000}
 
 	upd, err := est.OnSession(sr)
@@ -159,13 +159,14 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	est, st := newTestStable(t)
 
 	first := SettledSession{Session: baseSession(), AccUA: 1440000000, DesignUA: 4000000}
-	first.EndCap = 40
+	first.StartCap = 80
+	first.EndCap = 100
 	first.TempMin = 15
-	first.TempMax = 40
+	first.TempMax = 45
 
 	upd, err := est.OnSession(first)
 	if err != nil {
-		t.Fatalf("首会话(delta恰为20、窗口下界恰为0.5倍、温度恰在15/40边界)应被接受: %v", err)
+		t.Fatalf("首会话(delta恰为20、窗口下界恰为0.5倍、温度恰在15/45边界)应被接受: %v", err)
 	}
 	if !upd.Changed {
 		t.Fatal("接受时 Changed 应为 true")
@@ -183,9 +184,9 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 		t.Fatalf(`kv[ema_ua] = (%q,%v), want ("2000000",true)`, v, ok)
 	}
 
-	second := SettledSession{Session: baseSession(), AccUA: 4500000360, DesignUA: 4000000}
-	second.StartCap = 10
-	second.EndCap = 40
+	second := SettledSession{Session: baseSession(), AccUA: 3000000240, DesignUA: 4000000}
+	second.StartCap = 80
+	second.EndCap = 100
 	second.StartTs = 5000
 	second.EndTs = 6000
 
@@ -207,6 +208,38 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	}
 	if v, ok := kvString(t, st, "ema_ua"); !ok || v != "2650000" {
 		t.Fatalf(`kv[ema_ua] = (%q,%v), want ("2650000",true)`, v, ok)
+	}
+}
+
+func TestOnSessionPartialWeightReduced(t *testing.T) {
+	// 未满充会话（EndCap<fullSealCap）不作门控但降权至 1/10：保留采信资格，
+	// 抑制其偏高隐含容量对显示值的拉动
+	est, st := newTestStable(t)
+
+	first := SettledSession{Session: baseSession(), AccUA: 1440000000, DesignUA: 4000000}
+	first.StartCap = 80
+	first.EndCap = 100
+	if upd, err := est.OnSession(first); err != nil {
+		t.Fatalf("种子会话应被接受: %v", err)
+	} else if upd.EstUA != 2000000 {
+		t.Fatalf("种子 EstUA = %d, want 2000000", upd.EstUA)
+	}
+
+	second := SettledSession{Session: baseSession(), AccUA: 3000000240, DesignUA: 4000000}
+	second.StartCap = 78
+	second.EndCap = 98
+	second.StartTs = 5000
+	second.EndTs = 6000
+	upd2, err := est.OnSession(second)
+	if err != nil {
+		t.Fatalf("未满充会话应被接受（不作门控）: %v", err)
+	}
+	// est=4166667，降权融合：(2000000*9+4166667)/10 = 2216666
+	if want := int64(2216666); upd2.EstUA != want {
+		t.Fatalf("未满充会话 EstUA = %d, want %d", upd2.EstUA, want)
+	}
+	if v, _ := st.KVGet(kvKeyEmaUA); v != "2216666" {
+		t.Fatalf(`kv[ema_ua] = %q, want "2216666"`, v)
 	}
 }
 

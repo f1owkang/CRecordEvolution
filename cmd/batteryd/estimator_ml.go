@@ -11,6 +11,7 @@ const (
 	kvKeyRlsTheta  = "rls_theta"
 	kvKeyRlsPSym   = "rls_p_sym"
 	kvKeyRatioHist = "ratio_hist"
+	kvKeySFullHist = "sfull_hist"
 
 	rlsLambda     = 0.99
 	rlsP0         = 100
@@ -21,6 +22,10 @@ const (
 
 	kvKeyEmaSigma = "ema_sigma_mah"
 	sigmaRelFloor = 0.005
+
+	// learningSamples 学习期长度：θ 训练未满时不参与输出混合（与 mlWeight
+	// 的起坡点一致），但基线照常随会话移动（见 OnSession）。
+	learningSamples = 30
 )
 
 type Learning struct{ kv KVStore }
@@ -58,25 +63,41 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	p := l.loadP()
 	theta, p = rlsUpdate(theta, p, phi, r)
 
+	// 学习期（samples ≤ 30）θ 不参与输出，但基线经 emaBlend 随会话移动
+	// （满充 3/10、未满充降权 1/10）：旧实现整段冻结在种子值，实测设备 5 个
+	// 采信会话输出一字不变，学习期长达 1~2 个月，显示信息量反而少于 stable。
+	// 正式期维持渐进混合。
+	var est int64
 	corrected := float64(ema) * clipRatio(dot4(phi, theta))
-	w := mlWeight(samples)
-	est := int64((1-w)*float64(ema) + w*corrected)
+	if samples <= learningSamples {
+		est = emaBlend(ema, sFull, sr.EndCap)
+	} else {
+		w := mlWeight(samples)
+		est = int64((1-w)*float64(ema) + w*corrected)
+	}
 
 	hist = append(hist, r)
 	if len(hist) > ratioHistCap {
 		hist = hist[len(hist)-ratioHistCap:]
 	}
+	sfullHist := l.loadFloats(kvKeySFullHist, 0)
+	sfullHist = append(sfullHist, float64(sFull))
+	if len(sfullHist) > ratioHistCap {
+		sfullHist = sfullHist[len(sfullHist)-ratioHistCap:]
+	}
 
-	// σ（mAh 域）：
-	// - 学习期（samples ≤ 30，θ 未参与输出）：φᵀPφ 无预测意义，直接用实测相对散布；
-	//   散布不足 8 个样本时 σ=0，由 main.go 现有 ≤0 → nil 降级隐藏 ±
-	// - 正式期：σ_rel = √(φᵀPφ)，保持 0.005 下限，再用实测相对散布封顶，
-	//   避免 P0 与激励不足导致 σ 长期虚高
-	spread, hasSpread := histRelStd(hist)
+	// σ（mAh 域）：散布取 sfull_hist（原始隐含容量）的相对标准差，而非
+	// ratio_hist——基线随会话移动后 ratio-to-ema 的散布虚假收窄，原始容量的
+	// 散布才是估算值不确定度的诚实度量。散布不足 8 个样本时 σ=0，由 main.go
+	// 现有 ≤0 → nil 降级隐藏 ±。
+	// - 学习期（samples ≤ 30）：φᵀPφ 无预测意义，直接用实测散布；
+	// - 正式期：σ_rel = √(φᵀPφ)，保持 0.005 下限，再用实测散布封顶，
+	//   避免 P0 与激励不足导致 σ 长期虚高。
+	spread, hasSpread := histRelStd(sfullHist)
 	var sigmaMah float64
-	if samples <= 30 {
+	if samples <= learningSamples {
 		if hasSpread {
-			sigmaMah = spread * corrected / 1000
+			sigmaMah = spread * float64(est) / 1000
 		}
 	} else {
 		sigmaRel := math.Sqrt(quadForm(p, phi))
@@ -91,7 +112,7 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 
 	samples++
 
-	if err := l.persist(theta, p, hist, est, samples, sigmaMah); err != nil {
+	if err := l.persist(theta, p, hist, sfullHist, est, samples, sigmaMah); err != nil {
 		return EstUpdate{}, err
 	}
 	return EstUpdate{EstUA: est, Samples: samples, Changed: true, SigmaMah: sigmaMah}, nil
@@ -110,7 +131,7 @@ func (l *Learning) seed(uaFull int64) (EstUpdate, error) {
 	return EstUpdate{EstUA: uaFull, Samples: 1, Changed: true}, nil
 }
 
-func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist []float64, ema, samples int64, sigmaMah float64) error {
+func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist, sfullHist []float64, ema, samples int64, sigmaMah float64) error {
 	thetaJSON, err := json.Marshal(theta[:])
 	if err != nil {
 		return err
@@ -130,6 +151,13 @@ func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist []float64, em
 		return err
 	}
 	if err := l.kv.KVSet(kvKeyRatioHist, string(histJSON)); err != nil {
+		return err
+	}
+	sfullJSON, err := json.Marshal(sfullHist)
+	if err != nil {
+		return err
+	}
+	if err := l.kv.KVSet(kvKeySFullHist, string(sfullJSON)); err != nil {
 		return err
 	}
 	if err := l.kv.KVSet(kvKeyEmaUA, strconv.FormatInt(ema, 10)); err != nil {
