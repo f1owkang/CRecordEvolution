@@ -555,9 +555,10 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	var loS, hiS SampleRow
 	var gatedRows []SampleRow
 	for _, g := range segs {
-		// 倍率门控 ≤1C：实测本机正常快充恒流段均值 0.9~1.25C，旧 ≤C/2
-		// 门限把合法快充一票否决（ccct_skip「段均值×2>设计容量」），
-		// 依 Fly & Chen 速率约束口径放宽到 1C。
+		// 倍率门控 ≤1C：按本机实测数据定标（正常快充恒流段均值 0.9~1.25C，
+		// 旧 ≤C/2 门限把合法快充一票否决）。Fly & Chen 2020 表明高倍率下
+		// ICA 峰显著退化（文献推荐 C/24~C/25），1C 属工程折衷，同源特征
+		// 只按趋势方向采信。
 		if g.MeanUA > p.designUA {
 			gateRejected++
 			continue
