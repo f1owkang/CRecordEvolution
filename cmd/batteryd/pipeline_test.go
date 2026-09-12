@@ -105,40 +105,55 @@ func wantKV(t *testing.T, st *Store, key, val string) {
 	}
 }
 
-func TestPipelineSealsOnceAtFullCharge(t *testing.T) {
+// 满充结算语义：显示 100% 不立即结算——内核电量计报数早于真实充满，CV 尾段
+// （Full 状态下电流仍 ~2A）持续累计，电流停歇后 3 拍去抖才结算；结算后浮充
+// 不再开新会话。
+func TestPipelineFullChargeSettlesAfterTailCurrent(t *testing.T) {
 	r := newPipeRig(t)
 
-	settledCount := 0
 	for k := int64(1); k <= 17; k++ {
 		capV := int64(15) + 5*k
 		r.put(capV, 6000000, 4200000)
-		out := r.step("Charging")
-		if out.SessionSettled {
-			settledCount++
-			if k != 17 {
-				t.Fatalf("第 %d tick 提前封账结算", k)
-			}
+		if out := r.step("Charging"); out.SessionSettled {
+			t.Fatalf("第 %d tick 显示到满也不应立即结算（CV 尾段未计）", k)
 		}
 	}
-	if settledCount != 1 {
-		t.Fatalf("封账结算次数 = %d, want 1", settledCount)
+	// CV 尾段：status=Full 但电流仍 2A → 充电延续，累计不结算
+	r.put(100, 2000000, 4350000)
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("尾段电流未停不应结算")
+	}
+	r.put(100, 2000000, 4350000)
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("尾段电流未停不应结算")
+	}
+	// 电流停歇（20mA < 100mA 门限）：3 拍去抖后结算
+	r.put(100, 20000, 4350000)
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("去抖第 1 拍不应结算")
+	}
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("去抖第 2 拍不应结算")
+	}
+	if out := r.step("Full"); !out.SessionSettled {
+		t.Fatal("电流停歇 3 拍应结算")
 	}
 
 	sess := onlySession(t, r.st)
 	wantStart := tickBaseTs + 60
-	if sess.StartTs != wantStart || sess.EndTs != tickBaseTs+1020 {
-		t.Fatalf("时间戳 = (%d,%d), want (%d,%d)", sess.StartTs, sess.EndTs, wantStart, tickBaseTs+1020)
+	if sess.StartTs != wantStart || sess.EndTs != tickBaseTs+1320 {
+		t.Fatalf("时间戳 = (%d,%d), want (%d,%d)", sess.StartTs, sess.EndTs, wantStart, tickBaseTs+1320)
 	}
 	if sess.StartCap != 20 || sess.EndCap != 100 {
 		t.Fatalf("cap 区间 = [%d,%d], want [20,100]", sess.StartCap, sess.EndCap)
 	}
-	// 新语义：duration=墙钟差(+60→+1020)=960，avgI=6.12G/960
-	if sess.Ua != 6120000000 || sess.AvgI != 6375000 || sess.Duration != 960 {
-		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (6120000000,6375000,960)",
+	// 17 拍 6A + 2 拍尾段 2A（各 60s）；duration=墙钟差(+60→+1320)=1260
+	if sess.Ua != 6360000000 || sess.AvgI != 5047619 || sess.Duration != 1260 {
+		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (6360000000,5047619,1260)",
 			sess.Ua, sess.AvgI, sess.Duration)
 	}
-	if math.Abs(sess.CRate-1.59375) > 1e-9 {
-		t.Fatalf("c_rate = %v, want 1.59375", sess.CRate)
+	if math.Abs(sess.CRate-1.26190475) > 1e-6 {
+		t.Fatalf("c_rate = %v, want ≈1.2619048", sess.CRate)
 	}
 	if sess.TempMin != 25 || sess.TempMax != 25 || sess.TempAvg != 25 {
 		t.Fatalf("temp 三元 = (%d,%d,%d), want 全为 25", sess.TempMin, sess.TempMax, sess.TempAvg)
@@ -152,43 +167,45 @@ func TestPipelineSealsOnceAtFullCharge(t *testing.T) {
 	if n := countRows(t, r.st, "estimates"); n != 1 {
 		t.Fatalf("estimates 行数 = %d, want 1", n)
 	}
-	if mah := queryInt64(t, r.st, `SELECT mah FROM estimates`); mah != 2125000 {
-		t.Fatalf("估算值 = %d, want 2125000", mah)
+	if mah := queryInt64(t, r.st, `SELECT mah FROM estimates`); mah != 2208333 {
+		t.Fatalf("估算值 = %d, want 2208333(含尾段电量)", mah)
 	}
-	if estTs := queryInt64(t, r.st, `SELECT ts FROM estimates`); estTs != tickBaseTs+1020 {
-		t.Fatalf("estimates ts = %d, want %d", estTs, tickBaseTs+1020)
+	if estTs := queryInt64(t, r.st, `SELECT ts FROM estimates`); estTs != tickBaseTs+1320 {
+		t.Fatalf("estimates ts = %d, want %d", estTs, tickBaseTs+1320)
 	}
-	wantKV(t, r.st, "charged_ua_total", "6120000000")
+	wantKV(t, r.st, "charged_ua_total", "6360000000")
 
+	// 结算后浮充：不开新会话（满电门槛），但吞吐照计循环当量
 	for i := 0; i < 3; i++ {
 		r.put(100, 6000000, 4200000)
 		if out := r.step("Charging"); out.SessionSettled {
-			t.Fatal("封账后浮充不应再次结算")
+			t.Fatal("结算后浮充不应再次结算")
 		}
 	}
 	if n := countRows(t, r.st, "sessions"); n != 1 {
 		t.Fatalf("浮充阶段 sessions 行数 = %d, want 1", n)
 	}
-	wantKV(t, r.st, "charged_ua_total", "7200000000")
+	wantKV(t, r.st, "charged_ua_total", "7440000000")
 
 	r.put(100, 15000, 4300000)
-	// 新语义：拔出需 3 拍去抖确认；封账会话在第 3 拍前仍活跃（不二次结算），
-	// 第 3 拍仅重置会话
 	if out := r.step("Discharging"); out.SessionSettled {
-		t.Fatal("封账会话拔出时不应二次结算")
+		t.Fatal("无活跃会话的拔出 tick 不应结算")
 	}
 	r.step("Discharging")
 	r.step("Discharging")
 	if n := countRows(t, r.st, "sessions"); n != 1 {
 		t.Fatalf("拔出后 sessions 行数 = %d, want 1", n)
 	}
-	if n := countRows(t, r.st, "rest_points"); n != 0 {
-		t.Fatalf("单次低电流 tick 不应记录静息点, rows = %d", n)
+	// 结算后静息放电走正常 tickResting 路径：第 3 拍起采集静置指纹点
+	if n := countRows(t, r.st, "rest_points"); n != 1 {
+		t.Fatalf("连续三拍静息应记录 1 条静息点, rows = %d", n)
+	}
+	if uv := queryInt64(t, r.st, `SELECT uv FROM rest_points`); uv != 4300000 {
+		t.Fatalf("静息点 uv = %d, want 4300000", uv)
 	}
 	wantKV(t, r.st, "sess_active", "0")
 
-	// 新语义：满电状态插入不再开启会话（delta 恒 0 的垃圾行源头），复插
-	// 也不会再封账——会话数保持 1
+	// 满电状态复插：不再开启会话（delta 恒 0 的垃圾行源头）
 	r.put(100, 6000000, 4200000)
 	if out := r.step("Charging"); out.SessionSettled {
 		t.Fatal("满电插入不应开启会话更不应结算")
@@ -271,7 +288,8 @@ func TestPipelineDebounceReturnsToCharging(t *testing.T) {
 		r.put(capV, 12000000, 4200000)
 		r.step("Charging")
 	}
-	// 抖动 2 拍（未达 3 拍阈值）
+	// 抖动 2 拍（未达 3 拍阈值）：Not charging/Full 状态下 0.5A 电流仍属
+	// 充电延续（CV 尾段路径），电量照计
 	r.put(34, 500000, 4300000)
 	r.step("Not charging")
 	r.step("Full")
@@ -298,10 +316,10 @@ func TestPipelineDebounceReturnsToCharging(t *testing.T) {
 		t.Fatalf("抖动+续充+拔出应合并为 1 行, rows = %d", n)
 	}
 	sess := onlySession(t, r.st)
-	// Charging 累积拍: cap10,22,34,46,58,70 共 6 拍（去抖 2 拍不计电量）；
-	// duration=墙钟差(+60→+660)=600，含抖动与拔出去抖期
-	if sess.Ua != 6*12000000*60 || sess.Duration != 600 {
-		t.Fatalf("ua/duration = (%d,%d), want (4320000000,600)", sess.Ua, sess.Duration)
+	// Charging 累积拍: cap10,22,34,46,58,70 共 6 拍 + 抖动 2 拍 0.5A（尾段
+	// 延续也计电量）；duration=墙钟差(+60→+660)=600，含抖动与拔出去抖期
+	if sess.Ua != 6*12000000*60+2*500000*60 || sess.Duration != 600 {
+		t.Fatalf("ua/duration = (%d,%d), want (4380000000,600)", sess.Ua, sess.Duration)
 	}
 	if sess.StartCap != 10 || sess.EndCap != 70 {
 		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
@@ -626,10 +644,10 @@ func TestPipelineChargingSampleGuards(t *testing.T) {
 	}
 }
 
-func TestPipelineChargingSamplesContinueAfterSeal(t *testing.T) {
+func TestPipelineChargingSamplesThroughTail(t *testing.T) {
 	r := newPipeRig(t)
 
-	// 新语义：cap=100 起步不开会话，但采样照落；封账路径改由低电量起步验证
+	// cap=100 起步不开会话，但采样照落
 	r.put(100, 1200000, 4200000)
 	if out := r.step("Charging"); out.SessionSettled {
 		t.Fatal("cap=100 起步不应开启会话也不应结算")
@@ -643,29 +661,44 @@ func TestPipelineChargingSamplesContinueAfterSeal(t *testing.T) {
 		t.Fatalf("样本 ts = %d, want %d", ts, wantTS)
 	}
 
-	// 99 起步的真实充入：1 拍后到 100，正常封账
+	// 99 起步的真实充入：到满后不立即结算（CV 尾段未计完）
 	r.put(99, 1200000, 4200000)
 	if out := r.step("Charging"); out.SessionSettled {
 		t.Fatal("未满电不应结算")
 	}
 	r.put(100, 1200000, 4200000)
-	if out := r.step("Charging"); !out.SessionSettled {
-		t.Fatal("真实充入到满应触发封账结算")
+	if out := r.step("Charging"); out.SessionSettled {
+		t.Fatal("显示到满也不应立即结算（等电流停歇）")
+	}
+	// Full 尾段 1.5A：充电延续，累计与采样照常
+	r.put(100, 1500000, 4210000)
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("尾段电流未停不应结算")
+	}
+	// 电流停歇（50mA）：3 拍去抖结算
+	r.put(100, 50000, 4210000)
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("去抖第 1 拍不应结算")
+	}
+	if out := r.step("Full"); out.SessionSettled {
+		t.Fatal("去抖第 2 拍不应结算")
+	}
+	if out := r.step("Full"); !out.SessionSettled {
+		t.Fatal("电流停歇 3 拍应结算")
 	}
 	if n := countRows(t, r.st, "sessions"); n != 1 {
 		t.Fatalf("sessions 行数 = %d, want 1", n)
 	}
 
-	// 封账后浮充：不再开新会话（满电门槛）
+	// 结算后满电浮充：不再开新会话（满电门槛）
 	r.put(100, 1500000, 4210000)
-	r.step("Charging")
 	if out := r.step("Charging"); out.SessionSettled {
-		t.Fatal("封账后浮充不应再次结算")
+		t.Fatal("结算后浮充不应再次结算")
 	}
 	rows := queryInt64(t, r.st, `SELECT COUNT(*) FROM samples`)
-	// 100(不开会话)+99+100(封账)+2 浮充 = 5 行
+	// 100(不开会话)+99+100+1×Full尾段+1 浮充 = 5 行（静息拍不落样）
 	if rows != 5 {
-		t.Fatalf("samples 行数 = %d, want 5(封账后两个浮充 tick 也应各落一行)", rows)
+		t.Fatalf("samples 行数 = %d, want 5(尾段与浮充 tick 也应各落一行)", rows)
 	}
 }
 

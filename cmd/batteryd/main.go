@@ -538,7 +538,7 @@ func runJson() error {
 	}
 	ccct := make([]ccctEntry, 0, len(ccctRows))
 	for _, c := range ccctRows {
-		ccct = append(ccct, ccctEntry{TS: c.TS, Secs: c.Secs})
+		ccct = append(ccct, ccctEntry{TS: c.TS, Secs: c.Secs, VwLo: c.VwLo, VwHi: c.VwHi})
 	}
 	icaRows, err := a.st.RecentICAPeaks(jsonRecentLimit)
 	if err != nil {
