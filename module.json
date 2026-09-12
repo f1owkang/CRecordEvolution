@@ -1,0 +1,5 @@
+{
+  "metamodule": false,
+  "sourceUrl": "https://github.com/f1owkang/CRecordEvolution",
+  "summary": "🔋在管理器模块描述中实时显示电池健康度的 root 模块。 | A root module that shows real-time battery health right in your manager's module description."
+}
