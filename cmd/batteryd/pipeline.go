@@ -23,6 +23,12 @@ const (
 	restDedupUVDrift  int64 = 5000
 	restRelaxTicks          = 10 // e-Energy '23：静置约 10 分钟电压收敛，可作 SoH 指纹
 
+	// tailQuietUA CV 尾段电流门限：内核电量计报 100% 时真实充电常仍以 ~1A
+	// 持续数分钟（实测显示 100% 后电流自 1.4A 缓降再入涓流），首拍封账会
+	// 系统性少计电量、估算偏低。非 Discharging 状态下正向电流高于此值视为
+	// 充电延续。
+	tailQuietUA int64 = 100000
+
 	resWindowMax  int = 30
 	resMinSamples int = 20
 	// resMinStdUA 150mA：50mA 门限下电流近乎平稳的窗靠测量噪声凑方差，
@@ -33,7 +39,6 @@ const (
 	resMaxMOhm  float64 = 200
 
 	kvSessActive   = "sess_active"
-	kvSessSealed   = "sess_sealed"
 	kvSessStartTs  = "sess_start_ts"
 	kvSessStartCap = "sess_start_cap"
 	kvSessVStart   = "sess_v_start_uv"
@@ -57,7 +62,6 @@ func (e *SettleError) Unwrap() error { return e.Err }
 
 type sessionState struct {
 	active   bool
-	sealed   bool
 	startTs  int64
 	startCap int64
 	vStartUV int64
@@ -87,6 +91,10 @@ type Pipeline struct {
 	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
 	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）
 	notChargStreak int
+
+	// lastChargeTs 上一拍灌电（Charging/尾段）的墙钟秒，供 charged_ua_total
+	// 跨会话计 dt；与 sess.lastTickTs 独立——满电浮充无会话也照计吞吐。
+	lastChargeTs int64
 
 	winI []int64
 	winV []int64
@@ -141,13 +149,6 @@ func kvFloat(st KVStore, key string) float64 {
 	return f
 }
 
-func btoa(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
-}
-
 func absI64(v int64) int64 {
 	if v < 0 {
 		return -v
@@ -180,7 +181,6 @@ func (p *Pipeline) restoreSession() {
 		lastCap:    kvInt(p.st, kvSessLastCap),
 		lastTickTs: kvInt(p.st, kvSessLastTs),
 	}
-	p.sess.sealed = kvText(p.st, kvSessSealed) == "1"
 }
 
 func (p *Pipeline) nodePath(name string) (string, error) {
@@ -227,6 +227,16 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 		p.logDeb = false
 		return outcome, p.tickCharging(&outcome)
 	}
+	// 非充电状态但电池电流仍在正向灌入（CV 尾段 / 满电保护抖动的 Full、
+	// Not charging）：视为充电延续，继续累计并重置去抖。内核电量计报 100%
+	// 时真实充电常还要持续数分钟，等电流停歇再走去抖结算。
+	if status != "Discharging" && p.sess.active {
+		if iUA, flowing := p.tailCurrent(); flowing {
+			p.notChargStreak = 0
+			p.logDeb = false
+			return outcome, p.tickTailCharge(iUA)
+		}
+	}
 	p.notChargStreak++
 	// 去抖期内不算断开：保留会话，等下一拍
 	if p.sess.active && p.notChargStreak < notChargDebounce {
@@ -239,19 +249,35 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	if err := p.tickResting(status); err != nil {
 		return outcome, err
 	}
-	if p.sess.active && !p.sess.sealed {
+	if p.sess.active {
 		if err := p.settle(); err != nil {
 			return outcome, err
 		}
 		outcome.SessionSettled = true
-	}
-	if p.sess.active {
 		if err := p.resetSession(); err != nil {
 			return outcome, &SettleError{Err: err}
 		}
 		p.logOn = false
 	}
 	return outcome, nil
+}
+
+// tailCurrent 读带符号电流并判别是否仍在充电方向灌入。单位判别在幅值上做
+// （NormCurrentUA 的 mA/µA 启发式对负值会误乘 1000），再按原始符号回填；
+// 放电（负值）与读取失败均返回未灌入，走常规去抖路径。
+func (p *Pipeline) tailCurrent() (int64, bool) {
+	iRaw, err := p.readNodeSigned("current_now")
+	if err != nil {
+		return 0, false
+	}
+	iUA := NormCurrentUA(absI64(iRaw))
+	if iRaw < 0 {
+		iUA = -iUA
+	}
+	if iUA > tailQuietUA {
+		return iUA, true
+	}
+	return 0, false
 }
 
 func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
@@ -265,6 +291,11 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 	iAbs := absI64(iRaw)
 	iUA := absI64(NormCurrentUA(iAbs))
+
+	// 吞吐累计先于会话判定：满电插入不开会话，但浮充电量照计（循环当量口径）
+	if err := p.chargeThroughput(iUA); err != nil {
+		return err
+	}
 
 	var tempC float64
 	haveTemp := false
@@ -289,17 +320,6 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 
 	s := &p.sess
-	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
-	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
-	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
-	dt := tickSeconds
-	now := p.now().Unix()
-	if s.lastTickTs > 0 {
-		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
-			dt = d
-		}
-	}
-	s.lastTickTs = now
 	if !s.active {
 		// 已满（cap≥sealCapacity）时插入充电器：米系满电保护下 delta 恒为 0，
 		// 该会话必被 delta_lt_20 拒收，只产生垃圾行——不开启会话，等真实回落。
@@ -311,53 +331,96 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			return nil
 		}
 		s.active = true
-		s.startTs = now
+		s.startTs = p.now().Unix()
 		s.startCap = capVal
 		s.vStartUV = vUV
 		p.logOn = true
 		p.log("[会话] 开始于 %s cap=%d%%", p.now().Format("01-02 15:04:05"), capVal)
 	}
-	if !s.sealed {
-		s.accUAs += iUA * dt
-		s.ticks++
-		s.lastCap = capVal
-		if haveTemp {
-			ti := int64(tempC)
-			if s.tempN == 0 || ti < s.tempMin {
-				if s.tempN == 0 {
-					s.tempMin, s.tempMax = ti, ti
-				} else {
-					s.tempMin = ti
-				}
-			}
-			if ti > s.tempMax {
-				s.tempMax = ti
-			}
-			s.tempSum += tempC
-			s.tempN++
+	// 显示 100% 不等于充电完成（内核报数早于真实充满）：不在此封账，CV 尾段
+	// 由 Tick 的 tailCurrent 路径继续累计，待电流停歇后走去抖结算。
+	return p.accumulate(iUA, capVal, tempC, haveTemp)
+}
+
+// tickTailCharge 非充电状态下仍在灌电的一拍（CV 尾段）：仅对已活跃会话累计，
+// 不开新会话（满电插入不开会话）、不做内阻回归（恒压段 dV/dI 语义不成立）。
+func (p *Pipeline) tickTailCharge(iUA int64) error {
+	if err := p.chargeThroughput(iUA); err != nil {
+		return err
+	}
+	capVal, err := p.readNode("capacity")
+	if err != nil {
+		return err
+	}
+	vUV, verr := p.readNode("voltage_now")
+	if verr != nil {
+		vUV = 0
+	}
+	if vUV > 0 && capVal > 0 {
+		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal); err != nil {
+			_ = p.st.InsertEvent("sample_fail", err.Error())
 		}
 	}
+	var tempC float64
+	haveTemp := false
+	if tRaw, terr := p.readNode("temp"); terr == nil {
+		tempC = NormTempC(tRaw)
+		haveTemp = true
+	}
+	return p.accumulate(iUA, capVal, tempC, haveTemp)
+}
 
+// accumulate 向活跃会话与全局累计充电量（Charging 拍与 CV 尾段拍共用）；
+// 调用方保证会话已开启。
+func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool) error {
+	s := &p.sess
+	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
+	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
+	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
+	dt := tickSeconds
+	now := p.now().Unix()
+	if s.lastTickTs > 0 {
+		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
+			dt = d
+		}
+	}
+	s.lastTickTs = now
+	s.accUAs += iUA * dt
+	s.ticks++
+	s.lastCap = capVal
+	if haveTemp {
+		ti := int64(tempC)
+		if s.tempN == 0 || ti < s.tempMin {
+			if s.tempN == 0 {
+				s.tempMin, s.tempMax = ti, ti
+			} else {
+				s.tempMin = ti
+			}
+		}
+		if ti > s.tempMax {
+			s.tempMax = ti
+		}
+		s.tempSum += tempC
+		s.tempN++
+	}
+	return p.persistSession()
+}
+
+// chargeThroughput 全局充电吞吐累计（循环当量口径）：独立于会话生命周期，
+// 结算后的满电浮充、封账后复插的补电脉冲也计入。dt 用跨会话的 lastChargeTs
+// 差值，clamp 同会话口径。
+func (p *Pipeline) chargeThroughput(iUA int64) error {
+	dt := tickSeconds
+	now := p.now().Unix()
+	if p.lastChargeTs > 0 {
+		if d := now - p.lastChargeTs; d >= 1 && d <= 90 {
+			dt = d
+		}
+	}
+	p.lastChargeTs = now
 	total := kvInt(p.st, kvChargedTotal) + iUA*dt
 	if err := p.st.KVSet(kvChargedTotal, strconv.FormatInt(total, 10)); err != nil {
 		return &SettleError{Err: err}
-	}
-
-	if !s.sealed {
-		if err := p.persistSession(); err != nil {
-			return &SettleError{Err: err}
-		}
-		if capVal >= sealCapacity {
-			if err := p.settle(); err != nil {
-				return err
-			}
-			p.log("[会话] 充至满电封账")
-			outcome.SessionSettled = true
-			s.sealed = true
-			if err := p.persistSession(); err != nil {
-				return &SettleError{Err: err}
-			}
-		}
 	}
 	return nil
 }
@@ -369,7 +432,6 @@ func (p *Pipeline) persistSession() error {
 		val string
 	}{
 		{kvSessActive, "1"},
-		{kvSessSealed, btoa(s.sealed)},
 		{kvSessStartTs, strconv.FormatInt(s.startTs, 10)},
 		{kvSessStartCap, strconv.FormatInt(s.startCap, 10)},
 		{kvSessVStart, strconv.FormatInt(s.vStartUV, 10)},

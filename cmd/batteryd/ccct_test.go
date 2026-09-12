@@ -142,8 +142,19 @@ func TestSettleRecordsCCCTWithinGatedRate(t *testing.T) {
 		r.step("Charging")
 	}
 	r.put(100, 1800000, 4_150_000+32*6_250)
-	if out := r.step("Charging"); !out.SessionSettled {
-		t.Fatal("cap=100 应封账结算")
+	if out := r.step("Charging"); out.SessionSettled {
+		t.Fatal("显示到满不应立即结算（CV 尾段未计）")
+	}
+	// 电流停歇（Full + 15mA）：3 拍去抖触发结算
+	for k := 0; k < 3; k++ {
+		r.put(100, 15000, 4_400_000)
+		out := r.step("Full")
+		if k < 2 && out.SessionSettled {
+			t.Fatal("去抖期不应结算")
+		}
+		if k == 2 && !out.SessionSettled {
+			t.Fatal("电流停歇 3 拍应触发结算")
+		}
 	}
 
 	sess := onlySession(t, r.st)
@@ -184,8 +195,15 @@ func TestSettleSkipsCCCTWhenRateExceedsDesign(t *testing.T) {
 		r.step("Charging")
 	}
 	r.put(100, 4500000, 4_400_000)
-	if out := r.step("Charging"); !out.SessionSettled {
-		t.Fatal("cap=100 应封账结算")
+	if out := r.step("Charging"); out.SessionSettled {
+		t.Fatal("显示到满不应立即结算（CV 尾段未计）")
+	}
+	for k := 0; k < 3; k++ {
+		r.put(100, 15000, 4_400_000)
+		out := r.step("Full")
+		if k == 2 && !out.SessionSettled {
+			t.Fatal("电流停歇 3 拍应触发结算")
+		}
 	}
 	sess := onlySession(t, r.st)
 	if !sess.Valid {

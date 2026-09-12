@@ -33,6 +33,10 @@ type restEntry struct {
 type ccctEntry struct {
 	TS   int64 `json:"ts"`
 	Secs int64 `json:"secs"`
+	// VwLo/VwHi 穿窗电压上下沿（µV），供 WebUI 点按详情展示；旧版本 JSON
+	// 无此字段，前端按缺失降级
+	VwLo int64 `json:"vw_lo,omitempty"`
+	VwHi int64 `json:"vw_hi,omitempty"`
 }
 
 type icaEntry struct {

@@ -128,13 +128,13 @@ func TestRenderJSONNewFields(t *testing.T) {
 }
 
 func TestRenderJSONCcctEntries(t *testing.T) {
-	ccct := []ccctEntry{{TS: 500, Secs: 960}, {TS: 1460, Secs: 480}}
+	ccct := []ccctEntry{{TS: 500, Secs: 960, VwLo: 4200000, VwHi: 4300000}, {TS: 1460, Secs: 480}}
 	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, ccct, nil, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `"ccct":[{"ts":500,"secs":960},{"ts":1460,"secs":480}]`; !strings.Contains(string(b), want) {
-		t.Fatalf("ccct 序列化不符, got %s", b)
+	if want := `"ccct":[{"ts":500,"secs":960,"vw_lo":4200000,"vw_hi":4300000},{"ts":1460,"secs":480}]`; !strings.Contains(string(b), want) {
+		t.Fatalf("ccct 序列化不符（含穿窗电压与缺省降级）, got %s", b)
 	}
 }
 

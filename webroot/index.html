@@ -189,6 +189,9 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 .gate div:last-child { font-size: 13px; color: var(--mute); line-height: 1.6; }
 .chart svg { display: block; width: 100%; height: auto; }
 .cap { font-size: 12px; color: var(--mute); margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.det { font-size: 12px; color: var(--fg); margin-top: 5px; min-height: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.det .hint { color: var(--mute); }
+.pt { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -240,18 +243,21 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     <section class="panel" id="panel_rest">
       <div class="ptitle">静置电压</div>
       <div id="chart_rest" class="chart"></div>
+      <div id="chart_rest_det" class="det"></div>
       <div id="chart_rest_cap" class="cap"></div>
     </section>
 
     <section class="panel" id="panel_ccct">
       <div class="ptitle">恒流时长</div>
       <div id="chart_ccct" class="chart"></div>
+      <div id="chart_ccct_det" class="det"></div>
       <div id="chart_ccct_cap" class="cap"></div>
     </section>
 
     <section class="panel" id="panel_ica">
       <div class="ptitle">容量主峰</div>
       <div id="chart_ica" class="chart"></div>
+      <div id="chart_ica_det" class="det"></div>
       <div id="chart_ica_cap" class="cap"></div>
     </section>
 
@@ -503,7 +509,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       r = rows[i];
       x = Number(r == null ? null : r[kx]);
       y = Number(r == null ? null : r[ky]);
-      if (isFinite(x) && isFinite(y)) out.push({ x: x, y: y });
+      if (isFinite(x) && isFinite(y)) out.push({ x: x, y: y, row: r });
     }
     return out;
   }
@@ -551,17 +557,20 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       '</svg>';
   }
 
-  // rest_points 散点：每点一个 <circle>；仅 1 点也渲染（单点居中）
+  // rest_points 散点：每点一个可见 <circle> 叠一层透明命中圈（点按看详情）；
+  // 仅 1 点也渲染（单点居中）
   function svgScatter(data, w, h, color) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'uv');
     if (!raw.length) return '';
     var tx = minMax(raw.map(function (p) { return p.x; }));
     var ty = minMax(raw.map(function (p) { return p.y; }));
-    var dots = raw.map(function (p) {
-      var cx = (spanPad(normPt(p.x, tx.min, tx.max)) * w).toFixed(1);
-      var cy = ((1 - spanPad(normPt(p.y, ty.min, ty.max))) * h).toFixed(1);
-      return '<circle cx="' + cx + '" cy="' + cy + '" r="3" style="fill:' + color + '" fill-opacity=".85"/>';
-    }).join('');
+    var dots = '';
+    for (var i = 0; i < raw.length; i++) {
+      var cx = (spanPad(normPt(raw[i].x, tx.min, tx.max)) * w).toFixed(1);
+      var cy = ((1 - spanPad(normPt(raw[i].y, ty.min, ty.max))) * h).toFixed(1);
+      dots += '<circle class="pt" data-i="' + i + '" cx="' + cx + '" cy="' + cy + '" r="12" fill="transparent"/>' +
+        '<circle cx="' + cx + '" cy="' + cy + '" r="3" style="fill:' + color + '" fill-opacity=".85" pointer-events="none"/>';
+    }
     return svgOpen(w, h) + chartBase(w, h) + dots + '</svg>';
   }
 
@@ -606,11 +615,18 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         '" y2="' + ry + '" style="stroke:var(--chart-ref)" stroke-width="1.5" stroke-dasharray="5,4"/>';
     }
     var body;
+    // 数据点标记 + 透明命中圈（点按看详情），与折线同色
+    var marks = '';
+    for (var i = 0; i < raw.length; i++) {
+      var p = toXY(raw[i]);
+      var cx = (p.x * w).toFixed(1), cy = ((1 - p.y) * h).toFixed(1);
+      marks += '<circle class="pt" data-i="' + i + '" cx="' + cx + '" cy="' + cy + '" r="12" fill="transparent"/>' +
+        '<circle cx="' + cx + '" cy="' + cy + '" r="2.5" style="fill:' + color + '" pointer-events="none"/>';
+    }
     if (raw.length >= 2) {
-      body = '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+      body = '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' + marks;
     } else {
-      var p0 = toXY(raw[0]);
-      body = dotEl(p0.x * w, (1 - p0.y) * h, color);
+      body = marks;
     }
     return svgOpen(w, h) + chartBase(w, h) + refLine + body + '</svg>';
   }
@@ -630,6 +646,37 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     if (!el) return;
     el.innerHTML = html;
     setText(id + '_cap', cap || '');
+  }
+
+  // clearDetail 无数据/隐藏时清空详情行
+  function clearDetail(chartId) {
+    setText(chartId + '_det', '');
+  }
+
+  // bindPointDetail 给图表容器接点按事件：命中 data-i 的数据点在详情行展示
+  // 该点信息。kx/ky 与绘图 pickPairs 同口径，保证索引对齐；数据为空时仅清空。
+  function bindPointDetail(chartId, rows, kx, ky, fmt) {
+    var host = $(chartId);
+    var det = $(chartId + '_det');
+    if (!host || !det) return;
+    var picked = pickPairs(Array.isArray(rows) ? rows : [], kx, ky);
+    host.onclick = null;
+    if (!picked.length) {
+      det.textContent = '';
+      return;
+    }
+    det.innerHTML = '<span class="hint">点按图上数据点查看详情</span>';
+    host.onclick = function (e) {
+      var t = e.target;
+      while (t && t !== host && !(t.getAttribute && t.getAttribute('data-i') != null)) {
+        t = t.parentNode;
+      }
+      var attr = (t && t.getAttribute) ? t.getAttribute('data-i') : null;
+      if (attr == null) return;
+      var idx = Number(attr);
+      if (!isFinite(idx) || idx < 0 || idx >= picked.length) return;
+      det.textContent = fmt(picked[idx].row);
+    };
   }
 
   // 卡片三态：有数据=渲染 / 结构性无数据=隐藏 / 暂时无数据=保留+等待说明
@@ -731,31 +778,47 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         restCap = '已采集 1 条静置点';
       }
       setChart('chart_rest', svgScatter(restRows, W, H, 'var(--rest-dot)'), restCap);
+      bindPointDetail('chart_rest', restRows, 'ts', 'uv', function (r) {
+        var capTxt = (r && r.cap != null) ? ' · 电量 ' + r.cap + '%' : '';
+        return fmtTs(r && r.ts) + ' · ' + (Number(r && r.uv) / 1e6).toFixed(3) + ' V' + capTxt;
+      });
     } else if (hasSess) {
       setPanel('panel_rest', 'hide');
+      clearDetail('chart_rest');
     } else {
       setPanel('panel_rest', 'show');
       setChart('chart_rest', emptyRow('等待放电静置采样'), '');
+      clearDetail('chart_rest');
     }
 
-    // 恒流时长：倍率门控（≤C/2）需设计容量；缺失 ⇒ 结构性隐藏
+    // 恒流时长：倍率门控需设计容量；缺失 ⇒ 结构性隐藏
     var ccctRows = Array.isArray(doc.ccct) ? doc.ccct : [];
     if (!designOK && !ccctRows.length) {
       setPanel('panel_ccct', 'hide');
+      clearDetail('chart_ccct');
     } else {
       setPanel('panel_ccct', 'show');
       setChart('chart_ccct', svgTsLine(ccctRows, W, H, 'var(--purple)', 'secs') || emptyRow('等待符合条件的恒流充电段'),
         validCount(ccctRows, 'secs') >= 8 ? '方向指示，非绝对 SoH' : '');
+      bindPointDetail('chart_ccct', ccctRows, 'ts', 'secs', function (r) {
+        var win = (r && r.vw_lo && r.vw_hi)
+          ? ' · 穿窗 ' + Math.round(r.vw_lo / 1000) + '→' + Math.round(r.vw_hi / 1000) + ' mV' : '';
+        return fmtTs(r && r.ts) + win + ' · 耗时 ' + (Number(r && r.secs) / 60).toFixed(1) + ' 分钟';
+      });
     }
 
     // 容量主峰：与 CCCT 同源门控（复用其过倍率门控的恒流段样本）
     var icaRows = Array.isArray(doc.ica_peaks) ? doc.ica_peaks : [];
     if (!designOK && !icaRows.length) {
       setPanel('panel_ica', 'hide');
+      clearDetail('chart_ica');
     } else {
       setPanel('panel_ica', 'show');
       setChart('chart_ica', svgTsLine(icaRows, W, H, 'var(--orange)', 'peak_h_rel', 1) || emptyRow('等待合格充电会话的主峰'),
         validCount(icaRows, 'peak_h_rel') >= 8 ? '方向指示，非绝对 SoH' : '');
+      bindPointDetail('chart_ica', icaRows, 'ts', 'peak_h_rel', function (r) {
+        return fmtTs(r && r.ts) + ' · 主峰 ' + (Number(r && r.peak_uv) / 1e6).toFixed(3) + ' V · 相对高度 ' + Number(r && r.peak_h_rel).toFixed(2);
+      });
     }
   }
 
