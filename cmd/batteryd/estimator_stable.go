@@ -72,7 +72,9 @@ func evaluateStable(sr SettledSession) SessionResult {
 		return SessionResult{Reason: "delta_lt_20"}
 	}
 	uaFull := sr.AccUA * 100 / (delta * 3600)
-	if uaFull*2 < sr.DesignUA || uaFull*2 > sr.DesignUA*3 {
+	// DesignUA 为 0（charge_full_design 缺失）时无法做倍率门控，
+	// 放行以启动学习；否则上下界 0.5~1.5 倍设计容量。
+	if sr.DesignUA > 0 && (uaFull*2 < sr.DesignUA || uaFull*2 > sr.DesignUA*3) {
 		return SessionResult{Reason: "out_of_window"}
 	}
 	return SessionResult{Accepted: true, EstUA: uaFull}

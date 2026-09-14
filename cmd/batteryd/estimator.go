@@ -41,6 +41,6 @@ func NewStable(kv KVStore) *Stable {
 	return &Stable{kv: kv}
 }
 
-func NewLearning(kv KVStore) *Learning {
-	return &Learning{kv: kv}
+func NewLearning(kv KVStore, cellCount int) *Learning {
+	return &Learning{kv: kv, cellCount: cellCount}
 }

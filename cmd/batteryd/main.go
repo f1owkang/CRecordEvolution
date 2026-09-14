@@ -7,12 +7,46 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// localZone 显式加载本地时区：Magisk 模块守护进程以 root 运行时，Go 运行时
+// 可能读不到系统时区（TZ 未导出），time.Now() 回退 UTC，导致前端显示的时间
+// 比北京时间慢 8 小时。优先读 /etc/localtime 符号链接，失败则退化为 CST。
+var localZone *time.Location
+
+func init() {
+	if tz, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		localZone = tz
+		return
+	}
+	// fallback: 读 /etc/localtime 指向的时区名
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		name := filepath.Base(link)
+		if tz, err := time.LoadLocation(name); err == nil {
+			localZone = tz
+			return
+		}
+	}
+	// 最终 fallback: 调用 date 命令
+	if out, err := exec.Command("date", "+%Z").Output(); err == nil {
+		tzName := strings.TrimSpace(string(out))
+		if tz, err := time.LoadLocation(tzName); err == nil {
+			localZone = tz
+			return
+		}
+	}
+	localZone = time.FixedZone("CST", 8*3600)
+}
+
+func localNow() time.Time {
+	return time.Now().In(localZone)
+}
 
 // channel 由构建注入：CI 对 ML 变体使用 -ldflags "-X main.channel=ml"
 var channel = "stable"
@@ -73,6 +107,7 @@ type app struct {
 	st       *Store
 	est      Estimator
 	designUA int64
+	cellCount int
 
 	nodePaths    map[string]string
 	lastPruneDay int64
@@ -108,17 +143,31 @@ func newApp() (*app, error) {
 	if designUA <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
+	// 双电芯检测：读 voltage_now，超过 4.5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
+	// 双电芯设备的 voltage_now 报告的是串联总电压（如 8.4V），所有基于单电芯
+	// 电压的阈值（CCCT 窗口、ICA 搜索域、ML 归一化）需相应缩放。
+	cellCount := 1
+	if vNode, err := fs.FindNode("voltage_now"); err == nil {
+		if v, verr := fs.ReadInt(vNode); verr == nil && v > 4_500_000 {
+			cellCount = 2
+			_ = st.InsertEvent("dual_cell", fmt.Sprintf("检测到双电芯，voltage_now=%dµV", v))
+		}
+	}
+	// 按电芯数缩放所有电压阈值（CCCT 窗口、ICA 搜索域）
+	initCCCTVoltage(cellCount)
+	initICAVoltage(cellCount)
 	var est Estimator = NewStable(st)
 	if channel == "ml" {
-		est = NewLearning(st)
+		est = NewLearning(st, cellCount)
 	}
 	return &app{
-		moddir:   moddir,
-		propPath: filepath.Join(moddir, "module.prop"),
-		fs:       fs,
-		st:       st,
-		est:      est,
-		designUA: designUA,
+		moddir:    moddir,
+		propPath:  filepath.Join(moddir, "module.prop"),
+		fs:        fs,
+		st:        st,
+		est:       est,
+		designUA:  designUA,
+		cellCount: cellCount,
 	}, nil
 }
 
@@ -200,7 +249,7 @@ func (a *app) refreshWith(d Design, snap Snapshot) error {
 }
 
 func (a *app) refreshPruned() error {
-	now := time.Now()
+	now := localNow()
 	day := now.Unix() / 86400
 	if day != a.lastPruneDay {
 		if err := a.st.PruneBefore(now.Unix() - retainDays*86400); err != nil {
@@ -331,7 +380,7 @@ func runDaemon() error {
 		return fmt.Errorf("找不到 status 节点：%w", err)
 	}
 
-	p := NewPipeline(a.fs, a.st, a.est, a.designUA, time.Now)
+	p := NewPipeline(a.fs, a.st, a.est, a.designUA, a.cellCount, time.Now)
 	p.Logf(a.appendLog)
 	lastStatus := ""
 	count := 0
@@ -432,7 +481,7 @@ func (a *app) appendLog(format string, args ...any) {
 		}
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(f, "[%s] %s\n", localNow().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 
 func (a *app) trimLog(path string) {
@@ -553,13 +602,13 @@ func runJson() error {
 	}
 	icaPeaks := make([]icaEntry, 0, len(icaRows))
 	for _, ip := range icaRows {
-		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: ip.PeakHRel})
+		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: finitePtr(&ip.PeakHRel)})
 	}
 	n, err := a.st.CountSamples()
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, time.Now())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, localNow())
 	if err != nil {
 		return err
 	}

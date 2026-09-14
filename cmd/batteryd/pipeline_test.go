@@ -40,7 +40,7 @@ func newPipeRig(t *testing.T) *pipeRig {
 func (r *pipeRig) rebuildPipeline() {
 	r.t.Helper()
 	clock := func() time.Time { return r.cur }
-	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUA, clock)
+	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUA, 1, clock)
 }
 
 func fmtNode(v int64) string { return strconv.FormatInt(v, 10) + "\n" }
@@ -759,5 +759,30 @@ func TestPipelineValidSessionHasNoInvalidReason(t *testing.T) {
 	}
 	if sess.InvalidReason != "" {
 		t.Fatalf("有效会话 invalid_reason 应为空, got %q", sess.InvalidReason)
+	}
+}
+
+func TestCrRateZeroDesignUA(t *testing.T) {
+	if v := crRate(3000000, 0); v != 0 {
+		t.Fatalf("designUA=0 时 crRate 应为 0, got %v", v)
+	}
+	if v := crRate(3000000, 5000000); math.IsInf(v, 0) || math.IsNaN(v) {
+		t.Fatalf("designUA>0 时 crRate 应为有限值, got %v", v)
+	}
+}
+
+func TestEvaluateStableAcceptsZeroDesignUA(t *testing.T) {
+	sr := SettledSession{
+		Session: Session{
+			StartCap: 30, EndCap: 100,
+			TempMin: 20, TempMax: 30,
+			Ua: 3600 * 70 * 2000, // ~2000mA 平均电流，70% 涨幅
+		},
+		AccUA:    3600 * 70 * 2000,
+		DesignUA: 0,
+	}
+	res := evaluateStable(sr)
+	if !res.Accepted {
+		t.Fatalf("DesignUA=0 时会话应被接受, got reason=%s", res.Reason)
 	}
 }

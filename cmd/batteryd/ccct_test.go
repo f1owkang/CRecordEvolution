@@ -100,7 +100,7 @@ func TestAnalyzeCCCTInsufficientInput(t *testing.T) {
 func TestRecordCCCTSkipsWithoutDesignCapacity(t *testing.T) {
 	r := newPipeRig(t)
 	seed := int64(tickBaseTs)
-	p := NewPipeline(r.fs, r.st, NewStable(r.st), 0, func() time.Time { return time.Unix(seed, 0) })
+	p := NewPipeline(r.fs, r.st, NewStable(r.st), 0, 1, func() time.Time { return time.Unix(seed, 0) })
 	for j := 0; j < 35; j++ {
 		if err := r.st.InsertSample(seed+int64(j)*tickSeconds, 500_000,
 			3_850_000+int64(j)*6_250, 60); err != nil {

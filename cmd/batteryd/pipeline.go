@@ -82,6 +82,7 @@ type Pipeline struct {
 	st       *Store
 	est      Estimator
 	designUA int64
+	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 4.5V 判定）
 	now      func() time.Time
 
 	nodePaths map[string]string
@@ -121,12 +122,13 @@ func (p *Pipeline) log(format string, args ...any) {
 	}
 }
 
-func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, clock func() time.Time) *Pipeline {
+func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount int, clock func() time.Time) *Pipeline {
 	p := &Pipeline{
 		fs:        fs,
 		st:        st,
 		est:       est,
 		designUA:  designUA,
+		cellCount: cellCount,
 		now:       clock,
 		nodePaths: map[string]string{},
 	}
@@ -161,6 +163,14 @@ func tempAvgOf(sum float64, n int64) int64 {
 		return 0
 	}
 	return int64(math.Round(sum / float64(n)))
+}
+
+// crRate 计算充电倍率；designUA 缺失时返回 0（避免 +Inf 污染数据库和下游特征向量）。
+func crRate(avgI, designUA int64) float64 {
+	if designUA <= 0 {
+		return 0
+	}
+	return float64(avgI) / float64(designUA)
 }
 
 func (p *Pipeline) restoreSession() {
@@ -478,7 +488,7 @@ func (p *Pipeline) settle() error {
 		EndCap:   s.lastCap,
 		Ua:       s.accUAs,
 		AvgI:     avgI,
-		CRate:    float64(avgI) / float64(p.designUA),
+		CRate:    crRate(avgI, p.designUA),
 		TempMin:  s.tempMin,
 		TempMax:  s.tempMax,
 		TempAvg:  tempAvgOf(s.tempSum, s.tempN),
@@ -711,8 +721,9 @@ func (p *Pipeline) tickResting(status string) error {
 		p.lastRestCap, p.lastRestUV = capVal, uv
 		return nil
 	}
+	driftLimit := restDedupUVDrift * int64(p.cellCount)
 	if absI64(capVal-p.lastRestCap) < restDedupCapDelta &&
-		absI64(uv-p.lastRestUV) <= restDedupUVDrift {
+		absI64(uv-p.lastRestUV) <= driftLimit {
 		return nil
 	}
 	if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {

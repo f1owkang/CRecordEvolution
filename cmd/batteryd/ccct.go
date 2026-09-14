@@ -9,10 +9,22 @@
 package main
 
 const (
-	ccctWinLo  = 4_200_000 // 观察窗下沿（µV）
-	ccctWinHi  = 4_300_000 // 观察窗上沿（µV）
-	ccctSegWin = 5         // DetectCCSegs 切窗步长（样本数）
+	ccctWinLoBase = 4_200_000 // 单电芯观察窗下沿（µV）
+	ccctWinHiBase = 4_300_000 // 单电芯观察窗上沿（µV）
+	ccctSegWin    = 5         // DetectCCSegs 切窗步长（样本数）
 )
+
+// ccctWinLo/Hi 由 initCCCTVoltage 按电芯数缩放；默认值为单电芯。
+var ccctWinLo int64 = ccctWinLoBase
+var ccctWinHi int64 = ccctWinHiBase
+
+// initCCCTVoltage 按电芯串联数缩放 CCCT 观察窗电压阈值。
+func initCCCTVoltage(cellCount int) {
+	if cellCount > 1 {
+		ccctWinLo = ccctWinLoBase * int64(cellCount)
+		ccctWinHi = ccctWinHiBase * int64(cellCount)
+	}
+}
 
 // locateWindowCross 在 seg 时间范围内扫描 rows：判定是否「跨越整窗」——先有
 // uv<WinLo 的起步样本，随后升到首个 uv≥WinLo（出下沿）与首个 uv≥WinHi（过
