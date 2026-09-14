@@ -451,7 +451,17 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     setText('cyceq', fmtFix(doc.cycle_equiv, 2));
     setText('rmoh', doc.r_moh != null ? Number(doc.r_moh).toFixed(1) + ' mΩ' : '采集中');
     var tw = Number(doc.trend_mah_per_week);
-    setText('trend', (doc.trend_mah_per_week != null && isFinite(tw)) ? '本周斜率 ' + tw.toFixed(1) + ' mAh/周' : '学习期');
+    var hasTw = doc.trend_mah_per_week != null && isFinite(tw);
+    if (doc.trend_state === 'stable') {
+      setText('trend', '无显著变化');
+    } else if (doc.trend_state === 'insufficient') {
+      setText('trend', '数据积累中' + (doc.trend_span_day != null ? ' · ' + fmtInt(doc.trend_span_day) + '/21 天' : ''));
+    } else if (hasTw) {
+      // 方向写进文字，数字只给幅度：每周衰减 1.2 mAh / 每周回升 0.8 mAh
+      setText('trend', tw < 0 ? '每周衰减 ' + Math.abs(tw).toFixed(1) + ' mAh' : '每周回升 ' + tw.toFixed(1) + ' mAh');
+    } else {
+      setText('trend', '—');
+    }
 
     var list = $('recent');
     list.textContent = '';

@@ -167,6 +167,42 @@ func TestRenderJSONSessionInvalidReason(t *testing.T) {
 	}
 }
 
+func TestRenderJSONTrendStates(t *testing.T) {
+	span := int64(16)
+	mpw := -1.25
+	cases := []struct {
+		name string
+		snap Snapshot
+		want []string
+		bad  []string
+	}{
+		{"insufficient带进度", Snapshot{TrendState: "insufficient", TrendSpanDay: &span},
+			[]string{`"trend_state":"insufficient"`, `"trend_span_day":16`}, nil},
+		{"stable无进度", Snapshot{TrendState: "stable"},
+			[]string{`"trend_state":"stable"`}, []string{`"trend_span_day"`}},
+		{"significant带斜率", Snapshot{TrendState: "significant", TrendMahPerWeek: &mpw},
+			[]string{`"trend_state":"significant"`, `"trend_mah_per_week":-1.25`}, []string{`"trend_span_day"`}},
+		{"无状态整体省略", Snapshot{}, nil, []string{`"trend_state"`, `"trend_span_day"`}},
+	}
+	for _, c := range cases {
+		b, err := RenderJSON("stable", Design{}, c.snap, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		s := string(b)
+		for _, w := range c.want {
+			if !strings.Contains(s, w) {
+				t.Fatalf("%s: 缺 %s: %s", c.name, w, s)
+			}
+		}
+		for _, w := range c.bad {
+			if strings.Contains(s, w) {
+				t.Fatalf("%s: 不应出现 %s: %s", c.name, w, s)
+			}
+		}
+	}
+}
+
 func TestConvSessionCarriesInvalidReason(t *testing.T) {
 	in := Session{StartTs: 100, EndTs: 200, StartCap: 30, EndCap: 35,
 		Ua: 1_800_000_000, Valid: false, InvalidReason: "temp_out_of_range"}

@@ -30,6 +30,8 @@ type Snapshot struct {
 	SigmaMah   *float64
 
 	TrendMahPerWeek *float64
+	TrendState      string
+	TrendSpanDay    *int64
 }
 
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。

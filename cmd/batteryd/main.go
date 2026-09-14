@@ -229,12 +229,19 @@ func (a *app) stats() (Design, Snapshot, error) {
 		tempC := NormTempC(tRaw)
 		snap.TempC = &tempC
 	}
-	// 趋势门控较严（点数/跨度/R²），失败即无此字段，属正常降级
-	if recent, err := a.st.RecentEstimates(200); err == nil {
+	// 趋势三态：insufficient（数据不足）/stable（无显著变化）/significant（显著变化），判定见 trend.go；
+	// 无任何估算点时整体省略，前端显示占位符
+	if recent, err := a.st.RecentEstimates(200); err == nil && len(recent) > 0 {
 		for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
 			recent[i], recent[j] = recent[j], recent[i]
 		}
-		if tr, ok := FitTrend(recent); ok {
+		tr, ok := FitTrend(recent)
+		snap.TrendState = string(tr.State)
+		if tr.State == TrendInsufficient {
+			span := tr.SpanDay
+			snap.TrendSpanDay = &span
+		}
+		if ok {
 			// FitTrend 斜率与 estimates 表同单位（µAh/周），换算为 mAh/周
 			v := tr.MahPerWeek / 1000
 			snap.TrendMahPerWeek = &v

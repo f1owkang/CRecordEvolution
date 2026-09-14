@@ -46,25 +46,29 @@ type icaEntry struct {
 }
 
 type jsonDoc struct {
-	Channel         string         `json:"channel"`
-	DesignMah       *int64         `json:"design_mah"`
-	FullMah         *int64         `json:"full_mah"`
-	Cycles          *int64         `json:"cycles"`
-	Pct             *int64         `json:"pct"`
-	EstMah          *int64         `json:"est_mah"`
-	EstMahSigma     *float64       `json:"est_mah_sigma"`
-	Samples         int64          `json:"samples"`
-	CycleEquiv      *float64       `json:"cycle_equiv"`
-	RMoh            *float64       `json:"r_moh"`
-	TempC           *float64       `json:"temp_c"`
-	TrendMahPerWeek *float64       `json:"trend_mah_per_week"`
-	Updated         string         `json:"updated"`
-	Recent          []recentEntry  `json:"recent"`
-	Sessions        []sessionEntry `json:"sessions"`
-	RestPoints      []restEntry    `json:"rest_points"`
-	Ccct            []ccctEntry    `json:"ccct"`
-	IcaPeaks        []icaEntry     `json:"ica_peaks"`
-	SamplesN        int64          `json:"samples_n"`
+	Channel         string   `json:"channel"`
+	DesignMah       *int64   `json:"design_mah"`
+	FullMah         *int64   `json:"full_mah"`
+	Cycles          *int64   `json:"cycles"`
+	Pct             *int64   `json:"pct"`
+	EstMah          *int64   `json:"est_mah"`
+	EstMahSigma     *float64 `json:"est_mah_sigma"`
+	Samples         int64    `json:"samples"`
+	CycleEquiv      *float64 `json:"cycle_equiv"`
+	RMoh            *float64 `json:"r_moh"`
+	TempC           *float64 `json:"temp_c"`
+	TrendMahPerWeek *float64 `json:"trend_mah_per_week"`
+	// TrendState/TrendSpanDay 趋势三态（insufficient/stable/significant）与积累进度天数；
+	// 无估算点时两者皆省略，前端按缺失降级（旧前端只认 trend_mah_per_week）
+	TrendState   string         `json:"trend_state,omitempty"`
+	TrendSpanDay *int64         `json:"trend_span_day,omitempty"`
+	Updated      string         `json:"updated"`
+	Recent       []recentEntry  `json:"recent"`
+	Sessions     []sessionEntry `json:"sessions"`
+	RestPoints   []restEntry    `json:"rest_points"`
+	Ccct         []ccctEntry    `json:"ccct"`
+	IcaPeaks     []icaEntry     `json:"ica_peaks"`
+	SamplesN     int64          `json:"samples_n"`
 }
 
 func finitePtr(f *float64) *float64 {
@@ -101,6 +105,8 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		RMoh:            finitePtr(snap.RMoh),
 		TempC:           finitePtr(snap.TempC),
 		TrendMahPerWeek: finitePtr(snap.TrendMahPerWeek),
+		TrendState:      snap.TrendState,
+		TrendSpanDay:    snap.TrendSpanDay,
 		EstMahSigma:     finitePtr(snap.SigmaMah),
 		Updated:         now.Format("2006-01-02 15:04:05"),
 		Recent:          make([]recentEntry, 0, len(recent)),
