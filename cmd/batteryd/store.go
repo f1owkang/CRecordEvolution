@@ -48,7 +48,11 @@ type TsVal struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_busy_timeout=5000")
+	// wal_autocheckpoint(256)：默认 1000 页（≈4MB）才做检查点，低写入量下
+	// 最近数周数据几乎全躺在 -wal 里，任何「只复制 .db 主文件」的场景（用户
+	// 提取数据库报障、备份工具）都会拿到缺 WAL 的旧数据。降到 256 页（≈1MB），
+	// 连接池每个连接都生效（Exec 单发只作用于当时那条连接）。
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_busy_timeout=5000&_pragma=wal_autocheckpoint(256)")
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +69,12 @@ func OpenStore(path string) (*Store, error) {
 	// 失败仅告警不阻断（回退默认 journal）。
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	return &Store{db: db}, nil
+}
+
+// Checkpoint 主动做 TRUNCATE 检查点：把 WAL 落进主库并把 -wal 清零。有并发
+// 读者（WebUI json）占用时可能不完整，失败静默——自动检查点兜底，次日再试。
+func (s *Store) Checkpoint() {
+	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
 }
 
 // migrateSessionsReason 检查 sessions 表是否缺 invalid_reason 列（升级前旧库），

@@ -285,6 +285,9 @@ func (a *app) refreshPruned() error {
 		if err := a.st.PruneBefore(now.Unix() - retainDays*86400); err != nil {
 			return err
 		}
+		// 每日顺手做一次 TRUNCATE 检查点：把 WAL 落进主库清零，主库文件
+		// 始终接近自包含（复制单个 .db 不再缺最近数周数据）
+		a.st.Checkpoint()
 		a.lastPruneDay = day
 	}
 	return a.refresh()
