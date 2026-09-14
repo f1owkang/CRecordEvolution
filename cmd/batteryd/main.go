@@ -546,7 +546,7 @@ func runJson() error {
 	}
 	icaPeaks := make([]icaEntry, 0, len(icaRows))
 	for _, ip := range icaRows {
-		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: ip.PeakHRel})
+		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: finitePtr(&ip.PeakHRel)})
 	}
 	n, err := a.st.CountSamples()
 	if err != nil {

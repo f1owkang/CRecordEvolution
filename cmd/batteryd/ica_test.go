@@ -370,7 +370,8 @@ func TestSettleSkipsICAWhenRateExceedsDesign(t *testing.T) {
 }
 
 func TestJSONIncludesIcaPeaksEntries(t *testing.T) {
-	ica := []icaEntry{{TS: 900, PeakUV: 3_950_000, PeakHRel: 1}, {TS: 1500, PeakUV: 3_960_000, PeakHRel: 0.97}}
+	v1, v2 := 1.0, 0.97
+	ica := []icaEntry{{TS: 900, PeakUV: 3_950_000, PeakHRel: &v1}, {TS: 1500, PeakUV: 3_960_000, PeakHRel: &v2}}
 	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, ica, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)

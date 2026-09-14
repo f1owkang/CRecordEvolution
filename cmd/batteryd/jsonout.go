@@ -40,9 +40,9 @@ type ccctEntry struct {
 }
 
 type icaEntry struct {
-	TS       int64   `json:"ts"`
-	PeakUV   int64   `json:"peak_uv"`
-	PeakHRel float64 `json:"peak_h_rel"`
+	TS       int64    `json:"ts"`
+	PeakUV   int64    `json:"peak_uv"`
+	PeakHRel *float64 `json:"peak_h_rel"`
 }
 
 type jsonDoc struct {
@@ -88,8 +88,7 @@ func convSession(se Session) sessionEntry {
 		e.TempAvg = &t
 	}
 	if se.CRate > 0 {
-		c := se.CRate
-		e.CRate = &c
+		e.CRate = finitePtr(&se.CRate)
 	}
 	return e
 }
