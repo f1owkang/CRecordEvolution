@@ -82,6 +82,7 @@ type Pipeline struct {
 	st       *Store
 	est      Estimator
 	designUA int64
+	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 4.5V 判定）
 	now      func() time.Time
 
 	nodePaths map[string]string
@@ -121,12 +122,13 @@ func (p *Pipeline) log(format string, args ...any) {
 	}
 }
 
-func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, clock func() time.Time) *Pipeline {
+func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount int, clock func() time.Time) *Pipeline {
 	p := &Pipeline{
 		fs:        fs,
 		st:        st,
 		est:       est,
 		designUA:  designUA,
+		cellCount: cellCount,
 		now:       clock,
 		nodePaths: map[string]string{},
 	}
@@ -717,8 +719,9 @@ func (p *Pipeline) tickResting(status string) error {
 		p.lastRestCap, p.lastRestUV = capVal, uv
 		return nil
 	}
+	driftLimit := restDedupUVDrift * int64(p.cellCount)
 	if absI64(capVal-p.lastRestCap) < restDedupCapDelta &&
-		absI64(uv-p.lastRestUV) <= restDedupUVDrift {
+		absI64(uv-p.lastRestUV) <= driftLimit {
 		return nil
 	}
 	if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {

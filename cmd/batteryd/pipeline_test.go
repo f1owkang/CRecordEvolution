@@ -40,7 +40,7 @@ func newPipeRig(t *testing.T) *pipeRig {
 func (r *pipeRig) rebuildPipeline() {
 	r.t.Helper()
 	clock := func() time.Time { return r.cur }
-	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUA, clock)
+	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUA, 1, clock)
 }
 
 func fmtNode(v int64) string { return strconv.FormatInt(v, 10) + "\n" }

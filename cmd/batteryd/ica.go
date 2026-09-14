@@ -11,11 +11,23 @@ package main
 const (
 	icaBinUV         = 10_000    // ΔV 分桶网格宽（µV），自主选定
 	icaSmoothHalf    = 2         // 滑动平均半窗宽，窗口 = 2×2+1 = 5 点（自主选定）
-	icaSearchLoUV    = 3_500_000 // 主峰搜索域下沿（µV）
-	icaSearchHiUV    = 4_250_000 // 主峰搜索域上沿（µV）
+	icaSearchLoUVBase = 3_500_000 // 单电芯主峰搜索域下沿（µV）
+	icaSearchHiUVBase = 4_250_000 // 单电芯主峰搜索域上沿（µV）
 	icaMinProminence = 1.20      // 显著性门槛：平滑峰值须超域内均值×此系数（自主选定）
 	kvICAPeakBase    = "ica_peak_base"
 )
+
+// 由 initICAVoltage 按电芯数缩放；默认值为单电芯。
+var icaSearchLoUV int64 = icaSearchLoUVBase
+var icaSearchHiUV int64 = icaSearchHiUVBase
+
+// initICAVoltage 按电芯串联数缩放 ICA 搜索域电压阈值。
+func initICAVoltage(cellCount int) {
+	if cellCount > 1 {
+		icaSearchLoUV = icaSearchLoUVBase * int64(cellCount)
+		icaSearchHiUV = icaSearchHiUVBase * int64(cellCount)
+	}
+}
 
 // FindPeak 在样本行上累计 ΔQ 密度并定位主峰。返回峰所在桶左沿电压 peakUV 与
 // 绝对峰高（平滑后最大 dQ/dV 桶值）；无显著主峰或输入不足时 ok=false。

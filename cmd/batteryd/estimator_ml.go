@@ -28,7 +28,10 @@ const (
 	learningSamples = 30
 )
 
-type Learning struct{ kv KVStore }
+type Learning struct {
+	kv        KVStore
+	cellCount int
+}
 
 func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if tempOutOfRange(sr) {
@@ -58,7 +61,7 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 		}
 	}
 
-	phi := mlPhi(sr.Session)
+	phi := mlPhi(sr.Session, l.cellCount)
 	theta := l.loadTheta()
 	p := l.loadP()
 	theta, p = rlsUpdate(theta, p, phi, r)
@@ -201,8 +204,9 @@ func (l *Learning) loadP() [4][4]float64 {
 	return p
 }
 
-func mlPhi(s Session) [4]float64 {
-	return [4]float64{1, float64(s.TempAvg) / 40, s.CRate, float64(s.VStart) / 4.4e6}
+func mlPhi(s Session, cellCount int) [4]float64 {
+	vNorm := 4.4e6 * float64(cellCount)
+	return [4]float64{1, float64(s.TempAvg) / 40, s.CRate, float64(s.VStart) / vNorm}
 }
 
 func dot4(a, b [4]float64) float64 {

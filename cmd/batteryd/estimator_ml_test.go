@@ -15,7 +15,7 @@ func newTestLearning(t *testing.T) (*Learning, *Store) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewLearning(st), st
+	return NewLearning(st, 1), st
 }
 
 func kvFloats(t *testing.T, st *Store, key string, wantLen int) []float64 {
@@ -100,7 +100,7 @@ func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 
 	// P0 从 1e4 收紧到 100 后 RLS 每步增益变小，60 会话对常数 y=1 的
 	// 收敛精度由 1e-6 量级放宽到 1e-4 量级（实测偏差 ≈ 4.7e-5）
-	if got := dot4(mlPhi(lastSess), theta); math.Abs(got-1) > 1e-4 {
+	if got := dot4(mlPhi(lastSess, 1), theta); math.Abs(got-1) > 1e-4 {
 		t.Fatalf("θᵀφ = %.12f, 与常数 y=1 的偏差超过 1e-4", got)
 	}
 	for _, r := range hist {
@@ -134,7 +134,7 @@ func TestLearningClipsCorrectionAtUpperBound(t *testing.T) {
 
 	var post [4]float64
 	copy(post[:], kvFloats(t, st, kvKeyRlsTheta, 4))
-	pred := dot4(mlPhi(sess), post)
+	pred := dot4(mlPhi(sess, 1), post)
 	if pred <= clipHi {
 		t.Fatalf("前置条件失败：更新后 θᵀφ = %v 未超过 clip 上界 %v", pred, clipHi)
 	}
@@ -325,7 +325,7 @@ func correctedFromKV(t *testing.T, st *Store, sess Session, emaUA int64) float64
 	t.Helper()
 	var theta [4]float64
 	copy(theta[:], kvFloats(t, st, kvKeyRlsTheta, 4))
-	return float64(emaUA) * clipRatio(dot4(mlPhi(sess), theta))
+	return float64(emaUA) * clipRatio(dot4(mlPhi(sess, 1), theta))
 }
 
 func setKVJSON(t *testing.T, st *Store, key string, v any) {
@@ -411,7 +411,7 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 	// 且确实压低了 P 通道：封顶后的 σ_rel 应小于 √(φᵀPφ)
 	var p [4][4]float64
 	p = symToP(kvFloats(t, st, kvKeyRlsPSym, 10))
-	sigmaRelP := math.Sqrt(quadForm(p, mlPhi(sess)))
+	sigmaRelP := math.Sqrt(quadForm(p, mlPhi(sess, 1)))
 	if got := upd.SigmaMah * 1000 / corrected; got >= sigmaRelP {
 		t.Fatalf("封顶后 σ_rel = %v, 应小于 P 通道 √(φᵀPφ) = %v", got, sigmaRelP)
 	}

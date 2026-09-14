@@ -107,6 +107,7 @@ type app struct {
 	st       *Store
 	est      Estimator
 	designUA int64
+	cellCount int
 
 	nodePaths    map[string]string
 	lastPruneDay int64
@@ -142,17 +143,31 @@ func newApp() (*app, error) {
 	if designUA <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
+	// 双电芯检测：读 voltage_now，超过 4.5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
+	// 双电芯设备的 voltage_now 报告的是串联总电压（如 8.4V），所有基于单电芯
+	// 电压的阈值（CCCT 窗口、ICA 搜索域、ML 归一化）需相应缩放。
+	cellCount := 1
+	if vNode, err := fs.FindNode("voltage_now"); err == nil {
+		if v, verr := fs.ReadInt(vNode); verr == nil && v > 4_500_000 {
+			cellCount = 2
+			_ = st.InsertEvent("dual_cell", fmt.Sprintf("检测到双电芯，voltage_now=%dµV", v))
+		}
+	}
+	// 按电芯数缩放所有电压阈值（CCCT 窗口、ICA 搜索域）
+	initCCCTVoltage(cellCount)
+	initICAVoltage(cellCount)
 	var est Estimator = NewStable(st)
 	if channel == "ml" {
-		est = NewLearning(st)
+		est = NewLearning(st, cellCount)
 	}
 	return &app{
-		moddir:   moddir,
-		propPath: filepath.Join(moddir, "module.prop"),
-		fs:       fs,
-		st:       st,
-		est:      est,
-		designUA: designUA,
+		moddir:    moddir,
+		propPath:  filepath.Join(moddir, "module.prop"),
+		fs:        fs,
+		st:        st,
+		est:       est,
+		designUA:  designUA,
+		cellCount: cellCount,
 	}, nil
 }
 
@@ -358,7 +373,7 @@ func runDaemon() error {
 		return fmt.Errorf("找不到 status 节点：%w", err)
 	}
 
-	p := NewPipeline(a.fs, a.st, a.est, a.designUA, time.Now)
+	p := NewPipeline(a.fs, a.st, a.est, a.designUA, a.cellCount, time.Now)
 	p.Logf(a.appendLog)
 	lastStatus := ""
 	count := 0
