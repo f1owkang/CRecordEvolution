@@ -817,8 +817,9 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       });
     }
 
-    // 容量主峰：与 CCCT 同源门控（复用其过倍率门控的恒流段样本）
-    var icaRows = Array.isArray(doc.ica_peaks) ? doc.ica_peaks : [];
+    // 容量主峰：与 CCCT 同源门控（复用其过倍率门控的恒流段样本）；
+    // peak_h_rel 缺省（非有限值被后端省略）的行整条跳过——Number(null)=0 会画出 0 点假数据
+    var icaRows = (Array.isArray(doc.ica_peaks) ? doc.ica_peaks : []).filter(function (r) { return r && r.peak_h_rel != null; });
     if (!designOK && !icaRows.length) {
       setPanel('panel_ica', 'hide');
       clearDetail('chart_ica');

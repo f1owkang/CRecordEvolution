@@ -20,10 +20,10 @@ var ccctWinHi int64 = ccctWinHiBase
 
 // initCCCTVoltage 按电芯串联数缩放 CCCT 观察窗电压阈值。
 func initCCCTVoltage(cellCount int) {
-	if cellCount > 1 {
-		ccctWinLo = ccctWinLoBase * int64(cellCount)
-		ccctWinHi = ccctWinHiBase * int64(cellCount)
-	}
+	// 无条件赋值：cellCount=1 即复位回单电芯默认（缩放是包级可变量，
+	// 有复位路径才能保证测试间互不污染）
+	ccctWinLo = ccctWinLoBase * int64(cellCount)
+	ccctWinHi = ccctWinHiBase * int64(cellCount)
 }
 
 // locateWindowCross 在 seg 时间范围内扫描 rows：判定是否「跨越整窗」——先有

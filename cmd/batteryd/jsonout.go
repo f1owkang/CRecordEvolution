@@ -40,9 +40,11 @@ type ccctEntry struct {
 }
 
 type icaEntry struct {
-	TS       int64    `json:"ts"`
-	PeakUV   int64    `json:"peak_uv"`
-	PeakHRel *float64 `json:"peak_h_rel"`
+	TS     int64  `json:"ts"`
+	PeakUV int64  `json:"peak_uv"`
+	// PeakHRel 防御性过滤后的相对峰高：非有限值按「缺失即省略」输出，
+	// 前端对缺省行降级跳过（不画 0 点）
+	PeakHRel *float64 `json:"peak_h_rel,omitempty"`
 }
 
 type jsonDoc struct {

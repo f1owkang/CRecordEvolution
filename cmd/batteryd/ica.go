@@ -23,10 +23,10 @@ var icaSearchHiUV int64 = icaSearchHiUVBase
 
 // initICAVoltage 按电芯串联数缩放 ICA 搜索域电压阈值。
 func initICAVoltage(cellCount int) {
-	if cellCount > 1 {
-		icaSearchLoUV = icaSearchLoUVBase * int64(cellCount)
-		icaSearchHiUV = icaSearchHiUVBase * int64(cellCount)
-	}
+	// 无条件赋值：cellCount=1 即复位回单电芯默认（缩放是包级可变量，
+	// 有复位路径才能保证测试间互不污染）
+	icaSearchLoUV = icaSearchLoUVBase * int64(cellCount)
+	icaSearchHiUV = icaSearchHiUVBase * int64(cellCount)
 }
 
 // FindPeak 在样本行上累计 ΔQ 密度并定位主峰。返回峰所在桶左沿电压 peakUV 与

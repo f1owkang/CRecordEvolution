@@ -12,39 +12,65 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	// 内嵌 IANA 时区库：Android 上无系统 tzdata 可读（实测 /etc/localtime、
+	// /data/misc/zoneinfo 均不存在），不内嵌则 LoadLocation 必然失败。
+	_ "time/tzdata"
 )
 
-// localZone 显式加载本地时区：Magisk 模块守护进程以 root 运行时，Go 运行时
-// 可能读不到系统时区（TZ 未导出），time.Now() 回退 UTC，导致前端显示的时间
-// 比北京时间慢 8 小时。优先读 /etc/localtime 符号链接，失败则退化为 CST。
-var localZone *time.Location
+// 本地时区解析：守护进程以 root 运行，Go 运行时读不到系统时区（TZ 未导出、
+// 无 tzdata 路径），time.Now() 回退 UTC，导致日志与 JSON 的时间戳慢 8 小时。
+// 解析顺序：① getprop persist.sys.timezone（Android 权威源，任何 ROM 均可，
+// 属性服务数据源即 /dev/__properties__ 的 timezone_prop 上下文，真机已验证）
+// ② /data/property/persist.sys.timezone 文件直读（AOSP 系兜底，MIUI 等无此
+// 文件）③ 保持 time.Local（UTC）——宁可诚实显示 UTC，也不硬编码某个时区。
+var (
+	localZoneOnce sync.Once
+	localZone     *time.Location
+)
 
-func init() {
-	if tz, err := time.LoadLocation("Asia/Shanghai"); err == nil {
-		localZone = tz
-		return
+// tzPropSource / tzFileSource 可注入，供单元测试替换；默认走真机路径。
+var (
+	tzPropSource = func() (string, bool) {
+		out, err := exec.Command("/system/bin/getprop", "persist.sys.timezone").Output()
+		if err != nil {
+			return "", false
+		}
+		if s := strings.TrimSpace(string(out)); s != "" {
+			return s, true
+		}
+		return "", false
 	}
-	// fallback: 读 /etc/localtime 指向的时区名
-	if link, err := os.Readlink("/etc/localtime"); err == nil {
-		name := filepath.Base(link)
-		if tz, err := time.LoadLocation(name); err == nil {
-			localZone = tz
-			return
+	tzFileSource = func() (string, bool) {
+		b, err := os.ReadFile("/data/property/persist.sys.timezone")
+		if err != nil {
+			return "", false
+		}
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, true
+		}
+		return "", false
+	}
+)
+
+func resolveLocalZone() *time.Location {
+	for _, src := range []func() (string, bool){tzPropSource, tzFileSource} {
+		name, ok := src()
+		if !ok {
+			continue
+		}
+		// 非法/非 IANA 名由 LoadLocation 拒绝，顺延下一来源
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
 		}
 	}
-	// 最终 fallback: 调用 date 命令
-	if out, err := exec.Command("date", "+%Z").Output(); err == nil {
-		tzName := strings.TrimSpace(string(out))
-		if tz, err := time.LoadLocation(tzName); err == nil {
-			localZone = tz
-			return
-		}
-	}
-	localZone = time.FixedZone("CST", 8*3600)
+	return time.Local
 }
 
 func localNow() time.Time {
+	localZoneOnce.Do(func() { localZone = resolveLocalZone() })
 	return time.Now().In(localZone)
 }
 
@@ -101,12 +127,12 @@ func main() {
 }
 
 type app struct {
-	moddir   string
-	propPath string
-	fs       SysFS
-	st       *Store
-	est      Estimator
-	designUA int64
+	moddir    string
+	propPath  string
+	fs        SysFS
+	st        *Store
+	est       Estimator
+	designUA  int64
 	cellCount int
 
 	nodePaths    map[string]string
@@ -143,12 +169,15 @@ func newApp() (*app, error) {
 	if designUA <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
-	// 双电芯检测：读 voltage_now，超过 4.5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
+	// 双电芯检测：读 voltage_now，超过 5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
+	// 阈值定 5V：高压单电芯截止 4.45~4.53V（OPPO/一加系常见），静息+满电不得超过
+	// ~4.6V；双电芯串联最低 ≈ 2×3.4V = 6.8V。5V 两侧各留充足余量，杜绝把高压
+	// 单电芯误判成双电芯（误判会导致所有电压窗口翻倍、CCCT/ICA 静默全哑）。
 	// 双电芯设备的 voltage_now 报告的是串联总电压（如 8.4V），所有基于单电芯
 	// 电压的阈值（CCCT 窗口、ICA 搜索域、ML 归一化）需相应缩放。
 	cellCount := 1
 	if vNode, err := fs.FindNode("voltage_now"); err == nil {
-		if v, verr := fs.ReadInt(vNode); verr == nil && v > 4_500_000 {
+		if v, verr := fs.ReadInt(vNode); verr == nil && v > 5_000_000 {
 			cellCount = 2
 			_ = st.InsertEvent("dual_cell", fmt.Sprintf("检测到双电芯，voltage_now=%dµV", v))
 		}
@@ -249,7 +278,8 @@ func (a *app) refreshWith(d Design, snap Snapshot) error {
 }
 
 func (a *app) refreshPruned() error {
-	now := localNow()
+	// 只用 epoch，时区无关；避免在此路径触发 getprop 时区解析
+	now := time.Now()
 	day := now.Unix() / 86400
 	if day != a.lastPruneDay {
 		if err := a.st.PruneBefore(now.Unix() - retainDays*86400); err != nil {

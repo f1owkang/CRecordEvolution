@@ -82,7 +82,7 @@ type Pipeline struct {
 	st       *Store
 	est      Estimator
 	designUA int64
-	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 4.5V 判定）
+	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 5V 判定，依据见 main.go）
 	now      func() time.Time
 
 	nodePaths map[string]string
