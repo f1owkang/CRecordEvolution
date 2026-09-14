@@ -163,6 +163,14 @@ func tempAvgOf(sum float64, n int64) int64 {
 	return int64(math.Round(sum / float64(n)))
 }
 
+// crRate 计算充电倍率；designUA 缺失时返回 0（避免 +Inf 污染数据库和下游特征向量）。
+func crRate(avgI, designUA int64) float64 {
+	if designUA <= 0 {
+		return 0
+	}
+	return float64(avgI) / float64(designUA)
+}
+
 func (p *Pipeline) restoreSession() {
 	if v, ok := p.st.KVGet(kvSessActive); !ok || v != "1" {
 		return
@@ -478,7 +486,7 @@ func (p *Pipeline) settle() error {
 		EndCap:   s.lastCap,
 		Ua:       s.accUAs,
 		AvgI:     avgI,
-		CRate:    float64(avgI) / float64(p.designUA),
+		CRate:    crRate(avgI, p.designUA),
 		TempMin:  s.tempMin,
 		TempMax:  s.tempMax,
 		TempAvg:  tempAvgOf(s.tempSum, s.tempN),
