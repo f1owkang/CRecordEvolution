@@ -584,6 +584,15 @@ func runOnce() error {
 		fmt.Printf("循环当量：%.2f\n", snap.CycleEquiv)
 	}
 	fmt.Printf("内阻：%s\n", resText)
+	// 放电记录摘要（初步观测通道）：最近一次会话与累计段数
+	if disRows, derr := a.st.RecentDischarge(1); derr == nil && len(disRows) > 0 {
+		r := disRows[0]
+		line := fmt.Sprintf("放电记录：%d→%d%% 放出 %d mAh", r.StartCap, r.EndCap, r.Uah/1000)
+		if r.Implied != nil {
+			line += fmt.Sprintf("（隐含 %d mAh）", *r.Implied/1000)
+		}
+		fmt.Printf("%s\n", line)
+	}
 	if snap.TempC != nil {
 		fmt.Printf("电池温度：%.1f℃\n", *snap.TempC)
 	}
@@ -637,11 +646,25 @@ func runJson() error {
 	for _, ip := range icaRows {
 		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: finitePtr(&ip.PeakHRel)})
 	}
+	disRows, err := a.st.RecentDischarge(jsonRecentLimit)
+	if err != nil {
+		return err
+	}
+	disch := make([]dischargeEntry, 0, len(disRows))
+	for _, dr := range disRows {
+		e := dischargeEntry{TS: dr.TS, Secs: dr.Secs, UahMah: dr.Uah / 1000,
+			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied}
+		if e.Implied != nil {
+			v := *e.Implied / 1000
+			e.Implied = &v
+		}
+		disch = append(disch, e)
+	}
 	n, err := a.st.CountSamples()
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, localNow())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, disch, n, localNow())
 	if err != nil {
 		return err
 	}

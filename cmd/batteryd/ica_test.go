@@ -372,14 +372,14 @@ func TestSettleSkipsICAWhenRateExceedsDesign(t *testing.T) {
 func TestJSONIncludesIcaPeaksEntries(t *testing.T) {
 	v1, v2 := 1.0, 0.97
 	ica := []icaEntry{{TS: 900, PeakUV: 3_950_000, PeakHRel: &v1}, {TS: 1500, PeakUV: 3_960_000, PeakHRel: &v2}}
-	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, ica, 0, time.Unix(0, 0))
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, ica, nil, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := `"ica_peaks":[{"ts":900,"peak_uv":3950000,"peak_h_rel":1},{"ts":1500,"peak_uv":3960000,"peak_h_rel":0.97}]`; !strings.Contains(string(b), want) {
 		t.Fatalf("ica_peaks 序列化不符, got %s", b)
 	}
-	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, []icaEntry{}, 0, time.Unix(0, 0))
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, []icaEntry{}, nil, 0, time.Unix(0, 0))
 	if !strings.Contains(string(b2), `"ica_peaks":[]`) {
 		t.Fatalf("空切片应输出 [] 而非 null: %s", b2)
 	}

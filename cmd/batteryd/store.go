@@ -26,8 +26,72 @@ CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detai
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ica_peaks(session_end_ts INTEGER PRIMARY KEY, peak_uv INTEGER NOT NULL, peak_h_rel REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS discharge(
+  end_ts INTEGER PRIMARY KEY,
+  secs INTEGER NOT NULL,
+  uah INTEGER NOT NULL,
+  start_cap INTEGER NOT NULL,
+  end_cap INTEGER NOT NULL,
+  implied INTEGER,
+  invalid_reason TEXT);
 CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 `
+
+// DischargeRow 放电会话一行：uah 为 charge_counter 差分累计的放出电量（µAh），
+// implied 为按显示电量掉幅反推的隐含满容量（µAh，掉幅 < disMinEstCap 时为 NULL）。
+type DischargeRow struct {
+	TS, Secs, Uah    int64
+	StartCap, EndCap int64
+	Implied          *int64
+	InvalidReason    string
+}
+
+func (s *Store) InsertDischarge(r DischargeRow) error {
+	var implied any
+	if r.Implied != nil {
+		implied = *r.Implied
+	}
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO discharge
+		(end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		r.TS, r.Secs, r.Uah, r.StartCap, r.EndCap, implied, reasonOrNull(r.InvalidReason))
+	return err
+}
+
+// RecentDischarge 取最近 limit 条放电会话（按 end_ts 倒序）。
+func (s *Store) RecentDischarge(limit int) ([]DischargeRow, error) {
+	rows, err := s.db.Query(`SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
+		FROM discharge ORDER BY end_ts DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DischargeRow{}
+	for rows.Next() {
+		var r DischargeRow
+		var implied sql.NullInt64
+		var reason sql.NullString
+		if err := rows.Scan(&r.TS, &r.Secs, &r.Uah, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
+			return nil, err
+		}
+		if implied.Valid {
+			v := implied.Int64
+			r.Implied = &v
+		}
+		if reason.Valid {
+			r.InvalidReason = reason.String
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func reasonOrNull(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
 type Store struct{ db *sql.DB }
 
@@ -352,6 +416,7 @@ func (s *Store) PruneBefore(cutoffTs int64) error {
 		{"samples", "ts"},
 		{"ccct", "ts"},
 		{"ica_peaks", "session_end_ts"},
+		{"discharge", "end_ts"},
 	} {
 		if _, err := s.db.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
 			return err

@@ -78,16 +78,21 @@ type sessionState struct {
 }
 
 type Pipeline struct {
-	fs       SysFS
-	st       *Store
-	est      Estimator
-	designUA int64
+	fs        SysFS
+	st        *Store
+	est       Estimator
+	designUA  int64
 	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 5V 判定，依据见 main.go）
-	now      func() time.Time
+	now       func() time.Time
 
 	nodePaths map[string]string
 
 	sess sessionState
+	dis  disState
+
+	// disCCOff charge_counter 首读失败后永久禁用放电记录（负缓存，
+	// 避免每拍全树扫 /sys）
+	disCCOff bool
 
 	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
 	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）
@@ -133,6 +138,7 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount i
 		nodePaths: map[string]string{},
 	}
 	p.restoreSession()
+	p.restoreDischarge()
 	return p
 }
 
@@ -231,6 +237,9 @@ const notChargDebounce = 3
 
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
+	// 放电记录与充电会话独立：Discharging 差分累计、Charging 触发结算，
+	// 任何错误均内部消化，绝不影响充电主链路
+	p.trackDischarge(status)
 	if status == "Charging" {
 		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
 		p.notChargStreak = 0
