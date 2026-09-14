@@ -7,12 +7,46 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// localZone 显式加载本地时区：Magisk 模块守护进程以 root 运行时，Go 运行时
+// 可能读不到系统时区（TZ 未导出），time.Now() 回退 UTC，导致前端显示的时间
+// 比北京时间慢 8 小时。优先读 /etc/localtime 符号链接，失败则退化为 CST。
+var localZone *time.Location
+
+func init() {
+	if tz, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		localZone = tz
+		return
+	}
+	// fallback: 读 /etc/localtime 指向的时区名
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		name := filepath.Base(link)
+		if tz, err := time.LoadLocation(name); err == nil {
+			localZone = tz
+			return
+		}
+	}
+	// 最终 fallback: 调用 date 命令
+	if out, err := exec.Command("date", "+%Z").Output(); err == nil {
+		tzName := strings.TrimSpace(string(out))
+		if tz, err := time.LoadLocation(tzName); err == nil {
+			localZone = tz
+			return
+		}
+	}
+	localZone = time.FixedZone("CST", 8*3600)
+}
+
+func localNow() time.Time {
+	return time.Now().In(localZone)
+}
 
 // channel 由构建注入：CI 对 ML 变体使用 -ldflags "-X main.channel=ml"
 var channel = "stable"
@@ -200,7 +234,7 @@ func (a *app) refreshWith(d Design, snap Snapshot) error {
 }
 
 func (a *app) refreshPruned() error {
-	now := time.Now()
+	now := localNow()
 	day := now.Unix() / 86400
 	if day != a.lastPruneDay {
 		if err := a.st.PruneBefore(now.Unix() - retainDays*86400); err != nil {
@@ -425,7 +459,7 @@ func (a *app) appendLog(format string, args ...any) {
 		}
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
+	fmt.Fprintf(f, "[%s] %s\n", localNow().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 
 func (a *app) trimLog(path string) {
@@ -552,7 +586,7 @@ func runJson() error {
 	if err != nil {
 		return err
 	}
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, time.Now())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, n, localNow())
 	if err != nil {
 		return err
 	}
