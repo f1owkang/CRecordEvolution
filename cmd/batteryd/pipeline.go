@@ -526,6 +526,8 @@ func (p *Pipeline) settle() error {
 	if estErr := p.st.InsertEstimate(row.EndTs, upd.EstUA); estErr != nil {
 		return &SettleError{Err: estErr}
 	}
+	// 中段分窗容量校准：与 CCCT/ICA 同为采信后的旁路步骤，失败静默不影响结算
+	p.calibrateMid(row.EndTs)
 	// CCCT 特征采集：只在有效结算后做一次，60~240 行扫描毫秒级；一切
 	// 失败仅记 events，静默跳过，绝不影响结算主链路。同源特征 ICA 复用
 	// 其返回的过门段样本行，避免重复扫库。
