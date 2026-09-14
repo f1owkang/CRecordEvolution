@@ -39,7 +39,7 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "delta_lt_20"}}
 	}
 	sFull := sr.AccUA * 100 / (delta * 3600)
-	if sFull*2 < sr.DesignUA || sFull*2 > sr.DesignUA*3 {
+	if sr.DesignUA > 0 && (sFull*2 < sr.DesignUA || sFull*2 > sr.DesignUA*3) {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "out_of_window"}}
 	}
 
