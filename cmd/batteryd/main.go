@@ -217,10 +217,11 @@ func cycleEquiv(totalUAs, designUA int64) float64 {
 func (a *app) basics() Design {
 	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
-		d.FullMah = full / 1000
+		// 双电芯串联时 charge_full 报单电芯容量，需 ×cellCount 得总容量
+		d.FullMah = full / 1000 * int64(a.cellCount)
 		d.HasFull = true
 		if d.HasDesign {
-			d.Pct = healthPct(full, a.designUA)
+			d.Pct = healthPct(full*int64(a.cellCount), a.designUA)
 			d.HasPct = true
 		}
 	}
