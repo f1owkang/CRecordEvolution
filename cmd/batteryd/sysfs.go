@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -138,4 +139,36 @@ func NormTempC(raw int64) float64 {
 		c = 80
 	}
 	return c
+}
+
+// readDTBatteryCapacity 从设备树读取 vivo,bat-capacity-mah（µAh）。
+// VIVO/iQOO 等设备不把 charge_full_design 暴露到 sysfs，但设备树中有此值。
+// 搜索 /proc/device-tree 下所有含 "bat-capacity-mah" 的属性，返回第一个有效值。
+func readDTBatteryCapacity() (int64, error) {
+	const dtRoot = "/proc/device-tree"
+	var found string
+	err := filepath.WalkDir(dtRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.Contains(name, "bat-capacity-mah") {
+			found = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil || found == "" {
+		return 0, fmt.Errorf("设备树中未找到 bat-capacity-mah")
+	}
+	data, err := os.ReadFile(found)
+	if err != nil {
+		return 0, err
+	}
+	if len(data) < 4 {
+		return 0, fmt.Errorf("bat-capacity-mah 数据长度不足")
+	}
+	// 设备树属性是 big-endian 32 位整数，单位 mAh，需转换为 µAh
+	v := binary.BigEndian.Uint32(data[:4])
+	return int64(v) * 1000, nil
 }

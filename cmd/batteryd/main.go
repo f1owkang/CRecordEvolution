@@ -140,6 +140,14 @@ func newApp() (*app, error) {
 			designUA = v
 		}
 	}
+	// Fallback: 部分设备（如 VIVO/iQOO）内核不把设计容量暴露到 sysfs，
+	// 但在设备树 (DTB) 中存储了 vivo,bat-capacity-mah。
+	if designUA <= 0 {
+		if v, err := readDTBatteryCapacity(); err == nil && v > 0 {
+			designUA = v
+			_ = st.InsertEvent("design_dt", fmt.Sprintf("从设备树读取设计容量 %dµAh", v))
+		}
+	}
 	if designUA <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
