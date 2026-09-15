@@ -33,6 +33,16 @@ type Learning struct {
 	cellCount int
 }
 
+// ResetModel 清除 RLS 模型状态（theta、P 矩阵、历史直方图）。
+// 在 cellCount 变化后调用，避免旧模型在新归一化下产生错误预测。
+func (l *Learning) ResetModel() {
+	_ = l.kv.KVSet(kvKeyRlsTheta, "")
+	_ = l.kv.KVSet(kvKeyRlsPSym, "")
+	_ = l.kv.KVSet(kvKeyRatioHist, "")
+	_ = l.kv.KVSet(kvKeySFullHist, "")
+	_ = l.kv.KVSet(kvKeySamples, "0")
+}
+
 func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if tempOutOfRange(sr) {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "temp_out_of_range"}}

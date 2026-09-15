@@ -190,10 +190,12 @@ func (a *app) redetectCellCount(p *Pipeline) {
 		return
 	}
 	a.cellCount = want
+	p.SetCellCount(want)
 	initCCCTVoltage(want)
 	initICAVoltage(want)
 	// 重新初始化 ML 估算器（cellCount 影响 VStart 归一化）
-	if _, ok := a.est.(*Learning); ok {
+	if old, ok := a.est.(*Learning); ok {
+		old.ResetModel()
 		a.est = NewLearning(a.st, want)
 	}
 	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
@@ -244,12 +246,14 @@ func cycleEquiv(totalUAs, designUA int64) float64 {
 }
 
 func (a *app) basics() Design {
-	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
+	// designUA 和 charge_full 内核均报单电芯值，统一 ×cellCount 得总容量
+	designTotal := a.designUA * int64(a.cellCount)
+	d := Design{DesignMah: designTotal / 1000, HasDesign: a.designUA > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
-		d.FullMah = full / 1000
+		d.FullMah = full / 1000 * int64(a.cellCount)
 		d.HasFull = true
 		if d.HasDesign {
-			d.Pct = healthPct(full, a.designUA)
+			d.Pct = healthPct(full*int64(a.cellCount), designTotal)
 			d.HasPct = true
 		}
 	}

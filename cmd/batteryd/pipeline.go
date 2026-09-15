@@ -152,6 +152,9 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount i
 // setFullUA 刷新 charge_full 缓存（满充后 charge_full 会更新）。
 func (p *Pipeline) setFullUA(v int64) { p.fullUA = v }
 
+// SetCellCount 更新 Pipeline 的电芯数（由 redetectCellCount 触发）。
+func (p *Pipeline) SetCellCount(n int) { p.cellCount = n }
+
 func kvText(st KVStore, key string) string {
 	v, _ := st.KVGet(key)
 	return v
