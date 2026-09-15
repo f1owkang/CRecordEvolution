@@ -64,6 +64,19 @@ func (p *Pipeline) trackDischarge(status string) {
 		return
 	}
 	now := p.now().Unix()
+	// 放电期间同样落样本：samples 表现有消费方都不受影响（MidImplied 按
+	// UA>0 过滤、CCCT/ICA 只查充电会话时间范围），而放电时间序列是后续做
+	// 放电侧分窗分析、与充电侧交叉验证的唯一原料（初版缺此数据，真机上
+	// 只能拿到放电总账、无法分窗）
+	if vUV, verr := p.readNode("voltage_now"); verr == nil && vUV > 0 {
+		dUA := int64(0)
+		if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
+			dUA = -absI64(NormCurrentUA(iRaw)) // 放电按负电流落库，与充电样本同表异号
+		}
+		if err := p.st.InsertSample(now, dUA, vUV, capVal); err != nil {
+			_ = p.st.InsertEvent("sample_fail", err.Error())
+		}
+	}
 	if p.dis.active != 1 {
 		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCC: cc}
 		p.persistDis()

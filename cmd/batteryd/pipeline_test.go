@@ -175,9 +175,11 @@ func TestPipelineFullChargeSettlesAfterTailCurrent(t *testing.T) {
 	}
 	wantKV(t, r.st, "charged_ua_total", "6360000000")
 
-	// 结算后浮充：不开新会话（满电门槛），但吞吐照计循环当量
+	// 结算后浮充：不开新会话（满电门槛），但吞吐照计循环当量。
+	// 电压须贴近峰值（4350000）：真浮充的电压不会较峰值回落 >30mV，
+	// 回落场景由 TestChargeSuppressedOnVoltageSag 专门覆盖
 	for i := 0; i < 3; i++ {
-		r.put(100, 6000000, 4200000)
+		r.put(100, 6000000, 4350000)
 		if out := r.step("Charging"); out.SessionSettled {
 			t.Fatal("结算后浮充不应再次结算")
 		}
@@ -784,5 +786,43 @@ func TestEvaluateStableAcceptsZeroDesignUA(t *testing.T) {
 	res := evaluateStable(sr)
 	if !res.Accepted {
 		t.Fatalf("DesignUA=0 时会话应被接受, got reason=%s", res.Reason)
+	}
+}
+
+// 满电后电压回落 ⇒ 判为充电器供系统，假电流不计入会话电量与循环吞吐。
+// 真机证据（2026-09-15）：满电后系统高负载，内核报 Charging 且电流 3~7A，
+// 但端电压较峰值回落 66~93mV（7A 若真充入电池端电压不可能反而下降），
+// 持续 30+ 分钟虚增约 1.1Ah，把会话估算从 ~5080 抬到 6842mAh。
+func TestChargeSuppressedOnVoltageSag(t *testing.T) {
+	r := newPipeRig(t)
+	// 充电至满电：峰值电压 4.40V
+	r.put(20, 6000000, 3700000)
+	r.step("Charging")
+	for i := 1; i <= 60; i++ {
+		r.put(20+int64(i), 6000000, 3700000+int64(i)*11000) // 终值 ≈4.36V
+		r.step("Charging")
+	}
+	r.put(100, 3000000, 4400000)
+	r.step("Charging") // 峰值刷新到 4.40V
+	totalBefore := kvInt(r.st, kvChargedTotal)
+	accBefore := kvInt(r.st, kvSessAcc)
+
+	// 满电后电压回落 90mV、仍报 Charging 且 7A：应停计
+	for i := 0; i < 5; i++ {
+		r.put(100, 7000000, 4310000)
+		r.step("Charging")
+	}
+	if got := kvInt(r.st, kvChargedTotal); got != totalBefore {
+		t.Fatalf("回落期假电流不应计入吞吐: %d → %d", totalBefore, got)
+	}
+	if got := kvInt(r.st, kvSessAcc); got != accBefore {
+		t.Fatalf("回落期假电流不应计入会话电量: %d → %d", accBefore, got)
+	}
+
+	// 电压回到峰值附近：恢复计电
+	r.put(100, 3000000, 4400000)
+	r.step("Charging")
+	if got := kvInt(r.st, kvChargedTotal); got <= totalBefore {
+		t.Fatalf("电压恢复后应继续计电: %d", got)
 	}
 }

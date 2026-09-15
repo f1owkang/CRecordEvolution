@@ -413,7 +413,10 @@ func runDaemon() error {
 		return fmt.Errorf("找不到 status 节点：%w", err)
 	}
 
-	p := NewPipeline(a.fs, a.st, a.est, a.designUA, a.cellCount, time.Now)
+	// 注入 localNow 而非 time.Now：Pipeline 用 p.now().Format 打决策点日志
+	// （如「[会话] 开始于」），time.Now 在设备上返回 UTC，会与 appendLog 的
+	// 本地时间戳差 8 小时；p.now().Unix() 取值不受影响
+	p := NewPipeline(a.fs, a.st, a.est, a.designUA, a.cellCount, localNow)
 	p.Logf(a.appendLog)
 	lastStatus := ""
 	count := 0
