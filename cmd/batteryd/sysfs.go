@@ -102,9 +102,36 @@ func NormCurrentUA(raw int64) int64 {
 	return raw * 1000
 }
 
-func NormTempC(raw int64) float64 {
-	if raw >= 100 {
-		return float64(raw) / 10
+// NormCurrentUAWithFull 用 charge_full 交叉校验 current_now 单位。
+// 部分内核（特别是非标准 power_supply 实现）的 current_now 可能报 mA 而非
+// 标准 µA。启发式：若 |current_now| < charge_full × 10%，认为是 mA 并 ×1000；
+// 否则当作 µA 直通。chargeFullUA ≤ 0 时退化为原始启发式。
+func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
+	abs := raw
+	if abs < 0 {
+		abs = -abs
 	}
-	return float64(raw)
+	if chargeFullUA > 0 && abs < chargeFullUA/10 {
+		return raw * 1000
+	}
+	if abs > 10000 {
+		return raw
+	}
+	return raw * 1000
+}
+
+func NormTempC(raw int64) float64 {
+	var c float64
+	if raw >= 100 {
+		c = float64(raw) / 10
+	} else {
+		c = float64(raw)
+	}
+	// 防御性边界：锂电合理温度 -40~80°C，超出范围截断防止脏数据污染 ML
+	if c < -40 {
+		c = -40
+	} else if c > 80 {
+		c = 80
+	}
+	return c
 }

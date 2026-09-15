@@ -206,7 +206,12 @@ func (l *Learning) loadP() [4][4]float64 {
 
 func mlPhi(s Session, cellCount int) [4]float64 {
 	vNorm := 4.4e6 * float64(cellCount)
-	return [4]float64{1, float64(s.TempAvg) / 40, s.CRate, float64(s.VStart) / vNorm}
+	vFeat := float64(s.VStart) / vNorm
+	// VStart=0 表示电压读取失败，用中位值 0.9 作为 fallback 避免污染特征向量
+	if s.VStart == 0 {
+		vFeat = 0.9
+	}
+	return [4]float64{1, float64(s.TempAvg) / 40, s.CRate, vFeat}
 }
 
 func dot4(a, b [4]float64) float64 {

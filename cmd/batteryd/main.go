@@ -171,6 +171,27 @@ func newApp() (*app, error) {
 	}, nil
 }
 
+// redetectCellCount 周期性重检电芯数：启动时可能因电池深度放电导致误判。
+// 检测到变化时重新初始化 CCCT/ICA 电压阈值。
+func (a *app) redetectCellCount() {
+	v, err := a.readIntNode("voltage_now")
+	if err != nil {
+		return
+	}
+	want := 1
+	if v > 4_500_000 {
+		want = 2
+	}
+	if want == a.cellCount {
+		return
+	}
+	a.cellCount = want
+	initCCCTVoltage(want)
+	initICAVoltage(want)
+	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
+	a.appendLog("[电芯] cellCount 重检→%d (voltage_now=%d)", want, v)
+}
+
 func (a *app) readIntNode(name string) (int64, error) {
 	// 节点路径按进程缓存一次（固定路径未命中才全树扫描），避免每次刷新重复遍历 /sys/devices
 	node, err := a.nodePath(name)
@@ -217,11 +238,10 @@ func cycleEquiv(totalUAs, designUA int64) float64 {
 func (a *app) basics() Design {
 	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
-		// 双电芯串联时 charge_full 报单电芯容量，需 ×cellCount 得总容量
-		d.FullMah = full / 1000 * int64(a.cellCount)
+		d.FullMah = full / 1000
 		d.HasFull = true
 		if d.HasDesign {
-			d.Pct = healthPct(full*int64(a.cellCount), a.designUA)
+			d.Pct = healthPct(full, a.designUA)
 			d.HasPct = true
 		}
 	}
@@ -435,6 +455,7 @@ func runDaemon() error {
 		lastStatus = status
 		count++
 		if changed || count >= refreshEveryTicks {
+			a.redetectCellCount()
 			if err := a.refreshPruned(); err != nil {
 				_ = a.st.InsertEvent("refresh_fail", err.Error())
 				a.appendLog("刷新描述失败：%s", err.Error())
@@ -450,6 +471,11 @@ func tickStrike(prev int, err error) (int, bool) {
 	var se *SettleError
 	if errors.As(err, &se) {
 		return prev, true
+	}
+	// sysfs 暂时性错误不计入连续失败（suspend/resume 竞态等瞬态问题）
+	var st *SysfsTransient
+	if errors.As(err, &st) {
+		return prev, false
 	}
 	n := prev + 1
 	return n, n >= tickFailMax
