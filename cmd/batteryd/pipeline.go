@@ -149,6 +149,9 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount i
 	return p
 }
 
+// setFullUA 刷新 charge_full 缓存（满充后 charge_full 会更新）。
+func (p *Pipeline) setFullUA(v int64) { p.fullUA = v }
+
 func kvText(st KVStore, key string) string {
 	v, _ := st.KVGet(key)
 	return v
@@ -373,7 +376,7 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 	}
 	capVal, err := p.readNode("capacity")
 	if err != nil {
-		return err
+		return &SysfsTransient{Err: err}
 	}
 	vUV, verr := p.readNode("voltage_now")
 	if verr != nil {

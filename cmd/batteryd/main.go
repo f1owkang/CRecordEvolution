@@ -172,8 +172,12 @@ func newApp() (*app, error) {
 }
 
 // redetectCellCount 周期性重检电芯数：启动时可能因电池深度放电导致误判。
-// 检测到变化时重新初始化 CCCT/ICA 电压阈值。
-func (a *app) redetectCellCount() {
+// 检测到变化时重新初始化 CCCT/ICA 电压阈值。同时刷新 fullUA。
+func (a *app) redetectCellCount(p *Pipeline) {
+	// 刷新 charge_full（满充后会更新）
+	if full, err := a.readIntNode("charge_full"); err == nil {
+		p.setFullUA(full)
+	}
 	v, err := a.readIntNode("voltage_now")
 	if err != nil {
 		return
@@ -188,6 +192,10 @@ func (a *app) redetectCellCount() {
 	a.cellCount = want
 	initCCCTVoltage(want)
 	initICAVoltage(want)
+	// 重新初始化 ML 估算器（cellCount 影响 VStart 归一化）
+	if _, ok := a.est.(*Learning); ok {
+		a.est = NewLearning(a.st, want)
+	}
 	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
 	a.appendLog("[电芯] cellCount 重检→%d (voltage_now=%d)", want, v)
 }
@@ -455,7 +463,7 @@ func runDaemon() error {
 		lastStatus = status
 		count++
 		if changed || count >= refreshEveryTicks {
-			a.redetectCellCount()
+			a.redetectCellCount(p)
 			if err := a.refreshPruned(); err != nil {
 				_ = a.st.InsertEvent("refresh_fail", err.Error())
 				a.appendLog("刷新描述失败：%s", err.Error())

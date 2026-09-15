@@ -103,15 +103,19 @@ func NormCurrentUA(raw int64) int64 {
 }
 
 // NormCurrentUAWithFull 用 charge_full 交叉校验 current_now 单位。
-// 部分内核（特别是非标准 power_supply 实现）的 current_now 可能报 mA 而非
-// 标准 µA。启发式：若 |current_now| < charge_full × 10%，认为是 mA 并 ×1000；
+// 启发式：若 |current_now| < max(charge_full/10, 10000)，认为是 mA 并 ×1000；
 // 否则当作 µA 直通。chargeFullUA ≤ 0 时退化为原始启发式。
+// 保底 10000 防止低电量时 charge_full/10 过小导致 µA 误判为 mA。
 func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
 	abs := raw
 	if abs < 0 {
 		abs = -abs
 	}
-	if chargeFullUA > 0 && abs < chargeFullUA/10 {
+	threshold := chargeFullUA / 10
+	if threshold < 10000 {
+		threshold = 10000
+	}
+	if chargeFullUA > 0 && abs < threshold {
 		return raw * 1000
 	}
 	if abs > 10000 {
