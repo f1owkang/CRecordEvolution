@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -102,9 +104,77 @@ func NormCurrentUA(raw int64) int64 {
 	return raw * 1000
 }
 
-func NormTempC(raw int64) float64 {
-	if raw >= 100 {
-		return float64(raw) / 10
+// NormCurrentUAWithFull 用 charge_full 交叉校验 current_now 单位。
+// 启发式：若 |current_now| < max(charge_full/10, 10000)，认为是 mA 并 ×1000；
+// 否则当作 µA 直通。chargeFullUA ≤ 0 时退化为原始启发式。
+// 保底 10000 防止低电量时 charge_full/10 过小导致 µA 误判为 mA。
+func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
+	abs := raw
+	if abs < 0 {
+		abs = -abs
 	}
-	return float64(raw)
+	threshold := chargeFullUA / 10
+	if threshold < 10000 {
+		threshold = 10000
+	}
+	if chargeFullUA > 0 && abs < threshold {
+		return raw * 1000
+	}
+	if abs > 10000 {
+		return raw
+	}
+	return raw * 1000
+}
+
+func NormTempC(raw int64) float64 {
+	var c float64
+	if raw >= 100 {
+		c = float64(raw) / 10
+	} else {
+		c = float64(raw)
+	}
+	// 防御性边界：锂电合理温度 -40~80°C，超出范围截断防止脏数据污染 ML
+	if c < -40 {
+		c = -40
+	} else if c > 80 {
+		c = 80
+	}
+	return c
+}
+
+// readDTBatteryCapacity 从设备树读取 vivo,bat-capacity-mah（µAh）。
+// VIVO/iQOO 等设备不把 charge_full_design 暴露到 sysfs，但设备树中有此值。
+// 通过 find 命令搜索 /proc/device-tree 下含 "bat-capacity-mah" 的属性。
+func readDTBatteryCapacity() (int64, error) {
+	// find 走绝对路径优先：守护进程由 service.sh exec 启动，PATH 未必含
+	// /system/bin；失败则退回 PATH 查找。两条都失败时安全降级（调用方按
+	// 设计容量缺失处理），不会阻断启动。
+	var out []byte
+	var err error
+	for _, bin := range []string{"/system/bin/find", "find"} {
+		out, err = exec.Command(bin, "/proc/device-tree/", "-name", "*bat-capacity-mah").Output()
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, p := range lines {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr != nil || len(data) < 4 {
+			continue
+		}
+		// 设备树属性是 big-endian 32 位整数，单位 mAh，需转换为 µAh
+		v := binary.BigEndian.Uint32(data[:4])
+		if v > 0 {
+			return int64(v) * 1000, nil
+		}
+	}
+	return 0, fmt.Errorf("设备树中 bat-capacity-mah 无有效值")
 }

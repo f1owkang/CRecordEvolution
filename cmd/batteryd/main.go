@@ -166,6 +166,14 @@ func newApp() (*app, error) {
 			designUA = v
 		}
 	}
+	// Fallback: 部分设备（如 VIVO/iQOO）内核不把设计容量暴露到 sysfs，
+	// 但在设备树 (DTB) 中存储了 vivo,bat-capacity-mah。
+	if designUA <= 0 {
+		if v, err := readDTBatteryCapacity(); err == nil && v > 0 {
+			designUA = v
+			_ = st.InsertEvent("design_dt", fmt.Sprintf("从设备树读取设计容量 %dµAh", v))
+		}
+	}
 	if designUA <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
@@ -198,6 +206,37 @@ func newApp() (*app, error) {
 		designUA:  designUA,
 		cellCount: cellCount,
 	}, nil
+}
+
+// redetectCellCount 周期性重检电芯数：启动时可能因电池深度放电导致误判。
+// 检测到变化时重新初始化 CCCT/ICA 电压阈值。同时刷新 fullUA。
+func (a *app) redetectCellCount(p *Pipeline) {
+	// 刷新 charge_full（满充后会更新）
+	if full, err := a.readIntNode("charge_full"); err == nil {
+		p.setFullUA(full)
+	}
+	v, err := a.readIntNode("voltage_now")
+	if err != nil {
+		return
+	}
+	want := 1
+	if v > 5_000_000 { // 与启动检测同阈值，理由见 newApp 注（4.5V 会误伤高压单电芯）
+		want = 2
+	}
+	if want == a.cellCount {
+		return
+	}
+	a.cellCount = want
+	p.SetCellCount(want)
+	initCCCTVoltage(want)
+	initICAVoltage(want)
+	// 重新初始化 ML 估算器（cellCount 影响 VStart 归一化）
+	if old, ok := a.est.(*Learning); ok {
+		old.ResetModel()
+		a.est = NewLearning(a.st, want)
+	}
+	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
+	a.appendLog("[电芯] cellCount 重检→%d (voltage_now=%d)", want, v)
 }
 
 func (a *app) readIntNode(name string) (int64, error) {
@@ -244,6 +283,11 @@ func cycleEquiv(totalUAs, designUA int64) float64 {
 }
 
 func (a *app) basics() Design {
+	// 内核 charge_full / charge_full_design 按原值展示，不乘电芯数：
+	// charge_full 在双电芯机上已是整包值（真机以 charge_counter/charge_full
+	// ≈ capacity% 验证过），再乘会翻倍；而 healthPct 两侧同乘 cc 属分子分母
+	// 约掉、结果不变（no-op），并不能修 200% 之类口径不一致。双电芯口径差异
+	// 需真机实测后再单独处理，此处保持原值最稳妥。
 	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
 		d.FullMah = full / 1000
@@ -477,6 +521,7 @@ func runDaemon() error {
 		lastStatus = status
 		count++
 		if changed || count >= refreshEveryTicks {
+			a.redetectCellCount(p)
 			if err := a.refreshPruned(); err != nil {
 				_ = a.st.InsertEvent("refresh_fail", err.Error())
 				a.appendLog("刷新描述失败：%s", err.Error())
@@ -492,6 +537,11 @@ func tickStrike(prev int, err error) (int, bool) {
 	var se *SettleError
 	if errors.As(err, &se) {
 		return prev, true
+	}
+	// sysfs 暂时性错误不计入连续失败（suspend/resume 竞态等瞬态问题）
+	var st *SysfsTransient
+	if errors.As(err, &st) {
+		return prev, false
 	}
 	n := prev + 1
 	return n, n >= tickFailMax

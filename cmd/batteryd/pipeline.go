@@ -64,8 +64,14 @@ type TickOutcome struct{ SessionSettled bool }
 type SettleError struct{ Err error }
 
 func (e *SettleError) Error() string { return "结算或落库失败：" + e.Err.Error() }
-
 func (e *SettleError) Unwrap() error { return e.Err }
+
+// SysfsTransient 标记暂时性 sysfs 读取失败（节点暂时不可用、suspend/resume 竞态等）。
+// tickStrike 不会将此类错误计入连续失败计数，避免瞬态故障杀掉守护进程。
+type SysfsTransient struct{ Err error }
+
+func (e *SysfsTransient) Error() string { return "sysfs 暂时不可读：" + e.Err.Error() }
+func (e *SysfsTransient) Unwrap() error { return e.Err }
 
 type sessionState struct {
 	active   bool
@@ -89,7 +95,8 @@ type Pipeline struct {
 	st        *Store
 	est       Estimator
 	designUA  int64
-	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 5V 判定，依据见 main.go）
+	fullUA    int64 // charge_full µAh，用于电流单位交叉校验
+	cellCount int   // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 5V 判定，依据见 main.go）
 	now       func() time.Time
 
 	nodePaths map[string]string
@@ -152,10 +159,22 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount i
 		now:       clock,
 		nodePaths: map[string]string{},
 	}
+	// 读取 charge_full 用于电流单位交叉校验（读不到不影响功能）
+	if path, err := fs.FindNode("charge_full"); err == nil {
+		if v, err := fs.ReadInt(path); err == nil {
+			p.fullUA = v
+		}
+	}
 	p.restoreSession()
 	p.restoreDischarge()
 	return p
 }
+
+// setFullUA 刷新 charge_full 缓存（满充后 charge_full 会更新）。
+func (p *Pipeline) setFullUA(v int64) { p.fullUA = v }
+
+// SetCellCount 更新 Pipeline 的电芯数（由 redetectCellCount 触发）。
+func (p *Pipeline) SetCellCount(n int) { p.cellCount = n }
 
 func kvText(st KVStore, key string) string {
 	v, _ := st.KVGet(key)
@@ -330,14 +349,14 @@ func (p *Pipeline) chargeSuppressed(capVal, vUV int64) bool {
 }
 
 // tailCurrent 读带符号电流并判别是否仍在充电方向灌入。单位判别在幅值上做
-// （NormCurrentUA 的 mA/µA 启发式对负值会误乘 1000），再按原始符号回填；
+// （NormCurrentUAWithFull 的 mA/µA 启发式对负值会误乘 1000），再按原始符号回填；
 // 放电（负值）与读取失败均返回未灌入，走常规去抖路径。
 func (p *Pipeline) tailCurrent() (int64, bool) {
 	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
 		return 0, false
 	}
-	iUA := NormCurrentUA(absI64(iRaw))
+	iUA := NormCurrentUAWithFull(absI64(iRaw), p.fullUA)
 	if iRaw < 0 {
 		iUA = -iUA
 	}
@@ -350,14 +369,14 @@ func (p *Pipeline) tailCurrent() (int64, bool) {
 func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	capVal, err := p.readNode("capacity")
 	if err != nil {
-		return err
+		return &SysfsTransient{Err: err}
 	}
 	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
-		return err
+		return &SysfsTransient{Err: err}
 	}
 	iAbs := absI64(iRaw)
-	iUA := absI64(NormCurrentUA(iAbs))
+	iUA := absI64(NormCurrentUAWithFull(iAbs, p.fullUA))
 
 	// 电压先读：既用于内阻/样本，也用于「满电后假充电电流」门控（见
 	// chargeSuppressed）。峰值的建立与判定都依赖本拍电压。
@@ -421,7 +440,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 func (p *Pipeline) tickTailCharge(iUA int64) error {
 	capVal, err := p.readNode("capacity")
 	if err != nil {
-		return err
+		return &SysfsTransient{Err: err}
 	}
 	vUV, verr := p.readNode("voltage_now")
 	if verr != nil {
@@ -768,9 +787,9 @@ func (p *Pipeline) tickResting(status string) error {
 	}
 	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
-		return err
+		return &SysfsTransient{Err: err}
 	}
-	if absI64(NormCurrentUA(absI64(iRaw))) >= restQuietUA {
+	if absI64(NormCurrentUAWithFull(absI64(iRaw), p.fullUA)) >= restQuietUA {
 		p.restStreak = 0
 		return nil
 	}
