@@ -112,11 +112,21 @@ sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
 
 > ML 版显示的 ± 是 RLS 相对不确定度指标，不是严格的统计置信区间。
 
+## 贡献者
+
+ChargingRecord Evolution 生态由以下贡献者共同打造（排名不分先后）：
+
+<div align="center">
+
+<a href="https://github.com/f1owkang"><img src="https://github.com/f1owkang.png" width="50" height="50" alt="f1owkang"></a>
+<a href="https://github.com/hcnk3HrzQe"><img src="https://github.com/hcnk3HrzQe.png" width="50" height="50" alt="hcnk3HrzQe"></a>
+
+</div>
+
 ## 致谢
 
 - 原模块：不会梦游的鱼
 - 安装脚本：酷安@阿巴酱
-- 维护者：[f1owkang](https://github.com/f1owkang)
 
 喜欢这个项目的话欢迎提 PR 或点个 Star ⭐
 
