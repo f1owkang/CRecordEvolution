@@ -4,3 +4,7 @@ data/
 *.exe
 
 .playwright-mcp/
+
+# 本地构建残留（只匹配仓库根目录，勿写成裸名 batteryd——会误匹配 cmd/batteryd 目录）
+/batteryd
+/batteryd.exe
