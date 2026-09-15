@@ -16,6 +16,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
   - `trend.go` — 容量趋势三态（insufficient/stable/significant）。显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃——单次会话估算噪声远大于真实周衰减，实测 R² 长期为负、等于趋势永不可达。
   - `midwin.go` — 中段分窗容量校准：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 [30%,90%) 窗口的隐含容量，每日至多一次按 1/10 权重并入 EMA。收益是不满充也能出容量估计，且避开顶部压缩段。
   - `discharge.go` — 放电会话记录：读电量计 `charge_counter` 差分累计（芯片内积分，免疫负载混叠），转入充电即结算。放电样本按 5 分钟降采样落 `samples`（带符号电流，放电为负）。
+  - `sysfs.go` — 节点探测与单位判别。`NormCurrentUAWithFull` 用 `charge_full` 交叉校验电流单位（防 mA/µA 误判），低电量时阈值保底 10000；`NormTempC` 截断 [-40,80]°C 防脏数据；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`（VIVO/iQOO 兼容，find 走绝对路径优先）。
 - `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
 - `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。
 - `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。模块元信息（name/version/author）直接从 `$MODPATH/module.prop` 读取（不依赖安装器注入的 `$MODNAME/$MODVERSION` 等变量，各管理器环境差异大）；升级时把旧模块 `data/` 复制进新 `$MODPATH/data`，因为 Magisk/KSU 的 staged update 重启会整体删除旧模块目录、否则 `data/battery.db`（学习记录）会丢。
@@ -37,6 +38,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - WebUI 取数 JSON 的顶层字段与 `cmd/batteryd/jsonout.go` 一一对应（recent 按 ts 倒序、`delta_pct` 为容量百分点、空切片输出 `[]` 非 null）；新增字段须两端同步并保持「缺失即省略」降级纪律。samples/ccct/ica_peaks/discharge 等新表全部接入 90 天清理。
 - 时区：设备上 Go 运行时读不到系统时区（无 tzdata 路径），`time.Now()` 返回 UTC。面向用户的时间戳一律走 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → 诚实回落 UTC，内嵌 `time/tzdata`）；Pipeline 的时钟注入同样传 `localNow`，否则 `p.now().Format` 类日志会差 8 小时。`Unix()` 取值与时区无关，不受影响。
 - 双电芯判定阈值是 **5V**（不是 4.5V）：高压单电芯截止 4.45~4.53V 常见，4.5V 会误判并让所有电压窗口翻倍、CCCT/ICA 静默全哑；双电芯串联最低约 6.8V，5V 两侧余量充足。缩放函数（`initCCCTVoltage`/`initICAVoltage`）必须无条件赋值以支持复位，否则测试间全局状态互相污染。
+- 双电芯口径：`charge_full` 在内核上是否为整包值存在机型差异（开发过程中两种实测结论都出现过）。**不要对它乘电芯数**——若内核已是整包会翻倍；`healthPct(full*cc, design*cc)` 这类同乘是 no-op（分子分母约掉），不解决问题。口径差异需目标机型实测后再单独处理。
 - 已知局限（勿当 bug 修，属有意取舍）：current 单位启发式在涓流 <10mA 时可能误判；RLS 无遗忘因子、P 矩阵长期膨胀属潜伏项；FindNode 全树兜底仅缺节点时触发；`current_now` 走带符号读取（放电为负），其余节点严格非负；节点缺失时描述/JSON/once 输出按可用字段降级，不整体失败；放电会话仅在 `status=Discharging` 拍累计，旁路供电机型（status=Full 但电池实际放电）漏记；放电隐含容量以「显示掉幅」为分母，顶部区间显示被压缩故绝对值偏高，只作观测不入估算通道。
 
 ## 发版流程
