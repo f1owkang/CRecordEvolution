@@ -261,6 +261,13 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div id="chart_ica_cap" class="cap"></div>
     </section>
 
+    <section class="panel" id="panel_dis">
+      <div class="ptitle">放电记录</div>
+      <div id="chart_dis" class="chart"></div>
+      <div id="chart_dis_det" class="det"></div>
+      <div id="chart_dis_cap" class="cap"></div>
+    </section>
+
     <button id="refresh" type="button">立即刷新</button>
     <div id="meta" class="meta"></div>
   </main>
@@ -829,6 +836,26 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         validCount(icaRows, 'peak_h_rel') >= 8 ? '方向指示，非绝对 SoH' : '');
       bindPointDetail('chart_ica', icaRows, 'ts', 'peak_h_rel', function (r) {
         return fmtTs(r && r.ts) + ' · 主峰 ' + (Number(r && r.peak_uv) / 1e6).toFixed(3) + ' V · 相对高度 ' + Number(r && r.peak_h_rel).toFixed(2);
+      });
+    }
+
+    // 放电记录：读电量计库仑计差分，插充电器即结算；仅观测，不参与健康度
+    var disRows = Array.isArray(doc.discharge_recent) ? doc.discharge_recent : [];
+    if (!disRows.length) {
+      setPanel('panel_dis', 'hide');
+      clearDetail('chart_dis');
+    } else {
+      setPanel('panel_dis', 'show');
+      var disSum = 0;
+      disRows.forEach(function (r) { var v = Number(r && r.uah_mah); if (isFinite(v)) disSum += v; });
+      setChart('chart_dis', svgTsLine(disRows, W, H, 'var(--accent)', 'uah_mah') || emptyRow('等待一次完整放电'),
+        '放电 ' + disRows.length + ' 次 · 合计 ' + fmtInt(Math.round(disSum)) + ' mAh');
+      bindPointDetail('chart_dis', disRows, 'ts', 'uah_mah', function (r) {
+        var t = fmtTs(r && r.ts) + ' · ' + fmtInt(r && r.start_cap) + '→' + fmtInt(r && r.end_cap) + '% · 放出 ' + fmtInt(r && r.uah_mah) + ' mAh';
+        var mins = Math.round(Number(r && r.secs) / 60);
+        if (isFinite(mins)) t += ' · 历时 ' + mins + ' 分钟';
+        if (r && r.implied_mah != null) t += ' · 隐含 ' + fmtInt(r.implied_mah) + ' mAh';
+        return t;
       });
     }
   }

@@ -106,6 +106,8 @@ type Pipeline struct {
 	peakChargeUV int64
 	// supLogged 已就「停计电量」打过日志（状态翻转去重）
 	supLogged bool
+	// lastDisSampleTs 上次放电样本落库时刻（秒），用于 5 分钟降采样
+	lastDisSampleTs int64
 
 	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
 	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）

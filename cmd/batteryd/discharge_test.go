@@ -159,3 +159,27 @@ func TestDischargeNodeAbsent(t *testing.T) {
 		t.Fatalf("不应有放电行, got %d", n)
 	}
 }
+
+// 放电样本降采样：60s 步长下每 5 分钟落一条，避免 samples 表膨胀
+func TestDischargeSampleDownsampling(t *testing.T) {
+	r := newPipeRig(t)
+	cc := int64(5_000_000)
+	putCC(t, r, cc)
+	r.put(80, -500_000, 3_800_000)
+	r.step("Discharging") // 首拍落一条（lastDisSampleTs 初值 0）
+	// 后续 20 拍，每拍 60s：应仅在满 5 分钟（第 5 拍）再落一条
+	for i := 0; i < 20; i++ {
+		cc -= 8333
+		putCC(t, r, cc)
+		r.put(79, -500_000, 3_790_000)
+		r.step("Discharging")
+	}
+	var n int64
+	if err := r.st.db.QueryRow(`SELECT COUNT(*) FROM samples WHERE ua < 0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	// 21 拍 × 60s = 21 分钟 ⇒ 首条 + 第 5/10/15/20 分钟共 5 条
+	if n != 5 {
+		t.Fatalf("放电样本应降采样为 5 条（21 分钟 / 5 分钟），got %d", n)
+	}
+}

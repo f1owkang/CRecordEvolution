@@ -27,6 +27,11 @@ const (
 	disResyncUAh = 100_000 // 单次差分超 100mAh 判电量计回修，只重置基线
 	disMinRowCap = 5       // 显示掉幅 <5 个百分点不落行
 	disMinEstCap = 10      // 显示掉幅 <10 个百分点不给隐含容量
+	// disSampleGapSecs 放电样本落库间隔：放电期 tick 为 60s，逐拍落样本
+	// 会让 samples 表按 1440 条/天膨胀（90 天约 13 万条，是充电样本的
+	// 数百倍）。5 分钟一条对分窗分析足够（每窗格仍有多个采样点），
+	// 数据量降到与充电样本同量级。等于 midSegMaxDt，段判定仍连续。
+	disSampleGapSecs = 300
 )
 
 // disState 放电会话状态；active 取 0/1 便于 kv 持久化。
@@ -64,18 +69,10 @@ func (p *Pipeline) trackDischarge(status string) {
 		return
 	}
 	now := p.now().Unix()
-	// 放电期间同样落样本：samples 表现有消费方都不受影响（MidImplied 按
-	// UA>0 过滤、CCCT/ICA 只查充电会话时间范围），而放电时间序列是后续做
-	// 放电侧分窗分析、与充电侧交叉验证的唯一原料（初版缺此数据，真机上
-	// 只能拿到放电总账、无法分窗）
-	if vUV, verr := p.readNode("voltage_now"); verr == nil && vUV > 0 {
-		dUA := int64(0)
-		if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
-			dUA = -absI64(NormCurrentUA(iRaw)) // 放电按负电流落库，与充电样本同表异号
-		}
-		if err := p.st.InsertSample(now, dUA, vUV, capVal); err != nil {
-			_ = p.st.InsertEvent("sample_fail", err.Error())
-		}
+	// 放电样本按 disSampleGapSecs 降采样落库，供放电侧分窗分析
+	if now-p.lastDisSampleTs >= disSampleGapSecs {
+		p.lastDisSampleTs = now
+		p.sampleDischarge(now, capVal)
 	}
 	if p.dis.active != 1 {
 		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCC: cc}
@@ -93,6 +90,21 @@ func (p *Pipeline) trackDischarge(status string) {
 	} // 反向或超限跳变：电量计回修，重置基线不计数
 	p.dis.lastCC = cc
 	p.persistDis()
+}
+
+// sampleDischarge 落一条放电样本（带符号电流，放电为负），供放电侧分窗分析。
+func (p *Pipeline) sampleDischarge(now, capVal int64) {
+	vUV, verr := p.readNode("voltage_now")
+	if verr != nil || vUV <= 0 {
+		return
+	}
+	dUA := int64(0)
+	if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
+		dUA = -absI64(NormCurrentUA(iRaw))
+	}
+	if err := p.st.InsertSample(now, dUA, vUV, capVal); err != nil {
+		_ = p.st.InsertEvent("sample_fail", err.Error())
+	}
 }
 
 // settleDischarge 充电插入即结算：掉幅达 disMinRowCap 落一行 discharge 表。
