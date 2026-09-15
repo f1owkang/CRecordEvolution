@@ -29,6 +29,13 @@ const (
 	// 充电延续。
 	tailQuietUA int64 = 100000
 
+	// tailDropUV 满电后电压回落门控（µV/电芯）：满电后内核仍可能报 Charging
+	// 且电流为正，但那是充电器直供系统的电流——端电压会较充电峰值显著回落
+	// （实测 -66~-93mV），而真实 CV 尾段紧贴峰值（-1~-3mV）。7A 若真充入电池，
+	// 端电压不可能反而下降，故以「满电后电压较峰值低过此阈值」判为假电流，
+	// 不计入会话电量与循环吞吐。按电芯数缩放（双电芯串联压降成比例）。
+	tailDropUV int64 = 30_000
+
 	resWindowMax  int = 30
 	resMinSamples int = 20
 	// resMinStdUA 150mA：50mA 门限下电流近乎平稳的窗靠测量噪声凑方差，
@@ -78,16 +85,29 @@ type sessionState struct {
 }
 
 type Pipeline struct {
-	fs       SysFS
-	st       *Store
-	est      Estimator
-	designUA int64
+	fs        SysFS
+	st        *Store
+	est       Estimator
+	designUA  int64
 	cellCount int // 电芯串联数：1=单电芯，2=双电芯（voltage_now > 5V 判定，依据见 main.go）
-	now      func() time.Time
+	now       func() time.Time
 
 	nodePaths map[string]string
 
 	sess sessionState
+	dis  disState
+
+	// disCCOff charge_counter 首读失败后永久禁用放电记录（负缓存，
+	// 避免每拍全树扫 /sys）
+	disCCOff bool
+
+	// peakChargeUV 本次充电插入周期内的电压峰值（µV）：满电后电压回落判据的
+	// 基准。拔出充电器（转入 Discharging）时清零，下次插入重新建立。
+	peakChargeUV int64
+	// supLogged 已就「停计电量」打过日志（状态翻转去重）
+	supLogged bool
+	// lastDisSampleTs 上次放电样本落库时刻（秒），用于 5 分钟降采样
+	lastDisSampleTs int64
 
 	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
 	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）
@@ -133,6 +153,7 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUA int64, cellCount i
 		nodePaths: map[string]string{},
 	}
 	p.restoreSession()
+	p.restoreDischarge()
 	return p
 }
 
@@ -231,6 +252,13 @@ const notChargDebounce = 3
 
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
+	// 转入放电即复位充电峰值：下次插入重新建立，避免跨充电周期沿用旧峰值
+	if status == "Discharging" {
+		p.peakChargeUV = 0
+	}
+	// 放电记录与充电会话独立：Discharging 差分累计、Charging 触发结算，
+	// 任何错误均内部消化，绝不影响充电主链路
+	p.trackDischarge(status)
 	if status == "Charging" {
 		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
 		p.notChargStreak = 0
@@ -272,6 +300,35 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	return outcome, nil
 }
 
+// chargeSuppressed 判本拍电流是否为「满电后充电器直供系统」的假充电电流：
+// 满电（cap≥fullSealCap）且电压较本次充电峰值回落超过 tailDropUV×电芯数。
+// 首次读到的电压即建立峰值；电压读取失败（vUV<=0）时无从判断，一律放行。
+func (p *Pipeline) chargeSuppressed(capVal, vUV int64) bool {
+	sup := false
+	switch {
+	case vUV <= 0:
+		// 读不到电压：无从判断，放行（宁多计不漏计）
+	case vUV > p.peakChargeUV:
+		p.peakChargeUV = vUV // 峰值刷新，本拍必不是回落
+	case capVal >= fullSealCap && p.peakChargeUV > 0:
+		scale := int64(1)
+		if p.cellCount > 1 {
+			scale = int64(p.cellCount)
+		}
+		sup = p.peakChargeUV-vUV > tailDropUV*scale
+	}
+	// 只在状态翻转时落日志，避免逐拍刷屏
+	if sup && !p.supLogged {
+		p.supLogged = true
+		p.log("[充电] 满电后电压回落 %.3fV（较峰值 -%dmV），判为充电器供系统，停计电量",
+			float64(vUV)/1e6, (p.peakChargeUV-vUV)/1000)
+	} else if !sup && p.supLogged {
+		p.supLogged = false
+		p.log("[充电] 电压回到峰值附近（%.3fV），恢复计电", float64(vUV)/1e6)
+	}
+	return sup
+}
+
 // tailCurrent 读带符号电流并判别是否仍在充电方向灌入。单位判别在幅值上做
 // （NormCurrentUA 的 mA/µA 启发式对负值会误乘 1000），再按原始符号回填；
 // 放电（负值）与读取失败均返回未灌入，走常规去抖路径。
@@ -302,9 +359,20 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	iAbs := absI64(iRaw)
 	iUA := absI64(NormCurrentUA(iAbs))
 
-	// 吞吐累计先于会话判定：满电插入不开会话，但浮充电量照计（循环当量口径）
-	if err := p.chargeThroughput(iUA); err != nil {
-		return err
+	// 电压先读：既用于内阻/样本，也用于「满电后假充电电流」门控（见
+	// chargeSuppressed）。峰值的建立与判定都依赖本拍电压。
+	vUV, verr := p.readNode("voltage_now")
+	if verr != nil {
+		vUV = 0
+	}
+	suppressed := p.chargeSuppressed(capVal, vUV)
+
+	// 吞吐累计先于会话判定：满电插入不开会话，但浮充电量照计（循环当量口径）；
+	// 假充电电流不计入，否则循环数虚增
+	if !suppressed {
+		if err := p.chargeThroughput(iUA); err != nil {
+			return err
+		}
 	}
 
 	var tempC float64
@@ -312,10 +380,6 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	if tRaw, terr := p.readNode("temp"); terr == nil {
 		tempC = NormTempC(tRaw)
 		haveTemp = true
-	}
-	vUV, verr := p.readNode("voltage_now")
-	if verr != nil {
-		vUV = 0
 	}
 	if vUV > 0 {
 		p.pushWindow(iUA, vUV)
@@ -349,15 +413,12 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 	// 显示 100% 不等于充电完成（内核报数早于真实充满）：不在此封账，CV 尾段
 	// 由 Tick 的 tailCurrent 路径继续累计，待电流停歇后走去抖结算。
-	return p.accumulate(iUA, capVal, tempC, haveTemp)
+	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed)
 }
 
 // tickTailCharge 非充电状态下仍在灌电的一拍（CV 尾段）：仅对已活跃会话累计，
 // 不开新会话（满电插入不开会话）、不做内阻回归（恒压段 dV/dI 语义不成立）。
 func (p *Pipeline) tickTailCharge(iUA int64) error {
-	if err := p.chargeThroughput(iUA); err != nil {
-		return err
-	}
 	capVal, err := p.readNode("capacity")
 	if err != nil {
 		return err
@@ -365,6 +426,14 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 	vUV, verr := p.readNode("voltage_now")
 	if verr != nil {
 		vUV = 0
+	}
+	// 尾段同样受峰值回落门控：满电后系统高负载下，本路径也会读到充电器
+	// 直供系统的假电流（实测该场景持续 30+ 分钟、虚增可达 1.1Ah）
+	suppressed := p.chargeSuppressed(capVal, vUV)
+	if !suppressed {
+		if err := p.chargeThroughput(iUA); err != nil {
+			return err
+		}
 	}
 	if vUV > 0 && capVal > 0 {
 		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal); err != nil {
@@ -377,12 +446,12 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 		tempC = NormTempC(tRaw)
 		haveTemp = true
 	}
-	return p.accumulate(iUA, capVal, tempC, haveTemp)
+	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed)
 }
 
 // accumulate 向活跃会话与全局累计充电量（Charging 拍与 CV 尾段拍共用）；
 // 调用方保证会话已开启。
-func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool) error {
+func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, suppressed bool) error {
 	s := &p.sess
 	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
 	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
@@ -395,8 +464,12 @@ func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool) e
 		}
 	}
 	s.lastTickTs = now
-	s.accUAs += iUA * dt
-	s.ticks++
+	// suppressed：满电后电压回落的假充电电流不计入电量（时间基线照常推进，
+	// 避免下一拍 dt 跨越被丢弃的区间）
+	if !suppressed {
+		s.accUAs += iUA * dt
+		s.ticks++
+	}
 	s.lastCap = capVal
 	if haveTemp {
 		ti := int64(tempC)

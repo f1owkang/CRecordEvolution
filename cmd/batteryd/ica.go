@@ -9,12 +9,12 @@
 package main
 
 const (
-	icaBinUV         = 10_000    // ΔV 分桶网格宽（µV），自主选定
-	icaSmoothHalf    = 2         // 滑动平均半窗宽，窗口 = 2×2+1 = 5 点（自主选定）
+	icaBinUV          = 10_000    // ΔV 分桶网格宽（µV），自主选定
+	icaSmoothHalf     = 2         // 滑动平均半窗宽，窗口 = 2×2+1 = 5 点（自主选定）
 	icaSearchLoUVBase = 3_500_000 // 单电芯主峰搜索域下沿（µV）
 	icaSearchHiUVBase = 4_250_000 // 单电芯主峰搜索域上沿（µV）
-	icaMinProminence = 1.20      // 显著性门槛：平滑峰值须超域内均值×此系数（自主选定）
-	kvICAPeakBase    = "ica_peak_base"
+	icaMinProminence  = 1.20      // 显著性门槛：平滑峰值须超域内均值×此系数（自主选定）
+	kvICAPeakBase     = "ica_peak_base"
 )
 
 // 由 initICAVoltage 按电芯数缩放；默认值为单电芯。
@@ -104,4 +104,3 @@ func movingAvg(xs []float64, half int) []float64 {
 	}
 	return out
 }
-

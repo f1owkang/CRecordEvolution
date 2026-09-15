@@ -40,8 +40,8 @@ type ccctEntry struct {
 }
 
 type icaEntry struct {
-	TS     int64  `json:"ts"`
-	PeakUV int64  `json:"peak_uv"`
+	TS     int64 `json:"ts"`
+	PeakUV int64 `json:"peak_uv"`
 	// PeakHRel 防御性过滤后的相对峰高：非有限值按「缺失即省略」输出，
 	// 前端对缺省行降级跳过（不画 0 点）
 	PeakHRel *float64 `json:"peak_h_rel,omitempty"`
@@ -70,7 +70,21 @@ type jsonDoc struct {
 	RestPoints   []restEntry    `json:"rest_points"`
 	Ccct         []ccctEntry    `json:"ccct"`
 	IcaPeaks     []icaEntry     `json:"ica_peaks"`
-	SamplesN     int64          `json:"samples_n"`
+	// DischargeRecent 放电会话（charge_counter 差分，时间倒序）；旧前端
+	// 忽略未知字段，缺失即省略纪律不破坏
+	DischargeRecent []dischargeEntry `json:"discharge_recent,omitempty"`
+	SamplesN        int64            `json:"samples_n"`
+}
+
+// dischargeEntry：uah 为放出电量（mAh），implied 为按显示掉幅反推的隐含
+// 满容量（mAh，掉幅不足时省略）。
+type dischargeEntry struct {
+	TS       int64  `json:"ts"`
+	Secs     int64  `json:"secs"`
+	UahMah   int64  `json:"uah_mah"`
+	StartCap int64  `json:"start_cap"`
+	EndCap   int64  `json:"end_cap"`
+	Implied  *int64 `json:"implied_mah,omitempty"`
 }
 
 func finitePtr(f *float64) *float64 {
@@ -99,7 +113,7 @@ func convSession(se Session) sessionEntry {
 	return e
 }
 
-func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, samplesN int64, now time.Time) ([]byte, error) {
+func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, disch []dischargeEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:         ch,
 		Samples:         snap.Samples,
@@ -142,6 +156,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	doc.RestPoints = rests
 	doc.Ccct = ccct
 	doc.IcaPeaks = icaPeaks
+	doc.DischargeRecent = disch
 	b, err := json.Marshal(doc)
 	if err != nil {
 		return nil, err

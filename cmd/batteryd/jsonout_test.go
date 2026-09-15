@@ -14,7 +14,7 @@ func TestRenderJSONGoldenWithNulls(t *testing.T) {
 	snap := Snapshot{}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
 	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
-	got, err := RenderJSON("stable", d, snap, []TsVal{}, nil, nil, nil, nil, 0, now)
+	got, err := RenderJSON("stable", d, snap, []TsVal{}, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestRenderJSONGoldenPartialNulls(t *testing.T) {
 	d := Design{FullMah: 3850, HasFull: true}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
 	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
-	got, err := RenderJSON("stable", d, Snapshot{}, []TsVal{}, nil, nil, nil, nil, 0, now)
+	got, err := RenderJSON("stable", d, Snapshot{}, []TsVal{}, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestRenderJSONGoldenFull(t *testing.T) {
 	recent := []TsVal{{TS: 1778000000, V: 4501000}, {TS: 1777999940, V: 4498000}}
 	now := time.Date(2026, 8, 26, 9, 5, 1, 0, time.UTC)
 	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"est_mah_sigma":12.3,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"trend_mah_per_week":null,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
-	got, err := RenderJSON("ml", d, snap, recent, nil, nil, nil, nil, 0, now)
+	got, err := RenderJSON("ml", d, snap, recent, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRenderJSONSanitizesNonFiniteFloats(t *testing.T) {
 	nanR := math.NaN()
 	infTemp := math.Inf(1)
 	snapNaN := Snapshot{CycleEquiv: 3.5, RMoh: &nanR}
-	out, err := RenderJSON("stable", d, snapNaN, nil, nil, nil, nil, nil, 0, now)
+	out, err := RenderJSON("stable", d, snapNaN, nil, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRenderJSONSanitizesNonFiniteFloats(t *testing.T) {
 
 	infCycle := math.Inf(-1)
 	snapInf := Snapshot{CycleEquiv: infCycle, TempC: &infTemp}
-	out, err = RenderJSON("stable", d, snapInf, nil, nil, nil, nil, nil, 0, now)
+	out, err = RenderJSON("stable", d, snapInf, nil, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRenderJSONNewFields(t *testing.T) {
 	recent := []TsVal{{TS: 1, V: 4_400_000}}
 	sess := []sessionEntry{{StartTs: 100, EndTs: 200, DeltaPct: 60, EstMah: intPtr(4500), Valid: true}}
 	rests := []restEntry{{TS: 300, UV: 3_900_000, Cap: 60}}
-	b, err := RenderJSON("stable", d, snap, recent, sess, rests, nil, nil, 42, time.Unix(0, 0))
+	b, err := RenderJSON("stable", d, snap, recent, sess, rests, nil, nil, nil, 42, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestRenderJSONNewFields(t *testing.T) {
 			t.Fatalf("缺字段 %s: %s", want, s)
 		}
 	}
-	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, []sessionEntry{}, []restEntry{}, []ccctEntry{}, []icaEntry{}, 0, time.Unix(0, 0))
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, []sessionEntry{}, []restEntry{}, []ccctEntry{}, []icaEntry{}, nil, 0, time.Unix(0, 0))
 	if strings.Contains(string(b2), `"sessions":[{`) {
 		t.Fatalf("空数据不应出会话数组元素: %s", b2)
 	}
@@ -129,7 +129,7 @@ func TestRenderJSONNewFields(t *testing.T) {
 
 func TestRenderJSONCcctEntries(t *testing.T) {
 	ccct := []ccctEntry{{TS: 500, Secs: 960, VwLo: 4200000, VwHi: 4300000}, {TS: 1460, Secs: 480}}
-	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, ccct, nil, 0, time.Unix(0, 0))
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, ccct, nil, nil, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestRenderJSONSessionInvalidReason(t *testing.T) {
 		{StartTs: 300, EndTs: 400, DeltaPct: 60, EstMah: intPtr(4500), Valid: true},
 		{StartTs: 500, EndTs: 600, DeltaPct: 8, Valid: false}, // 旧行为无原因（legacy 行）
 	}
-	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, sess, nil, nil, nil, 0, time.Unix(0, 0))
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, sess, nil, nil, nil, nil, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestRenderJSONTrendStates(t *testing.T) {
 		{"无状态整体省略", Snapshot{}, nil, []string{`"trend_state"`, `"trend_span_day"`}},
 	}
 	for _, c := range cases {
-		b, err := RenderJSON("stable", Design{}, c.snap, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+		b, err := RenderJSON("stable", Design{}, c.snap, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -212,5 +212,25 @@ func TestConvSessionCarriesInvalidReason(t *testing.T) {
 	}
 	if e := convSession(Session{Valid: true}); e.InvalidReason != "" {
 		t.Fatalf("有效会话 invalid_reason 应为空, got %q", e.InvalidReason)
+	}
+}
+
+func TestRenderJSONDischargeEntries(t *testing.T) {
+	implied := int64(5300)
+	disch := []dischargeEntry{
+		{TS: 500, Secs: 4800, UahMah: 2765, StartCap: 78, EndCap: 25, Implied: &implied},
+		{TS: 900, Secs: 600, UahMah: 300, StartCap: 85, EndCap: 80}, // 无隐含
+	}
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, disch, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if want := `"discharge_recent":[{"ts":500,"secs":4800,"uah_mah":2765,"start_cap":78,"end_cap":25,"implied_mah":5300},{"ts":900,"secs":600,"uah_mah":300,"start_cap":85,"end_cap":80}]`; !strings.Contains(s, want) {
+		t.Fatalf("discharge_recent 序列化不符, got %s", s)
+	}
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if strings.Contains(string(b2), "discharge_recent") {
+		t.Fatalf("空放电切片应整体省略: %s", b2)
 	}
 }
