@@ -220,7 +220,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div class="cell"><div class="label">循环当量</div><div id="cyceq" class="val">—</div></div>
       <div class="cell"><div class="label">内阻</div><div id="rmoh" class="val">—</div></div>
       <div class="cell" style="grid-column: span 2;"><div class="label">容量趋势</div><div id="trend" class="val">—</div></div>
-      <div class="cell" style="grid-column: span 2;"><div class="label">口径互检</div><div id="qual" class="val">—</div></div>
+      <div class="cell" style="grid-column: span 2;"><div class="label">数据可信度</div><div id="qual" class="val">—</div></div>
     </section>
 
     <section class="panel" id="panel_recent">
@@ -471,7 +471,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       setText('trend', '—');
     }
 
-    // 口径互检：各路容量口径互相印证，互差超限即提示数据质量异常
+    // 数据可信度：四条独立测出来的容量互相对照，互差越大说明数据越不可信
     var q = doc.quality;
     if (q != null && q.ok != null) {
       var chName = { ema: '实测', mid: '中段', dis: '放电', full: '内核' };
@@ -479,12 +479,10 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       ['ema', 'mid', 'dis', 'full'].forEach(function (k) {
         if (q[k + '_mah'] != null) detail.push(chName[k] + ' ' + q[k + '_mah'] + ' mAh');
       });
-      $('qual').title = detail.join(' / ');
-      setText('qual', q.ok
-        ? '四路一致 · 最大互差 ' + q.spread_pct + '%'
-        : '互差 ' + q.spread_pct + '% · ' + (chName[q.high] || q.high) + ' 偏高 / ' + (chName[q.low] || q.low) + ' 偏低');
+      $('qual').title = '四条独立测量的容量对照：' + detail.join(' / ');
+      setText('qual', (q.ok ? '可信' : '存疑') + ' · 误差 ' + q.spread_pct + '%');
     } else {
-      setText('qual', '对照数据不足');
+      setText('qual', '数据不足');
     }
 
     var list = $('recent');
