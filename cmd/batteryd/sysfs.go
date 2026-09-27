@@ -97,33 +97,56 @@ func (s SysFS) ReadIntSigned(path string) (int64, error) {
 	return v, nil
 }
 
+const (
+	// microUnitChargeMinUA 量纲锚点分界：power_supply 同一驱动的 charge/current
+	// 单位一致。手机电池容量以 µAh 计必 ≥ 100mAh，以 mAh 计不可能 ≥ 100000
+	// （100Ah），故此界两侧无歧义，可据 charge_full 的量纲定 current_now 量纲。
+	microUnitChargeMinUA int64 = 100_000
+	// noAnchorUA 无锚点时的幅值分界：mA 读数超过 10000 即意味着 10A（手机电池
+	// 快充上限），故大值必为 µA；小值两种量纲都讲得通，按 mA 处理。保留历史
+	// 取值以兼容既有设备行为，两侧残留误差都在尾部（µA 设备 <10mA、mA 设备 >10A）。
+	noAnchorUA int64 = 10_000
+	// maxCurrentUA 电流物理上界 25A：无论量纲怎么判，结果越界即判为误判并回退
+	// 原值，堵死 1000 倍误乘污染积分的方向。
+	maxCurrentUA int64 = 25_000_000
+)
+
+// NormCurrentUA 无锚点时的电流单位判别（幅值启发式）。生产路径一律带 charge_full
+// 走 NormCurrentUAWithFull，本入口仅留给拿不到 charge_full 的场景与测试。
 func NormCurrentUA(raw int64) int64 {
-	if raw > 10000 {
-		return raw
-	}
-	return raw * 1000
+	return NormCurrentUAWithFull(raw, 0)
 }
 
-// NormCurrentUAWithFull 用 charge_full 交叉校验 current_now 单位。
-// 启发式：若 |current_now| < max(charge_full/10, 10000)，认为是 mA 并 ×1000；
-// 否则当作 µA 直通。chargeFullUA ≤ 0 时退化为原始启发式。
-// 保底 10000 防止低电量时 charge_full/10 过小导致 µA 误判为 mA。
+// NormCurrentUAWithFull 以 charge_full 的量纲为锚点判别 current_now 单位，并把
+// 读数折算成 µA。判据是「量纲」而非「幅值」：同一 power_supply 驱动下 charge 与
+// current 单位一致，而 charge_full 是缓变的大量程值，拿它当幅值阈值会把小电流
+// 整批误判。
+//   - charge_full ≥ microUnitChargeMinUA（µAh 量纲）⇒ current_now 已是 µA，直通；
+//   - charge_full 以 mAh 计 ⇒ current_now 为 mA，×1000 折算；
+//   - charge_full 不可读（≤0）时退化为幅值启发式，见 noAnchorUA 注。
+//
+// 最后用 maxCurrentUA 兜底：折算结果超过物理上界即回退原值。
+//
+// 实测教训（回归）：旧实现按 |current_now| < charge_full/10 判成 mA，把所有
+// < 0.6A 的真实 µA 读数 ×1000（40mA 变 40A）。实机采样库显示换上该实现当天起
+// 每天 200+ 条百安级电流，充电积分、中段校准、CCCT/ICA 倍率门控全线失真，
+// 「实测」估算被推到设计容量的 114%。
 func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
-	abs := raw
-	if abs < 0 {
-		abs = -abs
+	var ua int64
+	switch {
+	case chargeFullUA >= microUnitChargeMinUA:
+		ua = raw
+	case chargeFullUA > 0:
+		ua = raw * 1000
+	case absI64(raw) > noAnchorUA:
+		ua = raw
+	default:
+		ua = raw * 1000
 	}
-	threshold := chargeFullUA / 10
-	if threshold < 10000 {
-		threshold = 10000
-	}
-	if chargeFullUA > 0 && abs < threshold {
-		return raw * 1000
-	}
-	if abs > 10000 {
+	if absI64(ua) > maxCurrentUA {
 		return raw
 	}
-	return raw * 1000
+	return ua
 }
 
 func NormTempC(raw int64) float64 {

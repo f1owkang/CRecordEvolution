@@ -118,6 +118,32 @@ func TestMidImpliedReplayRealDeviceData(t *testing.T) {
 	}
 }
 
+// 中段校准与会话通道同口径的窗口门控：隐含满容量越界不得混入 EMA——这条旁路
+// 直接驱动用户可见的「实测」值，量纲误判把电流积分放大 1000 倍时它是唯一出口。
+func TestCalibrateMidRejectsOutOfWindowImplied(t *testing.T) {
+	r := newPipeRig(t)
+	// 8000mAh 的映射 ⇒ 隐含 ≈8000000µAh，超出设计容量 4000000 的 1.5 倍上界
+	for _, row := range mkMidPasses(tickBaseTs-20*86400, 3, 30, 90, 8000, 4_000_000, 15) {
+		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.st.KVSet(kvKeyEmaUA, "4000000"); err != nil {
+		t.Fatal(err)
+	}
+	r.p.calibrateMid(tickBaseTs)
+	if got := kvInt(r.st, kvKeyEmaUA); got != 4_000_000 {
+		t.Fatalf("越界隐含值不应混入 EMA, ema = %d", got)
+	}
+	var n int
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='mid_cal_skip'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("越界应落 1 条 mid_cal_skip 事件, got %d", n)
+	}
+}
+
 func TestSettleAppliesMidCalibrationOncePerDay(t *testing.T) {
 	r := newPipeRig(t)
 	// 预置 EMA=5300 与 3 次诚实穿越（5000 mAh），埋在会话时间之前

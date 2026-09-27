@@ -136,6 +136,11 @@ func TestSysFSNormCurrentUA(t *testing.T) {
 	if got := NormCurrentUA(1500000); got != 1500000 {
 		t.Fatalf("NormCurrentUA(1500000) = %d, want 1500000", got)
 	}
+	// 负值（放电方向）与正值同口径：旧实现写的是 raw > 10000，负值一律落进
+	// ×1000 分支，-1.5A 会被放大成 -1500A。
+	if got := NormCurrentUA(-1500000); got != -1500000 {
+		t.Fatalf("NormCurrentUA(-1500000) = %d, want -1500000", got)
+	}
 }
 
 func TestSysFSNormTempC(t *testing.T) {
@@ -147,22 +152,31 @@ func TestSysFSNormTempC(t *testing.T) {
 	}
 }
 
-// 单位交叉校验：用 charge_full 作为量纲锚点区分 mA / µA。
+// 单位交叉校验：以 charge_full 的量纲为锚点区分 mA / µA。
+// 用例取自实机回归（6050mAh 手机，current_now 报 µA）：旧口径拿 charge_full/10
+// 当幅值阈值，把 0.6A 以下的读数整批判成 mA 再 ×1000，采样库里因此每天多出
+// 200+ 条百安级电流，充电积分与中段校准全线失真。
 func TestNormCurrentUAWithFull(t *testing.T) {
-	const full = 5_000_000 // 5000mAh → 阈值 max(500000, 10000) = 500000
+	const fullUA = 6_050_000 // 6050mAh 以 µAh 计 ⇒ 同驱动的 current_now 是 µA
+	const fullMah = 6_050    // 同容量以 mAh 计 ⇒ current_now 是 mA
 	cases := []struct {
 		name   string
 		raw    int64
 		fullUA int64
 		want   int64
 	}{
-		{"mA 读数×1000", 1500, full, 1_500_000},
-		{"µA 读数直通", 1_500_000, full, 1_500_000},
-		{"涓流 mA 仍×1000", 300, full, 300_000},
-		{"负值同口径", -1500, full, -1_500_000},
-		// charge_full 不可用（0）时退化为原始启发式：>10000 视为 µA
+		{"µA 小电流直通（实测 40mA）", 40_000, fullUA, 40_000},
+		{"µA 中等电流直通（实测 297mA）", 297_000, fullUA, 297_000},
+		{"µA 快充直通（2.6A）", 2_655_000, fullUA, 2_655_000},
+		{"µA 负值同口径", -40_000, fullUA, -40_000},
+		{"mA 设备读数×1000", 812, fullMah, 812_000},
+		{"mA 设备负值×1000", -812, fullMah, -812_000},
+		// 量纲判成 mA 但读数越界（40A 不可能）：回退原值，不产生 1000 倍污染
+		{"mA 设备越界读数回退原值", 40_000, fullMah, 40_000},
+		// charge_full 不可用（0）时退化为幅值启发式：>10000 视为 µA
 		{"无锚点大值直通", 1_500_000, 0, 1_500_000},
 		{"无锚点小值×1000", 1500, 0, 1_500_000},
+		{"无锚点涓流直通（实测静息 20mA）", 20_000, 0, 20_000},
 	}
 	for _, c := range cases {
 		if got := NormCurrentUAWithFull(c.raw, c.fullUA); got != c.want {
@@ -171,12 +185,14 @@ func TestNormCurrentUAWithFull(t *testing.T) {
 	}
 }
 
-// 低电量时 charge_full/10 会小于 10000，保底阈值防止 µA 被误判为 mA。
-func TestNormCurrentUAWithFullLowFullFloor(t *testing.T) {
-	// charge_full 极小（如 50mAh）→ 阈值保底 10000
-	// 15000 属 µA 级涓流：>10000 故直通（若阈值被拉到 5000 则会误判成 mA ×1000）
-	if got := NormCurrentUAWithFull(15000, 50_000); got != 15_000 {
-		t.Fatalf("保底阈值下 µA 涓流应直通, got %d", got)
+// 量纲锚点分界：charge_full ≥ 100000 只可能是 µAh（100Ah 电池不存在），
+// 以下只可能是 mAh；两侧各取一例钉住边界。
+func TestNormCurrentUAWithFullUnitAnchorBoundary(t *testing.T) {
+	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUA); got != 15_000 {
+		t.Fatalf("边界值及以上按 µAh 量纲直通, got %d", got)
+	}
+	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUA-1); got != 15_000_000 {
+		t.Fatalf("边界值以下按 mAh 量纲 ×1000, got %d", got)
 	}
 }
 

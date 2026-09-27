@@ -278,3 +278,28 @@ func TestOnSessionPropagatesKVPersistError(t *testing.T) {
 		t.Fatal("持久化失败时 Changed 应为 false")
 	}
 }
+
+// 窗口门控为会话通道与中段校准通道共用：两条通道的输入同为电流积分，
+// 量纲误判或脏样本会同比放大，门控口径必须一致。
+func TestCapacityInWindow(t *testing.T) {
+	cases := []struct {
+		name   string
+		uaFull int64
+		design int64
+		want   bool
+	}{
+		{"0.75 倍设计容量", 3_000_000, 4_000_000, true},
+		{"下边界 0.5 倍", 2_000_000, 4_000_000, true},
+		{"上边界 1.5 倍", 6_000_000, 4_000_000, true},
+		{"低于下界", 1_999_999, 4_000_000, false},
+		{"高于上界", 6_000_001, 4_000_000, false},
+		// 实机回归值：中段隐含被 1000 倍误乘的样本推到 15592mAh
+		{"实测污染值", 15_592_000, 4_000_000, false},
+		{"设计容量缺失一律放行", 999_999, 0, true},
+	}
+	for _, c := range cases {
+		if got := capacityInWindow(c.uaFull, c.design); got != c.want {
+			t.Errorf("%s: capacityInWindow(%d, %d) = %v, want %v", c.name, c.uaFull, c.design, got, c.want)
+		}
+	}
+}

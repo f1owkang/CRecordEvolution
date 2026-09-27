@@ -16,13 +16,13 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
   - `trend.go` — 容量趋势三态（insufficient/stable/significant）。显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃——单次会话估算噪声远大于真实周衰减，实测 R² 长期为负、等于趋势永不可达。
   - `midwin.go` — 中段分窗容量校准：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 [30%,90%) 窗口的隐含容量，每日至多一次按 1/10 权重并入 EMA。收益是不满充也能出容量估计，且避开顶部压缩段。
   - `discharge.go` — 放电会话记录：读电量计 `charge_counter` 差分累计（芯片内积分，免疫负载混叠），转入充电即结算。放电样本按 5 分钟降采样落 `samples`（带符号电流，放电为负）。
-  - `sysfs.go` — 节点探测与单位判别。`NormCurrentUAWithFull` 用 `charge_full` 交叉校验电流单位（防 mA/µA 误判），低电量时阈值保底 10000；`NormTempC` 截断 [-40,80]°C 防脏数据；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`（VIVO/iQOO 兼容，find 走绝对路径优先）。
+  - `sysfs.go` — 节点探测与单位判别。`NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位（≥100000 只可能是 µAh ⇒ 同驱动的 `current_now` 已是 µA 直通；以 mAh 计 ⇒ ×1000；无锚点时退化为幅值启发式），并以 25A 物理上界兜底。**勿拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，实测污染采样/积分/校准三层；`NormTempC` 截断 [-40,80]°C 防脏数据；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`（VIVO/iQOO 兼容，find 走绝对路径优先）。
 - `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
 - `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。
 - `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。模块元信息（name/version/author）直接从 `$MODPATH/module.prop` 读取（不依赖安装器注入的 `$MODNAME/$MODVERSION` 等变量，各管理器环境差异大）；升级时把旧模块 `data/` 复制进新 `$MODPATH/data`，因为 Magisk/KSU 的 staged update 重启会整体删除旧模块目录、否则 `data/battery.db`（学习记录）会丢。
 - `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），取数走管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名字符串)` 并带 15s 超时与级联回退，调 `/data/adb/modules/CRecordEvolution/bin/batteryd json`。权限由安装器接管，**不要给它加 chmod/set_perm**。
 - `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
-- 运行期数据：`$MODDIR/data/battery.db`（SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge，90 天自动清理）。WAL 模式（并发读写低锁竞争），`wal_autocheckpoint=256` 页 + 每日 `wal_checkpoint(TRUNCATE)`，保证主库文件接近自包含（用户只复制 `.db` 报障时不缺最近数据）。
+- 运行期数据：`$MODDIR/data/battery.db`（SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge，90 天自动清理）。WAL 模式（并发读写低锁竞争），`wal_autocheckpoint=256` 页 + 每日 `wal_checkpoint(TRUNCATE)`，保证主库文件接近自包含（用户只复制 `.db` 报障时不缺最近数据）。旧库升级时 `OpenStore` 会做幂等的一次性数据修复（`repairSampleUnits`，按 25A 物理上界把量纲误判的样本 ÷1000 回原值，kv 标记 `samples_unit_repair` 防重复）。
 - `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 Release → 回写 `update.json`。
 - `docs/` — 论文文档库：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）。**设计笔记、superpowers 过程文档（`docs/superpowers/` 规格与计划）、「核对报告」类中间调研文档一律只存本地工作区，禁止提交进仓库。**
 - `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。

@@ -111,6 +111,15 @@ func (p *Pipeline) calibrateMid(now int64) {
 	if !ok || mid <= 0 {
 		return
 	}
+	// 与会话通道同口径的合理性门控：中段隐含值同样由电流积分折算而来，会
+	// 同步吃到量纲误判/脏样本（实测被 1000 倍误乘的样本推到 15592mAh，比设计
+	// 容量还高 1.5 倍），不设门则这条旁路能把无界垃圾灌进用户可见的实测值。
+	if !capacityInWindow(mid, p.designUA) {
+		p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh 超出设计容量窗口，不采信",
+			midWinLo, midWinHi, mid/1000)
+		_ = p.st.InsertEvent("mid_cal_skip", fmt.Sprintf("mid=%d 超出窗口", mid))
+		return
+	}
 	blended := emaBlend(ema, mid, 0)
 	if err := p.st.KVSet(kvKeyEmaUA, strconv.FormatInt(blended, 10)); err != nil {
 		_ = p.st.InsertEvent("mid_cal_fail", err.Error())

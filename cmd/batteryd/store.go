@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -132,7 +133,37 @@ func OpenStore(path string) (*Store, error) {
 	// WAL：daemon 与 WebUI 的 batteryd json 并发读写同一库，WAL 显著降低锁竞争。
 	// 失败仅告警不阻断（回退默认 journal）。
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	// 旧库在线迁移：历史样本的电流量纲误判遗留一次性修正（幂等）
+	if err := st.repairSampleUnits(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// kvSamplesUnitRepair 一次性数据修复标记：历史样本的电流量纲误判遗留已修正。
+const kvSamplesUnitRepair = "samples_unit_repair"
+
+// repairSampleUnits 修正历史样本里被量纲误判放大的电流行。旧版
+// NormCurrentUAWithFull 拿 charge_full/10 当幅值阈值，把 0.6A 以下的真实 µA 读数
+// ×1000 落库（实机自换版当天起每天 200+ 条 |UA| 数百安的行）；这些行会一路污染
+// 中段校准与 CCCT/ICA 倍率门控——真机回放里中段隐含值被推到 15075mAh，基准应为
+// 5289mAh。手机电池瞬时电流不可能超过 maxCurrentUA，越界行必是 1000 倍误乘，
+// 除以 1000 即原值；以 charge_counter 差分为真值校验，修正后积分误差 < 6%。
+// 幂等：修正后的行不再越界，重复执行不产生二次改写。
+func (s *Store) repairSampleUnits() error {
+	if v, ok := s.KVGet(kvSamplesUnitRepair); ok && v == "1" {
+		return nil
+	}
+	res, err := s.db.Exec(`UPDATE samples SET ua = ua / 1000 WHERE abs(ua) > ?`, maxCurrentUA)
+	if err != nil {
+		return err
+	}
+	if n, err2 := res.RowsAffected(); err2 == nil && n > 0 {
+		_ = s.InsertEvent("unit_repair", fmt.Sprintf("修正 %d 条电流量纲误判样本（÷1000）", n))
+	}
+	return s.KVSet(kvSamplesUnitRepair, "1")
 }
 
 // Checkpoint 主动做 TRUNCATE 检查点：把 WAL 落进主库并把 -wal 清零。有并发
