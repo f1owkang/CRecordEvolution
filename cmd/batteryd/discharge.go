@@ -13,6 +13,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -23,10 +24,19 @@ const (
 	kvDisStartCap = "dis_start_cap"
 	kvDisLastCC   = "dis_last_cc" // 0 = 重启后待重定基线哨兵
 	kvDisAcc      = "dis_acc_uah"
+	// kvDisImpliedUA 最近一次通过校准门控的放电差分隐含容量（µAh），供通道互检
+	kvDisImpliedUA = "dis_implied_ua"
 
 	disResyncUAh = 100_000 // 单次差分超 100mAh 判电量计回修，只重置基线
 	disMinRowCap = 5       // 显示掉幅 <5 个百分点不落行
 	disMinEstCap = 10      // 显示掉幅 <10 个百分点不给隐含容量
+	// disCalMinCap 校准用掉幅门限：显示百分比→mAh 映射非线性，掉幅越大越把
+	// 局部非线性平滑掉（实测同区间配对下 30 点以上掉幅的行隐含值离散 ±5%）。
+	disCalMinCap = 30
+	// disCalMaxStart 校准用起始百分比上限：从满电起步的行隐含值系统性偏高
+	// （实测 from_full 均值 6320 vs from_mid 6013，差约 5%），顶部区间显示被
+	// 压缩所致，校准只取中段起步的行，观测行不受此限。
+	disCalMaxStart = 95
 	// disSampleGapSecs 放电样本落库间隔：放电期 tick 为 60s，逐拍落样本
 	// 会让 samples 表按 1440 条/天膨胀（90 天约 13 万条，是充电样本的
 	// 数百倍）。5 分钟一条对分窗分析足够（每窗格仍有多个采样点），
@@ -135,7 +145,44 @@ func (p *Pipeline) settleDischarge() {
 	}
 	if err := p.st.InsertDischarge(row); err != nil {
 		_ = p.st.InsertEvent("discharge_fail", err.Error())
+		return
 	}
+	p.calibrateDischarge(row)
+}
+
+// calibrateDischarge 放电结算后的容量校准：以 charge_counter 差分隐含容量为低权
+// 校准量并入 EMA。放电差分的积分在电量计芯片内完成，是各路容量口径里唯一不经
+// current_now 的通道——实测同区间配对下其离散 ±5%，充电积分通道则 ±48%，且后者
+// 会连带吃到 current_now 的量纲误判与瞬态。门控从严（见 disCalMinCap/
+// disCalMaxStart 注），不满足只落 events 留痕，绝不影响放电结算主链路。
+func (p *Pipeline) calibrateDischarge(row DischargeRow) {
+	if row.Implied == nil {
+		return
+	}
+	implied := *row.Implied
+	if row.StartCap > disCalMaxStart || row.StartCap-row.EndCap < disCalMinCap {
+		return
+	}
+	if !capacityInWindow(implied, p.designUA) {
+		_ = p.st.InsertEvent("dis_cal_skip", fmt.Sprintf("implied=%d 超出设计容量窗口", implied))
+		return
+	}
+	ema := kvInt(p.st, kvKeyEmaUA)
+	if ema <= 0 {
+		return // EMA 未初始化：等首个会话建立基线后再校准
+	}
+	blended := emaBlend(ema, implied, 0)
+	if err := p.st.KVSet(kvKeyEmaUA, strconv.FormatInt(blended, 10)); err != nil {
+		_ = p.st.InsertEvent("dis_cal_fail", err.Error())
+		return
+	}
+	// 留给通道互检（checkQuality）作对照口径
+	_ = p.st.KVSet(kvDisImpliedUA, strconv.FormatInt(implied, 10))
+	p.log("[校准] 放电差分(%d→%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
+		row.StartCap, row.EndCap, implied/1000, ema/1000, blended/1000)
+	_ = p.st.InsertEvent("dis_cal", fmt.Sprintf("implied=%d ema=%d→%d", implied, ema, blended))
+	// 放电差分是四路里最稳的口径，此处顺带做一次通道互检
+	p.checkQuality()
 }
 
 // restoreDischarge 从 kv 恢复放电会话（daemon 重启续记）。lastCC 强制清零

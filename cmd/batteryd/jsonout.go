@@ -62,14 +62,17 @@ type jsonDoc struct {
 	TrendMahPerWeek *float64 `json:"trend_mah_per_week"`
 	// TrendState/TrendSpanDay 趋势三态（insufficient/stable/significant）与积累进度天数；
 	// 无估算点时两者皆省略，前端按缺失降级（旧前端只认 trend_mah_per_week）
-	TrendState   string         `json:"trend_state,omitempty"`
-	TrendSpanDay *int64         `json:"trend_span_day,omitempty"`
-	Updated      string         `json:"updated"`
-	Recent       []recentEntry  `json:"recent"`
-	Sessions     []sessionEntry `json:"sessions"`
-	RestPoints   []restEntry    `json:"rest_points"`
-	Ccct         []ccctEntry    `json:"ccct"`
-	IcaPeaks     []icaEntry     `json:"ica_peaks"`
+	TrendState   string `json:"trend_state,omitempty"`
+	TrendSpanDay *int64 `json:"trend_span_day,omitempty"`
+	// Quality 通道互检（各路容量口径互相印证）；可用路数 <2 时整体省略，
+	// 旧前端忽略未知字段，缺失即省略纪律不破坏
+	Quality    *Quality       `json:"quality,omitempty"`
+	Updated    string         `json:"updated"`
+	Recent     []recentEntry  `json:"recent"`
+	Sessions   []sessionEntry `json:"sessions"`
+	RestPoints []restEntry    `json:"rest_points"`
+	Ccct       []ccctEntry    `json:"ccct"`
+	IcaPeaks   []icaEntry     `json:"ica_peaks"`
 	// DischargeRecent 放电会话（charge_counter 差分，时间倒序）；旧前端
 	// 忽略未知字段，缺失即省略纪律不破坏
 	DischargeRecent []dischargeEntry `json:"discharge_recent,omitempty"`
@@ -146,6 +149,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		mah := *snap.EstUA / 1000
 		doc.EstMah = &mah
 	}
+	doc.Quality = snap.Quality
 	// estimates 表存 µAh，此处换算为 mAh 展示
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})

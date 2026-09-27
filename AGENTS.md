@@ -14,8 +14,9 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - `cmd/batteryd/` — 全部业务逻辑：sysfs 探测与单位判别、60s 采样管道与会话结算、stable/ml 双通道 Estimator、SQLite 存储与 90 天清理、description 组装与原子写回、`daemon | once | json` 子命令分发。算法通道由构建注入 `-X main.channel=ml` 区分。分模块要点：
   - `pipeline.go` — Tick 状态机与累计。充电期 15s / 其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，待电流停歇去抖结算。**满电后电压回落门控**（`chargeSuppressed`）：满电后系统高负载时内核仍报 Charging 且电流为正，但端电压较充电峰值回落 >30mV×电芯数，实为充电器直供系统的假电流，不计入会话电量与循环吞吐。
   - `trend.go` — 容量趋势三态（insufficient/stable/significant）。显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃——单次会话估算噪声远大于真实周衰减，实测 R² 长期为负、等于趋势永不可达。
-  - `midwin.go` — 中段分窗容量校准：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 [30%,90%) 窗口的隐含容量，每日至多一次按 1/10 权重并入 EMA。收益是不满充也能出容量估计，且避开顶部压缩段。
-  - `discharge.go` — 放电会话记录：读电量计 `charge_counter` 差分累计（芯片内积分，免疫负载混叠），转入充电即结算。放电样本按 5 分钟降采样落 `samples`（带符号电流，放电为负）。
+  - `midwin.go` — 中段分窗容量校准：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 [30%,90%) 窗口的隐含容量，每日至多一次按 1/10 权重并入 EMA。收益是不满充也能出容量估计，且避开顶部压缩段。隐含值须过 `capacityInWindow` 门控（不设门会把量纲误判的垃圾灌进实测值），最近一次采信值存 kv `mid_implied_ua` 供互检。
+  - `discharge.go` — 放电会话记录：读电量计 `charge_counter` 差分累计（芯片内积分，免疫负载混叠），转入充电即结算。放电样本按 5 分钟降采样落 `samples`（带符号电流，放电为负）。结算后按门控（掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`）把隐含容量按 1/10 权重并入 EMA——该通道不经 `current_now`，实测同区间配对离散 ±5%（充电积分通道 ±48%），是四路容量口径里最稳的一路；采信值存 kv `dis_implied_ua` 供互检。
+  - `quality.go` — 通道互检（数据质量哨兵）：ema/mid/dis/full 四路容量口径互相印证，互差 >40% 判不一致（实测正常设备 18%、量纲误判期 160%），结论翻转才落 `quality_warn` 事件避免刷屏；结果经 `Snapshot.Quality` 进 JSON `quality` 字段（可用路数 <2 整体省略）。`CapacityQuality` 为无 IO 纯函数，装配在 `Pipeline.checkQuality` 与 `jsonout`。
   - `sysfs.go` — 节点探测与单位判别。`NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位（≥100000 只可能是 µAh ⇒ 同驱动的 `current_now` 已是 µA 直通；以 mAh 计 ⇒ ×1000；无锚点时退化为幅值启发式），并以 25A 物理上界兜底。**勿拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，实测污染采样/积分/校准三层；`NormTempC` 截断 [-40,80]°C 防脏数据；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`（VIVO/iQOO 兼容，find 走绝对路径优先）。
 - `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
 - `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。

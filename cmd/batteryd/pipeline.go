@@ -634,6 +634,8 @@ func (p *Pipeline) settle() error {
 	// 失败仅记 events，静默跳过，绝不影响结算主链路。同源特征 ICA 复用
 	// 其返回的过门段样本行，避免重复扫库。
 	p.recordICA(row.EndTs, p.recordCCCT(s.startTs, row.EndTs))
+	// 通道互检：各路容量口径互相印证，结论翻转时留痕
+	p.checkQuality()
 	return nil
 }
 

@@ -343,6 +343,13 @@ func (a *app) stats() (Design, Snapshot, error) {
 		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUA),
 		RMoh:       a.rMoh(),
 	}
+	// 通道互检：四路容量口径互相印证，量纲误判/脏数据类问题的出口（见 quality.go）
+	fullUA := int64(0)
+	if v, err := a.readIntNode("charge_full"); err == nil {
+		fullUA = v
+	}
+	snap.Quality = CapacityQuality(kvInt(a.st, kvKeyEmaUA),
+		kvInt(a.st, kvMidImpliedUA), kvInt(a.st, kvDisImpliedUA), fullUA)
 	if ema, samples, ok := a.estimate(); ok {
 		snap.EstUA = &ema
 		snap.Samples = samples

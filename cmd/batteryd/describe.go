@@ -32,6 +32,9 @@ type Snapshot struct {
 	TrendMahPerWeek *float64
 	TrendState      string
 	TrendSpanDay    *int64
+
+	// Quality 通道互检结果（各路容量口径互相印证），无从互检时为 nil
+	Quality *Quality
 }
 
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。

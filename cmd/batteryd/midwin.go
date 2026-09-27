@@ -24,6 +24,8 @@ const (
 	midMinBinPass = 3     // 每个窗格的最少穿越次数，低于此判覆盖不足、不校准
 	midCalGapSecs = 86400 // 校准最小间隔：至多每日一次，避免重复计入
 	kvMidCalTs    = "mid_cal_ts"
+	// kvMidImpliedUA 最近一次通过门控的中段隐含容量（µAh），供通道互检
+	kvMidImpliedUA = "mid_implied_ua"
 )
 
 // MidImplied 聚合充电样本并返回 pass 归一的中段隐含满容量（与 EstUA 同单位，
@@ -125,6 +127,8 @@ func (p *Pipeline) calibrateMid(now int64) {
 		_ = p.st.InsertEvent("mid_cal_fail", err.Error())
 		return
 	}
+	// 留给通道互检（checkQuality）作对照口径
+	_ = p.st.KVSet(kvMidImpliedUA, strconv.FormatInt(mid, 10))
 	_ = p.st.KVSet(kvMidCalTs, strconv.FormatInt(now, 10))
 	p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
 		midWinLo, midWinHi, mid/1000, ema/1000, blended/1000)
