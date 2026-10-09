@@ -88,9 +88,10 @@ body {
   padding: 16px;
 }
 .wrap { max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
-header { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; }
-h1 { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
-.hbtns { display: flex; align-items: center; gap: 8px; }
+header { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; gap: 8px; }
+/* h1 可截断：新增顶部刷新按钮后，窄屏（360px 机型）留给标题的宽度不足，宁省略不换行 */
+h1 { font-size: 18px; font-weight: 700; letter-spacing: .3px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbtns { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 button.theme {
   background: var(--card);
   color: var(--dim);
@@ -102,6 +103,7 @@ button.theme {
   font-family: inherit;
   cursor: pointer;
 }
+button.theme:disabled { opacity: .55; cursor: default; }
 .badge {
   font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
   border: 1px solid var(--badge-bd); color: var(--mute);
@@ -200,6 +202,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     <h1>ChargingRecord Evolution</h1>
     <div class="hbtns">
       <button id="theme" class="theme" type="button">日间</button>
+      <button id="refreshTop" class="theme" type="button">刷新</button>
       <span id="badge" class="badge">—</span>
     </div>
   </header>
@@ -220,7 +223,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div class="cell"><div class="label">循环当量</div><div id="cyceq" class="val">—</div></div>
       <div class="cell"><div class="label">内阻</div><div id="rmoh" class="val">—</div></div>
       <div class="cell" style="grid-column: span 2;"><div class="label">容量趋势</div><div id="trend" class="val">—</div></div>
-      <div class="cell" style="grid-column: span 2;"><div class="label">数据可信度</div><div id="qual" class="val">—</div></div>
+      <div class="cell" id="qual_cell" style="grid-column: span 2;"><div class="label">数据可信度</div><div id="qual" class="val">—</div><div id="qual_det" class="det"></div></div>
     </section>
 
     <section class="panel" id="panel_recent">
@@ -479,10 +482,13 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       ['ema', 'mid', 'dis', 'full'].forEach(function (k) {
         if (q[k + '_mah'] != null) detail.push(chName[k] + ' ' + q[k + '_mah'] + ' mAh');
       });
-      $('qual').title = '四条独立测量的容量对照：' + detail.join(' / ');
+      var detailTxt = '四条独立测量的容量对照：' + detail.join(' / ');
+      $('qual').title = detailTxt;
       setText('qual', (q.ok ? '可信' : '存疑') + ' · 误差 ' + q.spread_pct + '%');
+      bindQualDetail(detailTxt);
     } else {
       setText('qual', '数据不足');
+      bindQualDetail('');
     }
 
     var list = $('recent');
@@ -717,6 +723,25 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     if (el) el.style.display = (mode === 'hide') ? 'none' : '';
   }
 
+  // 可信度明细点按展开：手机没有 hover，写进 title 的四路数值看不见；
+  // 交互与图表「点按图上数据点查看详情」保持一致，再点一次收起
+  function bindQualDetail(txt) {
+    var cell = $('qual_cell');
+    var det = $('qual_det');
+    if (!cell || !det) return;
+    det.textContent = txt || '';
+    det.style.display = 'none';
+    if (!txt) {
+      cell.classList.remove('pt');
+      cell.onclick = null;
+      return;
+    }
+    cell.classList.add('pt');
+    cell.onclick = function () {
+      det.style.display = (det.style.display === 'none') ? '' : 'none';
+    };
+  }
+
   // 未参与估算原因（与 estimator 侧 RejectError.Reason / events.kind 同码表）
   var REASONS = {
     temp_out_of_range: '温度出界',
@@ -875,7 +900,22 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     }
   }
 
-  function fetchData() {
+  // lastStamp 上次渲染的数据指纹（后端 updated 时间戳 + 实测值）：两者都没变就
+  // 不重建 DOM——省掉全部面板与 SVG 的重绘，也不会把用户刚点开的数据点详情刷掉。
+  var lastStamp = null;
+
+  function renderAll(doc, force) {
+    var stamp = String(doc.updated || '') + '|' + (doc.est_mah == null ? '' : doc.est_mah);
+    if (!force && stamp === lastStamp) return;
+    lastStamp = stamp;
+    render(doc);
+    renderCharts(doc);
+  }
+
+  function fetchData(force) {
+    // 页面不可见时不取数：每次都要 fork 一个 root 进程（batteryd json），
+    // 后台锁屏期间纯属白耗电；转回前台由 visibilitychange 立即补一次
+    if (document.hidden) return Promise.resolve();
     return run(CMD_JSON).then(function (r) {
       if (r.errno !== 0) {
         showError('执行失败：' + (r.stderr || ('errno ' + r.errno)));
@@ -899,8 +939,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       }
       hideError();
       try {
-        render(doc);
-        renderCharts(doc);
+        renderAll(doc, force);
       } catch (e) {
         showError('渲染失败：' + e.message);
       }
@@ -910,13 +949,20 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   function refreshNow() {
     var btn = $('refresh');
     if (!btn || btn.disabled) return;
+    var top = $('refreshTop');
     btn.disabled = true;
+    if (top) top.disabled = true;
     var old = btn.textContent;
     btn.textContent = '刷新中…';
     run(CMD_ONCE).then(function () {
       setTimeout(function () {
-        var done = function () { btn.disabled = false; btn.textContent = old; };
-        fetchData().then(done, done);
+        var done = function () {
+          btn.disabled = false;
+          btn.textContent = old;
+          if (top) top.disabled = false;
+        };
+        // 手动刷新强制重绘：数据碰巧没变时也要给用户一次可见反馈
+        fetchData(true).then(done, done);
       }, 1000);
     });
   }
@@ -930,8 +976,13 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       return;
     }
     $('refresh').addEventListener('click', refreshNow);
+    $('refreshTop').addEventListener('click', refreshNow);
     fetchData();
-    setInterval(fetchData, 60000);
+    setInterval(function () { fetchData(); }, 60000);
+    // 后台期间轮询被跳过，转回前台立即补一次，用户不必等下一分钟
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) fetchData();
+    });
   }
 
   if (document.readyState === 'loading') {
