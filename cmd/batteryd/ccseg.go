@@ -16,7 +16,9 @@ const (
 	ccTopVoltFrac = 0.03 // CV 尾段：电压须处观察序列最高 3% 区间
 )
 
-type SampleRow struct{ TS, UA, UV, Cap int64 }
+// SampleRow 一行采样。CC 为电量计 charge_counter（µAh），0 表示该行未采到
+// （旧库遗留行或节点不可读），消费方按区间回退电流积分口径。
+type SampleRow struct{ TS, UA, UV, Cap, CC int64 }
 
 type CCSeg struct {
 	FromTs int64

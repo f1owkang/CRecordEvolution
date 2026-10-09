@@ -57,6 +57,12 @@ const (
 	kvSessTempN    = "sess_temp_n"
 	kvSessLastCap  = "sess_last_cap"
 	kvSessLastTs   = "sess_last_tick_ts"
+	kvSessCCLast   = "sess_cc_last"
+	kvSessCCUAh    = "sess_cc_uah"
+
+	// ccResyncUAh 会话期电量计单拍增量上限：超过视为回修/大跳变，只重定基线
+	// 不计入（与放电侧 disResyncUAh 同纪律；充电 15s 拍、12A 上限约 50mAh）。
+	ccResyncUAh int64 = 500_000
 )
 
 type TickOutcome struct{ SessionSettled bool }
@@ -88,6 +94,14 @@ type sessionState struct {
 	tempSum    float64
 	tempN      int64
 	lastCap    int64
+	// ccLast/ccUAh 会话期电量计差分口径（charge_counter，µAh）：ccLast 为上一拍
+	// 读数（0=待重定基线），ccUAh 为本会话正增量累计。结算估算优先用它——它与
+	// 放电侧、内核 charge_full 同源，免疫 current_now 刻度偏差与满电假电流。
+	// ccHole 标记本会话该口径出现空洞（重启续记 / 回修跳变），此时增量只覆盖
+	// 部分区间，结算必须回退电流积分，否则会按覆盖率给出偏低的隐含容量。
+	ccLast int64
+	ccUAh  int64
+	ccHole bool
 }
 
 type Pipeline struct {
@@ -230,6 +244,11 @@ func (p *Pipeline) restoreSession() {
 		tempN:      kvInt(p.st, kvSessTempN),
 		lastCap:    kvInt(p.st, kvSessLastCap),
 		lastTickTs: kvInt(p.st, kvSessLastTs),
+		ccLast:     kvInt(p.st, kvSessCCLast),
+		ccUAh:      kvInt(p.st, kvSessCCUAh),
+		// 进程重启必然在会话中间留下缺口：增量只覆盖复活后的部分区间，
+		// 故一律标记空洞，结算回退电流积分口径（与放电侧重定基线同纪律）
+		ccHole: true,
 	}
 }
 
@@ -260,6 +279,22 @@ func (p *Pipeline) readNodeSigned(name string) (int64, error) {
 		return 0, err
 	}
 	return p.fs.ReadIntSigned(path)
+}
+
+// readChargeCounter 读电量计 charge_counter（µAh）。节点确认不存在时置负缓存
+// （disCCOff），避免充电期每拍全树扫 /sys；瞬时读取失败不置缓存，下一拍重试。
+func (p *Pipeline) readChargeCounter() (int64, bool) {
+	if p.disCCOff {
+		return 0, false
+	}
+	cc, err := p.readNode("charge_counter")
+	if err != nil {
+		if errors.Is(err, ErrNodeNotFound) {
+			p.disCCOff = true
+		}
+		return 0, false
+	}
+	return cc, true
 }
 
 // notChargDebounce 非充电状态去抖：status 连续非 Charging 达到该拍数才真正
@@ -406,8 +441,9 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			return err
 		}
 	}
+	cc, _ := p.readChargeCounter()
 	if vUV > 0 && capVal > 0 {
-		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal); err != nil {
+		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal, cc); err != nil {
 			_ = p.st.InsertEvent("sample_fail", err.Error())
 		}
 	}
@@ -432,7 +468,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 	// 显示 100% 不等于充电完成（内核报数早于真实充满）：不在此封账，CV 尾段
 	// 由 Tick 的 tailCurrent 路径继续累计，待电流停歇后走去抖结算。
-	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed)
+	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed, cc)
 }
 
 // tickTailCharge 非充电状态下仍在灌电的一拍（CV 尾段）：仅对已活跃会话累计，
@@ -454,8 +490,9 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 			return err
 		}
 	}
+	cc, _ := p.readChargeCounter()
 	if vUV > 0 && capVal > 0 {
-		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal); err != nil {
+		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal, cc); err != nil {
 			_ = p.st.InsertEvent("sample_fail", err.Error())
 		}
 	}
@@ -465,12 +502,12 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 		tempC = NormTempC(tRaw)
 		haveTemp = true
 	}
-	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed)
+	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed, cc)
 }
 
 // accumulate 向活跃会话与全局累计充电量（Charging 拍与 CV 尾段拍共用）；
-// 调用方保证会话已开启。
-func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, suppressed bool) error {
+// 调用方保证会话已开启。cc 为本拍电量计读数（µAh，0=未采到）。
+func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, suppressed bool, cc int64) error {
 	s := &p.sess
 	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
 	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
@@ -483,6 +520,21 @@ func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, s
 		}
 	}
 	s.lastTickTs = now
+	// 电量计差分（结算估算首选口径）：单拍正增量累计，反向/超限跳变只重定
+	// 基线不计入（与 trackDischarge 同纪律）；首拍 ccLast=0 仅建基线。
+	// 出现跳变即标记 ccHole：该段增量不可知，本会话结算不再采信电量计口径。
+	if cc > 0 {
+		if s.ccLast == 0 {
+			s.ccLast = cc
+		} else {
+			if d := cc - s.ccLast; d > 0 && d <= ccResyncUAh {
+				s.ccUAh += d
+			} else {
+				s.ccHole = true
+			}
+			s.ccLast = cc
+		}
+	}
 	// suppressed：满电后电压回落的假充电电流不计入电量（时间基线照常推进，
 	// 避免下一拍 dt 跨越被丢弃的区间）
 	if !suppressed {
@@ -545,6 +597,8 @@ func (p *Pipeline) persistSession() error {
 		{kvSessTempN, strconv.FormatInt(s.tempN, 10)},
 		{kvSessLastCap, strconv.FormatInt(s.lastCap, 10)},
 		{kvSessLastTs, strconv.FormatInt(s.lastTickTs, 10)},
+		{kvSessCCLast, strconv.FormatInt(s.ccLast, 10)},
+		{kvSessCCUAh, strconv.FormatInt(s.ccUAh, 10)},
 	}
 	for _, it := range sets {
 		if err := p.st.KVSet(it.key, it.val); err != nil {
@@ -588,7 +642,30 @@ func (p *Pipeline) settle() error {
 		Duration: duration,
 		Valid:    false,
 	}
-	sr := SettledSession{Session: row, AccUA: s.accUAs, DesignUA: p.designUA}
+	sr := SettledSession{Session: row, AccUA: s.accUAs, CounterUAh: s.ccUAh, DesignUA: p.designUA}
+	ccSrc := "电量计"
+	// 口径校验一：会话期电量计增量出现空洞（重启续记 / 回修跳变）⇒ 它只覆盖部分
+	// 区间，按覆盖率反推会系统性偏低，回退电流积分口径。
+	if s.ccHole {
+		if sr.CounterUAh > 0 {
+			p.log("[结算] 会话期电量计口径有缺口（%dmAh），回退电流积分口径", sr.CounterUAh/1000)
+		}
+		sr.CounterUAh = 0
+	}
+	// 口径校验二：若与电流积分相差 3 倍以上，判为刻度/单位异常（防其它机型
+	// charge_counter 量纲不同），同样回退积分并留痕。
+	if sr.CounterUAh > 0 {
+		if accUAh := s.accUAs / 3600; accUAh > 0 && (sr.CounterUAh > accUAh*3 || accUAh > sr.CounterUAh*3) {
+			_ = p.st.InsertEvent("counter_scale",
+				fmt.Sprintf("counter=%dµAh vs 积分=%dµAh，比值超 3 倍", sr.CounterUAh, accUAh))
+			p.log("[结算] 电量计口径异常（%dmAh vs 积分 %dmAh），回退电流积分",
+				sr.CounterUAh/1000, accUAh/1000)
+			sr.CounterUAh = 0
+		}
+	}
+	if sr.CounterUAh <= 0 {
+		ccSrc = "积分"
+	}
 
 	upd, err := p.est.OnSession(sr)
 	if err != nil {
@@ -612,15 +689,15 @@ func (p *Pipeline) settle() error {
 	row.Valid = true
 	// σ 仅 ML 通道产出（stable 恒为 0）：≤0 时省略段，避免打印误导性的 σ=0.0
 	if upd.SigmaMah > 0 {
-		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh σ=%.1f",
+		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh σ=%.1f",
 			row.StartCap, row.EndCap,
 			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
-			upd.EstUA/1000, upd.SigmaMah)
+			ccSrc, upd.EstUA/1000, upd.SigmaMah)
 	} else {
-		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 估算=%dmAh",
+		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh",
 			row.StartCap, row.EndCap,
 			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
-			upd.EstUA/1000)
+			ccSrc, upd.EstUA/1000)
 	}
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
 		return &SettleError{Err: insErr}

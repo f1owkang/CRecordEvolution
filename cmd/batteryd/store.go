@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NUL
 CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
-CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL, cc INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ica_peaks(session_end_ts INTEGER PRIMARY KEY, peak_uv INTEGER NOT NULL, peak_h_rel REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS discharge(
@@ -130,6 +130,11 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// samples 表补 cc 列（电量计读数，旧行默认 0）
+	if err := migrateSamplesCC(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// WAL：daemon 与 WebUI 的 batteryd json 并发读写同一库，WAL 显著降低锁竞争。
 	// 失败仅告警不阻断（回退默认 journal）。
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
@@ -175,32 +180,45 @@ func (s *Store) Checkpoint() {
 // migrateSessionsReason 检查 sessions 表是否缺 invalid_reason 列（升级前旧库），
 // 缺则 ALTER TABLE 补列；已存在时不动，幂等。
 func migrateSessionsReason(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(sessions)`)
-	if err != nil {
+	has, err := hasColumn(db, "sessions", "invalid_reason")
+	if err != nil || has {
 		return err
 	}
+	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN invalid_reason TEXT`)
+	return err
+}
+
+// migrateSamplesCC 检查 samples 表是否缺 cc 列（电量计 charge_counter 读数），
+// 缺则补列；已存在时不动，幂等。补列后历史行 cc=0，消费方按区间回退电流积分。
+func migrateSamplesCC(db *sql.DB) error {
+	has, err := hasColumn(db, "samples", "cc")
+	if err != nil || has {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE samples ADD COLUMN cc INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// hasColumn 查 PRAGMA table_info 判断表是否已有某列，供各幂等迁移复用。
+func hasColumn(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
 	defer rows.Close()
-	has := false
 	for rows.Next() {
 		var cid int64
 		var name, typ string
 		var notNull, pk int64
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
-			return err
+			return false, err
 		}
-		if name == "invalid_reason" {
-			has = true
+		if name == col {
+			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if has {
-		return nil
-	}
-	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN invalid_reason TEXT`)
-	return err
+	return false, rows.Err()
 }
 
 func (s *Store) Close() error {
@@ -346,9 +364,9 @@ func (s *Store) InsertEvent(kind, detail string) error {
 
 // InsertSample 写入一条充电样本。ts 为秒级主键：60s tick 下同一秒只写一次、
 // 天然唯一；若未来缩短采样周期或出现多写路径，INSERT OR REPLACE 会静默覆盖
-// 同 ts 旧行（幂等而非追加），属已知约束。
-func (s *Store) InsertSample(ts, ua, uv, cap int64) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap) VALUES(?, ?, ?, ?)`, ts, ua, uv, cap)
+// 同 ts 旧行（幂等而非追加），属已知约束。cc 为电量计读数（µAh，0=未采到）。
+func (s *Store) InsertSample(ts, ua, uv, cap, cc int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap, cc) VALUES(?, ?, ?, ?, ?)`, ts, ua, uv, cap, cc)
 	return err
 }
 
@@ -360,7 +378,7 @@ func (s *Store) CountSamples() (int64, error) {
 
 // SamplesRange 返回 [from, to] 闭区间内的样本行，按 ts 升序。
 func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
-	rows, err := s.db.Query(`SELECT ts, ua, uv, cap FROM samples
+	rows, err := s.db.Query(`SELECT ts, ua, uv, cap, cc FROM samples
 		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`, from, to)
 	if err != nil {
 		return nil, err
@@ -369,7 +387,7 @@ func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
 	out := []SampleRow{}
 	for rows.Next() {
 		var r SampleRow
-		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap); err != nil {
+		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CC); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

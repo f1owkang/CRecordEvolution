@@ -826,3 +826,147 @@ func TestChargeSuppressedOnVoltageSag(t *testing.T) {
 		t.Fatalf("电压恢复后应继续计电: %d", got)
 	}
 }
+
+// 结算口径：电量计差分优先。构造电流积分口径落在设计容量窗口外、电量计口径
+// 落在窗内的场景——若仍用积分，会话会被 out_of_window 拒收。
+func TestSettleUsesCounterDeltaForEstimate(t *testing.T) {
+	r := newPipeRig(t)
+	r.st.KVSet(kvKeyEmaUA, "5000000")
+	r.st.KVSet(kvKeySamples, "3")
+
+	cc := int64(6_000_000)
+	putCC(t, r, cc)
+	// 61 拍 cap 40→100：电量计每拍 +40000µAh（合计 2400mAh ⇒ 隐含 4000mAh）；
+	// 电流恒 1A ⇒ 积分口径隐含仅 1694mAh，低于设计容量 0.5 倍窗，必被拒收。
+	for i := int64(0); i <= 60; i++ {
+		r.put(40+i, 1_000_000, 3_900_000)
+		if i > 0 {
+			cc += 40_000
+			putCC(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	r.put(100, 20_000, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	if sess := onlySession(t, r.st); !sess.Valid {
+		t.Fatalf("电量计口径应采信，实际被拒 reason=%s", sess.InvalidReason)
+	}
+	// EMA 融合：满充权重 3/10 ⇒ (5000000×7 + 4000000×3)/10 = 4700000
+	if got := kvInt(r.st, kvKeyEmaUA); got != 4_700_000 {
+		t.Fatalf("EMA = %d, want 4700000（电量计隐含 4000mAh）", got)
+	}
+}
+
+// 重启续记的会话：电量计增量只覆盖复活后的区间（进程停机期间的那一段无法
+// 重建），必须回退电流积分口径——否则会按覆盖率反推出偏低的隐含容量混进 EMA。
+func TestRestoredSessionFallsBackFromCounter(t *testing.T) {
+	r := newPipeRig(t)
+	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeySamples, "3")
+
+	cc := int64(6_000_000)
+	putCC(t, r, cc)
+	for i := int64(0); i <= 30; i++ {
+		r.put(40+i, 2_500_000, 4_100_000)
+		if i > 0 {
+			cc += 50_000
+			putCC(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	r.rebuildPipeline() // 进程重启：会话由 restoreSession 拉起
+	for i := int64(31); i <= 60; i++ {
+		r.put(40+i, 2_500_000, 4_100_000)
+		cc += 50_000
+		putCC(t, r, cc)
+		r.step("Charging")
+	}
+	r.put(100, 20_000, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	// 电流积分口径：61 拍 × 2.5A × 60s ÷ 3600 = 2541666µAh，涨幅 60 点 ⇒ 隐含 4236111
+	wantEma := (int64(4_000_000)*7 + int64(4_236_111)*3) / 10
+	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+		t.Fatalf("重启续记会话应回退积分口径: EMA = %d, want %d", got, wantEma)
+	}
+}
+
+// 刻度一致性护栏：电量计增量与电流积分相差 3 倍以上判量纲异常，回退积分口径
+// 并留痕（防其它机型 charge_counter 单位不同把估算带偏量级）。
+func TestSettleFallsBackOnCounterScaleMismatch(t *testing.T) {
+	r := newPipeRig(t)
+	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeySamples, "3")
+
+	cc := int64(6_000_000)
+	putCC(t, r, cc)
+	for i := int64(0); i <= 60; i++ {
+		r.put(40+i, 1_000_000, 3_900_000)
+		if i > 0 {
+			cc += 500 // 比积分口径小两个量级 ⇒ 越界
+			putCC(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	r.put(100, 20_000, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	var n int
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='counter_scale'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("应落 1 条 counter_scale 事件, got %d", n)
+	}
+	// 回退积分口径后隐含 1694mAh 出窗 ⇒ 会话被拒，而不是采信错口径
+	if sess := onlySession(t, r.st); sess.Valid {
+		t.Fatal("异常电量计口径不应被采信")
+	}
+}
+
+// 满电后「假电流」停计只作用于电流积分；电量计增量照常累计——库仑计不会为
+// 充电器直供系统的假电流计数，无需电压门控替它过滤。
+func TestSuppressedTicksStillCountCounterDelta(t *testing.T) {
+	r := newPipeRig(t)
+	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeySamples, "3")
+
+	cc := int64(6_000_000)
+	putCC(t, r, cc)
+	for i := int64(0); i <= 60; i++ {
+		r.put(40+i, 2_500_000, 4_100_000)
+		if i > 0 {
+			cc += 50_000
+			putCC(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	// 满电后电压回落 100mV ⇒ 电流积分停计；两拍仍有电量计增量
+	for k := 0; k < 2; k++ {
+		r.put(100, 2_500_000, 4_000_000)
+		cc += 50_000
+		putCC(t, r, cc)
+		r.step("Charging")
+	}
+	r.put(100, 20_000, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	// 电量计共 62 拍 ×50000 = 3100000µAh，显示涨幅 60 点 ⇒ 隐含 5166666µAh
+	wantEma := (int64(4_000_000)*7 + int64(5_166_666)*3) / 10
+	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+		t.Fatalf("EMA = %d, want %d（停计期电量计增量应计入）", got, wantEma)
+	}
+}

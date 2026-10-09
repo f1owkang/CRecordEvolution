@@ -7,8 +7,21 @@ type KVStore interface {
 
 type SettledSession struct {
 	Session
-	AccUA    int64
-	DesignUA int64
+	AccUA int64
+	// CounterUAh 会话期电量计差分增量（µAh）：>0 时估算优先采用（与放电侧、
+	// 内核 charge_full 同源，免疫 current_now 刻度偏差与满电假电流）；0 表示
+	// 节点不可读或刻度异常，回退 AccUA 电流积分口径。
+	CounterUAh int64
+	DesignUA   int64
+}
+
+// fullCapacityUA 由会话推算满容量（µAh）：电量计差分优先，缺失时回退电流积分
+// （µA·s ÷ 3600 折算 µAh）。两条口径同以显示涨幅为除数。
+func fullCapacityUA(sr SettledSession, delta int64) int64 {
+	if sr.CounterUAh > 0 {
+		return sr.CounterUAh * 100 / delta
+	}
+	return sr.AccUA * 100 / (delta * 3600)
 }
 
 type SessionResult struct {

@@ -82,7 +82,7 @@ func evaluateStable(sr SettledSession) SessionResult {
 	if delta < minDeltaCap {
 		return SessionResult{Reason: "delta_lt_20"}
 	}
-	uaFull := sr.AccUA * 100 / (delta * 3600)
+	uaFull := fullCapacityUA(sr, delta)
 	if !capacityInWindow(uaFull, sr.DesignUA) {
 		return SessionResult{Reason: "out_of_window"}
 	}

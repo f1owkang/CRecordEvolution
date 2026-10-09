@@ -13,6 +13,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -70,8 +71,12 @@ func (p *Pipeline) trackDischarge(status string) {
 	}
 	cc, err := p.readNode("charge_counter")
 	if err != nil {
-		p.disCCOff = true
-		p.log("[放电] charge_counter 节点缺失，放电记录停用")
+		// 只有确认节点不存在才负缓存停用；瞬时读取失败（suspend 竞态等）下一拍
+		// 重试，否则一次抖动会把电量计口径永久关掉直到进程重启。
+		if errors.Is(err, ErrNodeNotFound) {
+			p.disCCOff = true
+			p.log("[放电] charge_counter 节点缺失，放电记录停用")
+		}
 		return
 	}
 	capVal, err := p.readNode("capacity")
@@ -82,7 +87,7 @@ func (p *Pipeline) trackDischarge(status string) {
 	// 放电样本按 disSampleGapSecs 降采样落库，供放电侧分窗分析
 	if now-p.lastDisSampleTs >= disSampleGapSecs {
 		p.lastDisSampleTs = now
-		p.sampleDischarge(now, capVal)
+		p.sampleDischarge(now, capVal, cc)
 	}
 	if p.dis.active != 1 {
 		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCC: cc}
@@ -103,7 +108,8 @@ func (p *Pipeline) trackDischarge(status string) {
 }
 
 // sampleDischarge 落一条放电样本（带符号电流，放电为负），供放电侧分窗分析。
-func (p *Pipeline) sampleDischarge(now, capVal int64) {
+// cc 为采样时刻的电量计读数（µAh，0=未采到）。
+func (p *Pipeline) sampleDischarge(now, capVal, cc int64) {
 	vUV, verr := p.readNode("voltage_now")
 	if verr != nil || vUV <= 0 {
 		return
@@ -112,7 +118,7 @@ func (p *Pipeline) sampleDischarge(now, capVal int64) {
 	if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
 		dUA = -absI64(NormCurrentUAWithFull(iRaw, p.fullUA))
 	}
-	if err := p.st.InsertSample(now, dUA, vUV, capVal); err != nil {
+	if err := p.st.InsertSample(now, dUA, vUV, capVal, cc); err != nil {
 		_ = p.st.InsertEvent("sample_fail", err.Error())
 	}
 }

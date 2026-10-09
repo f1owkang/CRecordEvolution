@@ -18,12 +18,15 @@ import (
 )
 
 const (
-	midWinLo      = 30    // 窗口下沿（显示百分点），避开低端保留电量映射失真
-	midWinHi      = 90    // 窗口上沿（显示百分点），排除顶部压缩段（95~98% 减半）
-	midSegMaxDt   = 300   // 段内相邻样本最大间隔（秒），超出视为段断裂（重启/停充）
-	midMinBinPass = 3     // 每个窗格的最少穿越次数，低于此判覆盖不足、不校准
-	midCalGapSecs = 86400 // 校准最小间隔：至多每日一次，避免重复计入
-	kvMidCalTs    = "mid_cal_ts"
+	midWinLo    = 30  // 窗口下沿（显示百分点），避开低端保留电量映射失真
+	midWinHi    = 90  // 窗口上沿（显示百分点），排除顶部压缩段（95~98% 减半）
+	midSegMaxDt = 300 // 段内相邻样本最大间隔（秒），超出视为段断裂（重启/停充）
+	// midSegMaxUAh 区间电量计增量上限：≤300s 段内即便 12A 快充也只有 1Ah，
+	// 超过判为电量计回修/跳变，该区间无法归因（跳过）。
+	midSegMaxUAh  int64 = 2_000_000
+	midMinBinPass       = 3     // 每个窗格的最少穿越次数，低于此判覆盖不足、不校准
+	midCalGapSecs       = 86400 // 校准最小间隔：至多每日一次，避免重复计入
+	kvMidCalTs          = "mid_cal_ts"
 	// kvMidImpliedUA 最近一次通过门控的中段隐含容量（µAh），供通道互检
 	kvMidImpliedUA = "mid_implied_ua"
 )
@@ -31,11 +34,14 @@ const (
 // MidImplied 聚合充电样本并返回 pass 归一的中段隐含满容量（与 EstUA 同单位，
 // 即 µAh 量级数值）。判定口径：
 //   - 样本按时间连续（相邻间隔 ≤ midSegMaxDt）且电流为正切成一段；
-//   - 段内区间 Q=I·dt 均摊到跨越的 1% 窗格（c1>c0）；c1<c0（电量计回修）与
-//     dt≤0 的区间无法归因，跳过；百分比停滞的区间归入当前窗格（若在窗内）；
+//   - 段内区间电量优先取电量计差分（charge_counter，µAh 直读，与放电侧/内核
+//     charge_full 同源，免疫 current_now 刻度偏差）；旧行无 cc 时回退电流积分
+//     Q=I·dt÷3600（µA·s→µAh），两者统一到 µAh 可混用；
+//   - 区间电量均摊到跨越的 1% 窗格（c1>c0）；c1<c0（电量计回修）、dt≤0 与
+//     增量超限的区间无法归因，跳过；百分比停滞的区间归入当前窗格（若在窗内）；
 //   - 窗口内任一窗格穿越次数 < midMinBinPass ⇒ 覆盖不足，ok=false（防止只用
 //     局部区间充电的习惯把窗口算偏）；
-//   - 隐含容量 = ΣQ/Σpass × 100% 折算，µA·s→µAh 除以 3600。
+//   - 隐含容量 = ΣQ/Σpass × 100% 折算（Q 已是 µAh，无需再除以 3600）。
 func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 	var binQ [100]float64
 	var binP [100]int
@@ -58,7 +64,16 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 				if dt <= 0 || c1 < c0 {
 					continue
 				}
-				q := float64(seg[k-1].UA) * float64(dt)
+				var q float64 // µAh
+				if cc0, cc1 := seg[k-1].CC, seg[k].CC; cc0 > 0 && cc1 > 0 {
+					d := cc1 - cc0
+					if d <= 0 || d > midSegMaxUAh {
+						continue // 电量计回修/跳变：区间无法归因
+					}
+					q = float64(d)
+				} else {
+					q = float64(seg[k-1].UA) * float64(dt) / 3600
+				}
 				if c1 > c0 {
 					for c := c0; c < c1 && c < int64(hi); c++ {
 						if c >= int64(lo) && c >= 0 && c < 100 {
@@ -88,8 +103,8 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 	if sumP <= 0 {
 		return 0, false
 	}
-	// (µA·s/窗格/次) ÷ 3600 × 100% = µAh 量级的隐含满容量
-	implied := sumQ / sumP / 36
+	// (µAh/窗格/次) × 100% = µAh 量级的隐含满容量
+	implied := sumQ / sumP * 100
 	return int64(implied), true
 }
 

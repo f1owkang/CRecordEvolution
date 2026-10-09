@@ -118,13 +118,52 @@ func TestMidImpliedReplayRealDeviceData(t *testing.T) {
 	}
 }
 
+// 中段隐含口径：有电量计读数的区间按 cc 增量归因（µAh 直读），无 cc 的旧行
+// 回退电流积分。构造「cc 口径 5000mAh / 积分口径 7500mAh」的对照数据，校验
+// MidImplied 优先采信 cc、清掉 cc 后确实回退积分。
+func TestMidImpliedPrefersCounterDeltas(t *testing.T) {
+	// 3 段穿越 30~90%，每 1% 用 3 拍（15s）；cc 每 1% 恰好 +50000µAh（⇒5000mAh）
+	// UA 固定 6A：积分口径每 1% = 6e6×45/3600 = 75000µAh（⇒7500mAh）
+	var rows []SampleRow
+	ts := int64(1_700_000_000)
+	cc := int64(10_000_000)
+	for p := 0; p < 3; p++ {
+		for cap := 30; cap < 90; cap++ {
+			for k := 0; k < 3; k++ {
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				ts += 15
+				cc += 50_000 / 3
+			}
+		}
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		ts += midSegMaxDt + 60
+	}
+	got, ok := MidImplied(rows, midWinLo, midWinHi)
+	if !ok {
+		t.Fatal("三段覆盖应可计算")
+	}
+	if d := got - 5_000_000; d < -60_000 || d > 60_000 {
+		t.Fatalf("应采信电量计口径 ≈5000mAh，got %d", got)
+	}
+	for i := range rows {
+		rows[i].CC = 0
+	}
+	gotUA, ok := MidImplied(rows, midWinLo, midWinHi)
+	if !ok {
+		t.Fatal("回退积分口径后仍应可计算")
+	}
+	if d := gotUA - 7_500_000; d < -90_000 || d > 90_000 {
+		t.Fatalf("无 cc 时应回退积分口径 ≈7500mAh，got %d", gotUA)
+	}
+}
+
 // 中段校准与会话通道同口径的窗口门控：隐含满容量越界不得混入 EMA——这条旁路
 // 直接驱动用户可见的「实测」值，量纲误判把电流积分放大 1000 倍时它是唯一出口。
 func TestCalibrateMidRejectsOutOfWindowImplied(t *testing.T) {
 	r := newPipeRig(t)
 	// 8000mAh 的映射 ⇒ 隐含 ≈8000000µAh，超出设计容量 4000000 的 1.5 倍上界
 	for _, row := range mkMidPasses(tickBaseTs-20*86400, 3, 30, 90, 8000, 4_000_000, 15) {
-		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap); err != nil {
+		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,7 +189,7 @@ func TestSettleAppliesMidCalibrationOncePerDay(t *testing.T) {
 	r.st.KVSet(kvKeyEmaUA, "5300000")
 	r.st.KVSet(kvKeySamples, "5")
 	for _, row := range mkMidPasses(tickBaseTs-20*86400, 3, 30, 90, 5000, 4_000_000, 15) {
-		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap); err != nil {
+		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap, 0); err != nil {
 			t.Fatal(err)
 		}
 	}

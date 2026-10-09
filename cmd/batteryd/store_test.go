@@ -137,10 +137,10 @@ func TestSampleRoundtripAndPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.InsertSample(1000, 500000, 3800000, 50); err != nil {
+	if err := st.InsertSample(1000, 500000, 3800000, 50, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.InsertSample(2000, 600000, 3850000, 55); err != nil {
+	if err := st.InsertSample(2000, 600000, 3850000, 55, 0); err != nil {
 		t.Fatal(err)
 	}
 	n, err := st.CountSamples()
@@ -155,6 +155,44 @@ func TestSampleRoundtripAndPrune(t *testing.T) {
 	}
 	if n, _ = st.CountSamples(); n != 1 {
 		t.Fatalf("after prune n=%d, want 1", n)
+	}
+}
+
+// samples.cc 列往返 + 旧库补列迁移：v1.3.3 前的库没有该列，OpenStore 应幂等
+// 补列，历史行 cc=0（消费方按区间回退电流积分口径）。
+func TestSamplesCounterColumnRoundtripAndMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.db")
+	st, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertSample(1000, 500000, 3800000, 50, 1234567); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.SamplesRange(0, 2000)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("SamplesRange 行数 = %d err=%v", len(rows), err)
+	}
+	if rows[0].CC != 1234567 {
+		t.Fatalf("cc 往返 = %d, want 1234567", rows[0].CC)
+	}
+	// 模拟旧库：删列 → 重新 OpenStore 触发迁移
+	if _, err := st.db.Exec(`ALTER TABLE samples DROP COLUMN cc`); err != nil {
+		t.Skipf("当前 SQLite 不支持 DROP COLUMN，跳过迁移用例: %v", err)
+	}
+	_ = st.Close()
+	st2, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("旧库重开应自动补列: %v", err)
+	}
+	defer st2.Close()
+	rows2, err := st2.SamplesRange(0, 2000)
+	if err != nil || len(rows2) != 1 {
+		t.Fatalf("迁移后 SamplesRange 行数 = %d err=%v", len(rows2), err)
+	}
+	if rows2[0].CC != 0 {
+		t.Fatalf("补列后历史行 cc 应为 0，got %d", rows2[0].CC)
 	}
 }
 
@@ -229,7 +267,7 @@ func TestSamplesRangeInclusiveAscending(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	for ts := int64(100); ts <= 500; ts += 100 {
-		if err := s.InsertSample(ts, 100_000+ts, 4_000_000+ts, int64(ts)/100); err != nil {
+		if err := s.InsertSample(ts, 100_000+ts, 4_000_000+ts, int64(ts)/100, 0); err != nil {
 			t.Fatalf("InsertSample(%d): %v", ts, err)
 		}
 	}
