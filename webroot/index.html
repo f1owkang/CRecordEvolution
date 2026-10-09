@@ -226,14 +226,10 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       <div class="cell" id="qual_cell" style="grid-column: span 2;"><div class="label">数据可信度</div><div id="qual" class="val">—</div><div id="qual_det" class="det"></div></div>
     </section>
 
-    <section class="panel" id="panel_recent">
-      <div class="ptitle">近期估算</div>
-      <div id="recent"></div>
-    </section>
-
     <section class="panel" id="panel_est">
       <div class="ptitle">估算趋势</div>
       <div id="chart_est" class="chart"></div>
+      <div id="chart_est_det" class="det"></div>
       <div id="chart_est_cap" class="cap"></div>
     </section>
 
@@ -491,29 +487,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       bindQualDetail('');
     }
 
-    var list = $('recent');
-    list.textContent = '';
-    var rows = Array.isArray(doc.recent) ? doc.recent : [];
-    if (!rows.length) {
-      var empty = document.createElement('div');
-      empty.className = 'row empty';
-      empty.textContent = '暂无估算记录';
-      list.appendChild(empty);
-    } else {
-      rows.forEach(function (r) {
-        var li = document.createElement('div');
-        li.className = 'row';
-        var t = document.createElement('span');
-        t.className = 't';
-        t.textContent = fmtTs(r && r.ts);
-        var m = document.createElement('span');
-        m.textContent = fmtInt(r && r.mah) + ' mAh';
-        li.appendChild(t);
-        li.appendChild(m);
-        list.appendChild(li);
-      });
-    }
-    setText('meta', '通道 ' + (doc.channel || '—') + ' · 更新于 ' + (doc.updated || '—'));
+    setMeta(doc);
   }
 
   var CHART_W = 320;
@@ -573,7 +547,9 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     if (!raw.length) return '';
     raw.sort(function (a, b) { return a.x - b.x; });
     if (raw.length === 1) {
-      return svgOpen(w, h) + chartBase(w, h) + dotEl(spanPad(0.5) * w, (1 - spanPad(0.5)) * h, color) + '</svg>';
+      var sx = spanPad(0.5) * w, sy = (1 - spanPad(0.5)) * h;
+      return svgOpen(w, h) + chartBase(w, h) + dotEl(sx, sy, color) +
+        '<circle class="pt" data-i="0" cx="' + sx.toFixed(1) + '" cy="' + sy.toFixed(1) + '" r="12" fill="transparent"/></svg>';
     }
     var tx = minMax(raw.map(function (p) { return p.x; }));
     var ys = raw.map(function (p) { return p.y; });
@@ -586,13 +562,21 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     var ty = minMax(ys);
     function toXY(p) { return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) }; }
     var pts = raw.map(toXY);
+    // 可见数据点 + 透明命中圈：点按看该次明细（与 svgScatter 同口径）
+    var dots = '';
+    for (var i = 0; i < pts.length; i++) {
+      var cx = (pts[i].x * w).toFixed(1);
+      var cy = ((1 - pts[i].y) * h).toFixed(1);
+      dots += '<circle class="pt" data-i="' + i + '" cx="' + cx + '" cy="' + cy + '" r="12" fill="transparent"/>' +
+        '<circle cx="' + cx + '" cy="' + cy + '" r="3" style="fill:' + color + '" fill-opacity=".85" pointer-events="none"/>';
+    }
     var overlay = '';
     if (trendPts) {
       overlay = '<path d="' + ptsToPath(trendPts.map(toXY), w, h) + '" fill="none" style="stroke:var(--blue)" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>';
     }
     return svgOpen(w, h) + chartBase(w, h) + overlay +
       '<path d="' + ptsToPath(pts, w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '</svg>';
+      dots + '</svg>';
   }
 
   // rest_points 散点：每点一个可见 <circle> 叠一层透明命中圈（点按看详情）；
@@ -788,20 +772,26 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
     var recent = Array.isArray(doc.recent) ? doc.recent : [];
     if (!designOK && !recent.length) {
-      // 设计容量缺失：实测估算结构性不可能，估算类卡片整体隐藏
-      setPanel('panel_recent', 'hide');
+      // 设计容量缺失：实测估算结构性不可能，估算卡片整体隐藏
       setPanel('panel_est', 'hide');
+      clearDetail('chart_est');
     } else {
-      setPanel('panel_recent', 'show');
       setPanel('panel_est', 'show');
       var estParts = [];
       var latest = recent.length ? recent[0] : null;
       if (latest != null) estParts.push('最新 ' + fmtInt(latest.mah) + ' mAh');
       if (doc.samples_n != null) estParts.push('累计采样 ' + fmtInt(doc.samples_n) + ' 次');
       var tw = Number(doc.trend_mah_per_week);
-      setChart('chart_est', svgLine(recent, W, H, 'var(--accent)',
+      // 列表已并入本图：升序副本与图上数据点同序，点按即可看该次结算明细
+      var recentAsc = recent.slice().sort(function (a, b) {
+        return Number(a && a.ts) - Number(b && b.ts);
+      });
+      setChart('chart_est', svgLine(recentAsc, W, H, 'var(--accent)',
         (doc.trend_mah_per_week != null && isFinite(tw)) ? tw : null) || emptyRow('等待首次有效结算'),
         estParts.join(' · '));
+      bindPointDetail('chart_est', recentAsc, 'ts', 'mah', function (r) {
+        return fmtTs(r && r.ts) + ' · ' + fmtInt(r && r.mah) + ' mAh';
+      });
     }
 
     // 充电会话：无设计容量也会记录被拒会话，不存在结构性不支持
@@ -900,16 +890,19 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     }
   }
 
-  // lastStamp 上次渲染的数据指纹（后端 updated 时间戳 + 实测值）：两者都没变就
-  // 不重建 DOM——省掉全部面板与 SVG 的重绘，也不会把用户刚点开的数据点详情刷掉。
-  var lastStamp = null;
+  // lastFP 上次渲染的内容指纹：剔除随时间变化的 updated/temp_c 后按字节比较，
+  // 未变化就不重建 DOM——省掉全部面板与 SVG 的重绘，也不会把用户刚点开的数据点
+  // 详情刷掉。updated 是后端每次生成的墙钟，不能直接当指纹用（永远不会相同）。
+  var lastFP = null;
 
-  function renderAll(doc, force) {
-    var stamp = String(doc.updated || '') + '|' + (doc.est_mah == null ? '' : doc.est_mah);
-    if (!force && stamp === lastStamp) return;
-    lastStamp = stamp;
-    render(doc);
-    renderCharts(doc);
+  function contentFP(doc) {
+    return JSON.stringify(doc, function (k, v) {
+      return (k === 'updated' || k === 'temp_c') ? undefined : v;
+    });
+  }
+
+  function setMeta(doc) {
+    setText('meta', '通道 ' + (doc.channel || '—') + ' · 更新于 ' + (doc.updated || '—'));
   }
 
   function fetchData(force) {
@@ -939,7 +932,15 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       }
       hideError();
       try {
-        renderAll(doc, force);
+        var fp = contentFP(doc);
+        if (!force && fp === lastFP) {
+          // 数据未变：只刷新「更新于」，不重建面板（保住用户点开的详情）
+          setMeta(doc);
+          return;
+        }
+        lastFP = fp;
+        render(doc);
+        renderCharts(doc);
       } catch (e) {
         showError('渲染失败：' + e.message);
       }
