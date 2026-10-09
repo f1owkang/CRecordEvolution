@@ -9,10 +9,12 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # 明确钉在 24.04：ubuntu-latest 将于 2026-10-19 迁到 Ubuntu 26，发版流水线
+    # 不宜跟着镜像漂移（zip/git 等工具行为差异），要升级时显式改这一行
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -26,7 +28,7 @@ jobs:
           fi
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -62,10 +64,12 @@ jobs:
           printf '%s\n' "ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新" >> changelog.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ChargingRecord Evolution ${{ github.ref_name }}
-          overwrite: true
+          # v3 的合法输入是 overwrite_files（旧版写成 overwrite，会报
+          # "Unexpected input(s) 'overwrite'"）
+          overwrite_files: true
           files: |
             ChargingRecordEvolution-${{ github.ref_name }}.zip
             ChargingRecordEvolution_ML-${{ github.ref_name }}.zip
