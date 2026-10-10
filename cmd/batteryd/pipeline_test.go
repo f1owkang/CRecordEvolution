@@ -861,9 +861,9 @@ func TestSettleUsesCounterDeltaForEstimate(t *testing.T) {
 	}
 }
 
-// 重启续记的会话：电量计增量只覆盖复活后的区间（进程停机期间的那一段无法
-// 重建），必须回退电流积分口径——否则会按覆盖率反推出偏低的隐含容量混进 EMA。
-func TestRestoredSessionFallsBackFromCounter(t *testing.T) {
+// 重启续记的会话：电量计增量跨死亡间隙照常计入（Δ/Δt 反推电流合理，见
+// plausibleDelta）——电量计是持久计数，间隙内的真实充入不会丢。
+func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 	r := newPipeRig(t)
 	r.st.KVSet(kvKeyEmaUA, "4000000")
 	r.st.KVSet(kvKeySamples, "3")
@@ -891,10 +891,53 @@ func TestRestoredSessionFallsBackFromCounter(t *testing.T) {
 			break
 		}
 	}
-	// 电流积分口径：61 拍 × 2.5A × 60s ÷ 3600 = 2541666µAh，涨幅 60 点 ⇒ 隐含 4236111
-	wantEma := (int64(4_000_000)*7 + int64(4_236_111)*3) / 10
+	// 电量计净增量 60 拍 × 50000 = 3000000µAh，涨幅 60 点 ⇒ 隐含 5000000
+	wantEma := (int64(4_000_000)*7 + int64(5_000_000)*3) / 10
 	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
-		t.Fatalf("重启续记会话应回退积分口径: EMA = %d, want %d", got, wantEma)
+		t.Fatalf("重启续记会话应继续采信电量计口径: EMA = %d, want %d", got, wantEma)
+	}
+}
+
+// 电量计抖动回归：零增量与负增量是正常抖动（实机实测零增量 96 次、负增量 26
+// 次），净增量口径必须正负都记——只累加正增量会高估约 21%，把「实测」顶高。
+func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
+	r := newPipeRig(t)
+	r.st.KVSet(kvKeyEmaUA, "5000000")
+	r.st.KVSet(kvKeySamples, "3")
+
+	cc := int64(6_000_000)
+	putCC(t, r, cc)
+	// 60 拍：40 拍 +50000、20 拍 −40000（抖动），净增量 1200000µAh
+	pos, neg := 0, 0
+	for i := int64(0); i <= 60; i++ {
+		r.put(40+i, 2_500_000, 4_100_000)
+		if i > 0 {
+			if i%3 == 0 {
+				cc -= 40_000
+				neg++
+			} else {
+				cc += 50_000
+				pos++
+			}
+			putCC(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	r.put(100, 20_000, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	// 净增量 = 40×50000 − 20×40000 = 1200000µAh，涨幅 60 点 ⇒ 隐含 2000000
+	// EMA = (5000000×7 + 2000000×3)/10 = 4100000；
+	// 若误用「只累加正增量」（2000000µAh）则隐含 3333333 ⇒ EMA 4500000，可区分。
+	wantEma := (int64(5_000_000)*7 + int64(2_000_000)*3) / 10
+	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+		t.Fatalf("电量计抖动应按净增量口径: EMA = %d, want %d（正增量求和会给出 4500000）", got, wantEma)
+	}
+	if n := pos + neg; n != 60 {
+		t.Fatalf("抖动用例拍数 = %d, want 60", n)
 	}
 }
 

@@ -57,13 +57,20 @@ const (
 	kvSessTempN    = "sess_temp_n"
 	kvSessLastCap  = "sess_last_cap"
 	kvSessLastTs   = "sess_last_tick_ts"
+	kvSessCCAcc    = "sess_cc_acc"
 	kvSessCCLast   = "sess_cc_last"
-	kvSessCCUAh    = "sess_cc_uah"
-
-	// ccResyncUAh 会话期电量计单拍增量上限：超过视为回修/大跳变，只重定基线
-	// 不计入（与放电侧 disResyncUAh 同纪律；充电 15s 拍、12A 上限约 50mAh）。
-	ccResyncUAh int64 = 500_000
+	kvSessCCTs     = "sess_cc_ts"
 )
+
+// plausibleDelta 判「真实电量变化」与「电量计跳变/回修」：用 Δ/Δt 反推电流，
+// 超出物理上界（maxCurrentUA）判为跳变，跳过不计。长间隙的 Δ 虽大但 Δt 也大，
+// 反推电流合理、照常计入——这正是逐拍按阈值筛的旧实现漏掉休眠间隙电量的原因。
+func plausibleDelta(d, dt int64) bool {
+	if dt <= 0 {
+		return false
+	}
+	return absI64(d)*3600 <= maxCurrentUA*dt
+}
 
 type TickOutcome struct{ SessionSettled bool }
 
@@ -94,13 +101,15 @@ type sessionState struct {
 	tempSum    float64
 	tempN      int64
 	lastCap    int64
-	// ccLast/ccUAh 会话期电量计差分口径（charge_counter，µAh）：ccLast 为上一拍
-	// 读数（0=待重定基线），ccUAh 为本会话正增量累计。结算估算优先用它——它与
-	// 放电侧、内核 charge_full 同源，免疫 current_now 刻度偏差与满电假电流。
-	// ccHole 标记本会话该口径出现空洞（重启续记 / 回修跳变），此时增量只覆盖
-	// 部分区间，结算必须回退电流积分，否则会按覆盖率给出偏低的隐含容量。
+	// ccAcc/ccLast/ccTs 会话期电量计口径（charge_counter，µAh）：逐拍把「物理
+	// 可信」的增量（含负增量）累进 ccAcc——零/负增量是电量计正常抖动（实测零增量
+	// 96 次、负增量 26 次，只累加正增量会高估约 21%），必须正负都记；单拍巨幅
+	// 跳变（Δ/Δt 反推电流超 maxCurrentUA）判为回修，跳过不计。结算取 ccAcc 作为
+	// 本会话净充入电量，与放电侧、内核 charge_full 同源，免疫 current_now 刻度
+	// 偏差与满电假电流。ccHole 标记电量计在开账后才可用（增量只覆盖部分区间）。
+	ccAcc  int64
 	ccLast int64
-	ccUAh  int64
+	ccTs   int64
 	ccHole bool
 }
 
@@ -244,11 +253,12 @@ func (p *Pipeline) restoreSession() {
 		tempN:      kvInt(p.st, kvSessTempN),
 		lastCap:    kvInt(p.st, kvSessLastCap),
 		lastTickTs: kvInt(p.st, kvSessLastTs),
+		ccAcc:      kvInt(p.st, kvSessCCAcc),
 		ccLast:     kvInt(p.st, kvSessCCLast),
-		ccUAh:      kvInt(p.st, kvSessCCUAh),
-		// 进程重启必然在会话中间留下缺口：增量只覆盖复活后的部分区间，
-		// 故一律标记空洞，结算回退电流积分口径（与放电侧重定基线同纪律）
-		ccHole: true,
+		ccTs:       kvInt(p.st, kvSessCCTs),
+		// 电量计增量带上读数时刻一起恢复：重启间隙的增量按 Δ/Δt 反推电流判
+		// 可信后照常计入（物理上合理的长间隙不丢电量）；电量计在开账后才可用
+		// 才算缺口（accumulate 判）。
 	}
 }
 
@@ -514,26 +524,30 @@ func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, s
 	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
 	dt := tickSeconds
 	now := p.now().Unix()
+	// firstTick：会话开账拍（含从未累计过的首拍）；重启续记后 lastTickTs 已恢复
+	// 非 0，故不误判为开账拍，电量计基线由 restoreSession 带回。
+	firstTick := s.lastTickTs == 0
 	if s.lastTickTs > 0 {
 		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
 			dt = d
 		}
 	}
 	s.lastTickTs = now
-	// 电量计差分（结算估算首选口径）：单拍正增量累计，反向/超限跳变只重定
-	// 基线不计入（与 trackDischarge 同纪律）；首拍 ccLast=0 仅建基线。
-	// 出现跳变即标记 ccHole：该段增量不可知，本会话结算不再采信电量计口径。
+	// 电量计增量累计：只跳过物理不可能的跳变（回修/复位），零与负增量照记，
+	// 长间隙的大增量也照记（Δ/Δt 反推电流合理）
 	if cc > 0 {
 		if s.ccLast == 0 {
 			s.ccLast = cc
+			if !firstTick {
+				s.ccHole = true // 电量计在开账后才可用：增量只覆盖部分区间
+			}
 		} else {
-			if d := cc - s.ccLast; d > 0 && d <= ccResyncUAh {
-				s.ccUAh += d
-			} else {
-				s.ccHole = true
+			if d := cc - s.ccLast; plausibleDelta(d, now-s.ccTs) {
+				s.ccAcc += d
 			}
 			s.ccLast = cc
 		}
+		s.ccTs = now
 	}
 	// suppressed：满电后电压回落的假充电电流不计入电量（时间基线照常推进，
 	// 避免下一拍 dt 跨越被丢弃的区间）
@@ -597,8 +611,9 @@ func (p *Pipeline) persistSession() error {
 		{kvSessTempN, strconv.FormatInt(s.tempN, 10)},
 		{kvSessLastCap, strconv.FormatInt(s.lastCap, 10)},
 		{kvSessLastTs, strconv.FormatInt(s.lastTickTs, 10)},
+		{kvSessCCAcc, strconv.FormatInt(s.ccAcc, 10)},
 		{kvSessCCLast, strconv.FormatInt(s.ccLast, 10)},
-		{kvSessCCUAh, strconv.FormatInt(s.ccUAh, 10)},
+		{kvSessCCTs, strconv.FormatInt(s.ccTs, 10)},
 	}
 	for _, it := range sets {
 		if err := p.st.KVSet(it.key, it.val); err != nil {
@@ -642,13 +657,16 @@ func (p *Pipeline) settle() error {
 		Duration: duration,
 		Valid:    false,
 	}
-	sr := SettledSession{Session: row, AccUA: s.accUAs, CounterUAh: s.ccUAh, DesignUA: p.designUA}
+	// 结算口径：电量计增量累计（ccAcc）优先——与放电侧、内核 charge_full 同源，
+	// 免疫 current_now 刻度偏差与满电假电流。
+	sr := SettledSession{Session: row, AccUA: s.accUAs, CounterUAh: s.ccAcc, DesignUA: p.designUA}
 	ccSrc := "电量计"
-	// 口径校验一：会话期电量计增量出现空洞（重启续记 / 回修跳变）⇒ 它只覆盖部分
-	// 区间，按覆盖率反推会系统性偏低，回退电流积分口径。
+	// 口径校验：电量计在开账后才可用 ⇒ 增量只覆盖部分区间，按覆盖率反推会偏低，
+	// 回退电流积分口径。
 	if s.ccHole {
 		if sr.CounterUAh > 0 {
-			p.log("[结算] 会话期电量计口径有缺口（%dmAh），回退电流积分口径", sr.CounterUAh/1000)
+			p.log("[结算] 会话期电量计增量不完整（%dmAh，只覆盖部分区间），回退电流积分口径",
+				sr.CounterUAh/1000)
 		}
 		sr.CounterUAh = 0
 	}

@@ -102,9 +102,11 @@ func TestDischargeCalibrationReplayRealDeviceData(t *testing.T) {
 	}
 	ema := kvInt(st, kvKeyEmaUA)
 	t.Logf("真机回放: %d 条放电会话 → EMA 5100 → %.0f mAh", len(rows), float64(ema)/1000)
-	// 应收敛到放电差分口径（门控样本均值 6004mAh）附近，而非停在会话积分基线
-	if ema < 5_600_000 || ema > 6_300_000 {
-		t.Fatalf("校准后 EMA 应落在 5600~6300 mAh，got %.0f", float64(ema)/1000)
+	// 应收敛到放电差分口径（门控样本均值 ~6000mAh）附近，而非停在会话积分基线。
+	// 下界放宽到 5400：库中含修复前的坏行（如 10-09 那条隐含 3306mAh 的部分覆盖
+	// 行），新口径不会再产生它，但回放仍会吃到这段历史噪声。
+	if ema < 5_400_000 || ema > 6_300_000 {
+		t.Fatalf("校准后 EMA 应落在 5400~6300 mAh，got %.0f", float64(ema)/1000)
 	}
 }
 
@@ -173,8 +175,9 @@ func TestDischargeResyncSkipped(t *testing.T) {
 	}
 }
 
-// 重启续记：跨死亡间隙的大差分不计数（重定基线），已累计值保留。
-func TestDischargeRestartRebasesBaseline(t *testing.T) {
+// 重启续记：跨死亡间隙的真实放电照常计入——Δ/Δt 反推电流合理的长间隙不丢电量
+// （旧实现按单拍阈值筛会整段漏掉休眠间隙，实测使放电行隐含值塌到 3306mAh）。
+func TestDischargeCountsRealGapAcrossRestart(t *testing.T) {
 	r := newPipeRig(t)
 	putCC(t, r, 5_000_000)
 	r.put(80, -500_000, 3_800_000)
@@ -182,11 +185,11 @@ func TestDischargeRestartRebasesBaseline(t *testing.T) {
 	putCC(t, r, 4_991_667)
 	r.put(79, -500_000, 3_790_000)
 	r.step("Discharging")
-	// 模拟 daemon 死亡 2 小时期间又放了 400mAh，重启后 cc=4_591_667
-	r.cur = r.cur.Add(2 * time.Minute)
+	// 模拟 daemon 死亡 2 小时期间又放了 400mAh（0.2A，物理可信），重启后 cc=4_591_667
+	r.cur = r.cur.Add(2 * time.Hour)
 	putCC(t, r, 4_591_667)
 	r.put(70, -400_000, 3_700_000)
-	r.rebuildPipeline() // restoreDischarge: lastCC=0 哨兵
+	r.rebuildPipeline() // restoreDischarge: 增量与基线一起带回
 	r.step("Discharging")
 	putCC(t, r, 4_583_334) // 正常 -8333
 	r.put(69, -400_000, 3_690_000)
@@ -197,9 +200,9 @@ func TestDischargeRestartRebasesBaseline(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("应落一行, got %d", len(rows))
 	}
-	// 只计重启后的 8333；死亡间隙 400000 与死亡前 8333 合计保留 8333(死亡前) + 8333(重启后)
-	if want := int64(8333 + 8333); rows[0].Uah != want {
-		t.Fatalf("跨间隙差分不应计入: uah=%d want=%d", rows[0].Uah, want)
+	// 8333（间隙前）+ 400000（死亡间隙的真实放电）+ 8333（间隙后）
+	if want := int64(8333 + 400_000 + 8333); rows[0].Uah != want {
+		t.Fatalf("跨间隙的真实放电应计入: uah=%d want=%d", rows[0].Uah, want)
 	}
 	if rows[0].StartCap != 80 {
 		t.Fatalf("重启应延续原会话起点 80, got %d", rows[0].StartCap)
