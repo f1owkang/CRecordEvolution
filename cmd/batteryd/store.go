@@ -189,7 +189,8 @@ func migrateSessionsReason(db *sql.DB) error {
 }
 
 // migrateSamplesCC 检查 samples 表是否缺 cc 列（电量计 charge_counter 读数），
-// 缺则补列；已存在时不动，幂等。补列后历史行 cc=0，消费方按区间回退电流积分。
+// 缺则补列；已存在时不动，幂等。补列后历史行 cc=0；有电量计时消费方跳过该区间
+// （仅整批无 cc 才回退电流积分）。
 func migrateSamplesCC(db *sql.DB) error {
 	has, err := hasColumn(db, "samples", "cc")
 	if err != nil || has {

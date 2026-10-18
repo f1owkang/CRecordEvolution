@@ -17,7 +17,7 @@ const (
 )
 
 // SampleRow 一行采样。CC 为电量计 charge_counter（µAh），0 表示该行未采到
-// （旧库遗留行或节点不可读），消费方按区间回退电流积分口径。
+// （旧库遗留行或节点不可读）；有电量计时消费方跳过该区间，仅整批无 cc 才回退电流积分。
 type SampleRow struct{ TS, UA, UV, Cap, CC int64 }
 
 type CCSeg struct {

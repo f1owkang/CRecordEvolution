@@ -65,8 +65,8 @@ func tempOutOfRange(sr SettledSession) bool {
 
 // capacityInWindow 判隐含满容量是否落在设计容量 0.5~1.5 倍的合理窗口内。
 // designUA 为 0（charge_full_design 缺失）时无从判定，一律放行以启动学习。
-// 会话通道与中段校准通道共用本口径：两条通道的输入同为电流积分，量纲误判或
-// 脏样本会同比放大，门控口径必须一致，否则校准通道会绕过会话通道的门。
+// 会话通道与中段校准通道共用本口径：两条通道都会吃到量纲误判/脏样本，门控
+// 口径必须一致，否则校准通道会绕过会话通道的门。
 func capacityInWindow(uaFull, designUA int64) bool {
 	if designUA <= 0 {
 		return true

@@ -279,7 +279,7 @@ func TestOnSessionPropagatesKVPersistError(t *testing.T) {
 	}
 }
 
-// 窗口门控为会话通道与中段校准通道共用：两条通道的输入同为电流积分，
+// 窗口门控为会话通道与中段校准通道共用：两条通道都会吃到量纲误判/脏样本，
 // 量纲误判或脏样本会同比放大，门控口径必须一致。
 func TestCapacityInWindow(t *testing.T) {
 	cases := []struct {

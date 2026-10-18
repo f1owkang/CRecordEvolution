@@ -35,16 +35,32 @@ const (
 // 即 µAh 量级数值）。判定口径：
 //   - 样本按时间连续（相邻间隔 ≤ midSegMaxDt）且电流为正切成一段；
 //   - 段内区间电量优先取电量计差分（charge_counter，µAh 直读，与放电侧/内核
-//     charge_full 同源，免疫 current_now 刻度偏差）；旧行无 cc 时回退电流积分
-//     Q=I·dt÷3600（µA·s→µAh），两者统一到 µAh 可混用；
+//     charge_full 同源，免疫 current_now 刻度偏差）；整批样本都没有 cc（设备
+//     无电量计）时才回退电流积分 Q=I·dt÷3600（µA·s→µAh）；
+//   - 有电量计读数（样本里出现过 cc>0）时，缺 cc 的旧区间直接跳过：电流积分
+//     相对电量计系统性偏低 10~13%（实测中段因此从 5747 被拉到 5381mAh），
+//     两种口径不能混用；覆盖不足时宁可不校准；
 //   - 区间电量均摊到跨越的 1% 窗格（c1>c0）；c1<c0（电量计回修）、dt≤0 与
 //     增量超限的区间无法归因，跳过；百分比停滞的区间归入当前窗格（若在窗内）；
+//     同一段内若有区间因缺 cc 被跳过，对应窗格 Q 与 pass 都不计——部分覆盖
+//     若仍记一整次穿越，会把该窗格的均值拉低；
 //   - 窗口内任一窗格穿越次数 < midMinBinPass ⇒ 覆盖不足，ok=false（防止只用
 //     局部区间充电的习惯把窗口算偏）；
 //   - 隐含容量 = ΣQ/Σpass × 100% 折算（Q 已是 µAh，无需再除以 3600）。
 func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 	var binQ [100]float64
 	var binP [100]int
+
+	// 是否具备电量计读数：样本里出现过 cc>0 即说明本机有 charge_counter。
+	// 有则缺 cc 的区间一律跳过，不回退电流积分——积分口径系统性偏低 10~13%，
+	// 与 cc 混用会把中段校准整体拉低（实测 5747→5381mAh）。
+	hasCC := false
+	for _, r := range rows {
+		if r.CC > 0 {
+			hasCC = true
+			break
+		}
+	}
 
 	n := len(rows)
 	for i := 0; i < n; {
@@ -58,6 +74,20 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 		}
 		if seg := rows[i:j]; len(seg) >= 2 {
 			segQ := map[int64]float64{}
+			// segBad 记录本段内「因缺 cc 无法归因」的窗格：该窗格只覆盖了一部分，
+			// Q 与 pass 都不能计，否则部分覆盖会把隐含值拉偏。
+			segBad := map[int64]bool{}
+			markBad := func(c0, c1 int64) {
+				if c1 > c0 {
+					for c := c0; c < c1 && c < int64(hi); c++ {
+						if c >= int64(lo) && c >= 0 && c < 100 {
+							segBad[c] = true
+						}
+					}
+				} else if c0 >= int64(lo) && c0 < int64(hi) {
+					segBad[c0] = true
+				}
+			}
 			for k := 1; k < len(seg); k++ {
 				dt := seg[k].TS - seg[k-1].TS
 				c0, c1 := seg[k-1].Cap, seg[k].Cap
@@ -68,10 +98,16 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 				if cc0, cc1 := seg[k-1].CC, seg[k].CC; cc0 > 0 && cc1 > 0 {
 					d := cc1 - cc0
 					if d <= 0 || d > midSegMaxUAh {
-						continue // 电量计回修/跳变：区间无法归因
+						// 单区间零/负增量是电量计抖动/回修，跳过该区间即可；
+						// 该段的百分比穿越仍然成立，不因此扣掉整格 pass。
+						continue
 					}
 					q = float64(d)
 				} else {
+					if hasCC {
+						markBad(c0, c1)
+						continue // 有电量计却缺读数：该区间无法可信归因
+					}
 					q = float64(seg[k-1].UA) * float64(dt) / 3600
 				}
 				if c1 > c0 {
@@ -85,6 +121,9 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 				}
 			}
 			for c, q := range segQ {
+				if segBad[c] {
+					continue // 本段该窗格只覆盖了一部分：Q 与 pass 都不计
+				}
 				binQ[c] += q
 				binP[c]++
 			}
@@ -128,9 +167,9 @@ func (p *Pipeline) calibrateMid(now int64) {
 	if !ok || mid <= 0 {
 		return
 	}
-	// 与会话通道同口径的合理性门控：中段隐含值同样由电流积分折算而来，会
-	// 同步吃到量纲误判/脏样本（实测被 1000 倍误乘的样本推到 15592mAh，比设计
-	// 容量还高 1.5 倍），不设门则这条旁路能把无界垃圾灌进用户可见的实测值。
+	// 与会话通道同口径的合理性门控：中段隐含值来自电量计差分（无 cc 才回退
+	// 积分），同样会吃到量纲误判/脏样本（实测被 1000 倍误乘的样本推到 15592mAh，
+	// 比设计容量还高 1.5 倍），不设门则这条旁路能把无界垃圾灌进用户可见的实测值。
 	if !capacityInWindow(mid, p.designUA) {
 		p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh 超出设计容量窗口，不采信",
 			midWinLo, midWinHi, mid/1000)

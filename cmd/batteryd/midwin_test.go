@@ -85,7 +85,8 @@ func TestMidImpliedCoverageGates(t *testing.T) {
 }
 
 // 环境变量 CRE_MIDWIN_DB 指向真机 battery.db 时回放；CI 无此文件自动跳过。
-// 2026-09-14 实测设备 b（stable v1.3.0）：[30,90) pass 归一 ≈5289 mAh。
+// 2026-10-18 实测（stable v1.3.4，cc 覆盖最近 9 天）：[30,90) pass 归一 ≈5747 mAh；
+// 修复前旧行回退电流积分只有 5381 mAh。
 func TestMidImpliedReplayRealDeviceData(t *testing.T) {
 	path := os.Getenv("CRE_MIDWIN_DB")
 	if path == "" {
@@ -113,8 +114,8 @@ func TestMidImpliedReplayRealDeviceData(t *testing.T) {
 		t.Fatalf("真机 %d 样本应满足覆盖门槛", len(rows))
 	}
 	t.Logf("真机回放: %d 样本 → 中段隐含 %.0f mAh", len(rows), float64(got)/1000)
-	if mah := float64(got) / 1000; mah < 5150 || mah > 5450 {
-		t.Fatalf("真机回放期望 5150~5450 mAh（离线基准 5289），got %.0f", mah)
+	if mah := float64(got) / 1000; mah < 5600 || mah > 5900 {
+		t.Fatalf("真机回放期望 5600~5900 mAh（离线基准 5747），got %.0f", mah)
 	}
 }
 
@@ -154,6 +155,91 @@ func TestMidImpliedPrefersCounterDeltas(t *testing.T) {
 	}
 	if d := gotUA - 7_500_000; d < -90_000 || d > 90_000 {
 		t.Fatalf("无 cc 时应回退积分口径 ≈7500mAh，got %d", gotUA)
+	}
+}
+
+// 有电量计时，缺 cc 的旧区间必须跳过而不是回退积分：构造 3 段 cc（5000mAh）
+// + 3 段无 cc 旧行（积分口径 3000mAh）。修复前按 pass 混合会得到 ≈4000mAh，
+// 修复后只采信 cc 段（≈5000mAh）。
+func TestMidImpliedSkipsLegacyRowsWhenCounterAvailable(t *testing.T) {
+	var rows []SampleRow
+	ts := int64(1_700_000_000)
+	cc := int64(10_000_000)
+	for p := 0; p < 3; p++ {
+		for cap := 30; cap < 90; cap++ {
+			for k := 0; k < 3; k++ {
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				ts += 15
+				cc += 50_000 / 3
+			}
+		}
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		ts += midSegMaxDt + 60
+	}
+	rows = append(rows, mkMidPasses(ts, 3, 30, 90, 3000, 4_000_000, 27)...)
+
+	got, ok := MidImplied(rows, midWinLo, midWinHi)
+	if !ok {
+		t.Fatal("cc 段覆盖应满足门槛")
+	}
+	if d := got - 5_000_000; d < -60_000 || d > 60_000 {
+		t.Fatalf("旧行应被跳过，仅采信 cc 口径 ≈5000mAh，got %d", got)
+	}
+}
+
+// 有电量计但 cc 段覆盖不足：宁可返回 ok=false，也不回退旧行的偏低积分——
+// 旧行积分若参与，覆盖门槛会假性满足，中段值又被拉低。
+func TestMidImpliedCounterCoverageInsufficient(t *testing.T) {
+	var rows []SampleRow
+	ts := int64(1_700_000_000)
+	cc := int64(10_000_000)
+	for p := 0; p < 2; p++ { // 仅 2 次穿越，低于 midMinBinPass=3
+		for cap := 30; cap < 90; cap++ {
+			for k := 0; k < 3; k++ {
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				ts += 15
+				cc += 50_000 / 3
+			}
+		}
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		ts += midSegMaxDt + 60
+	}
+	rows = append(rows, mkMidPasses(ts, 3, 30, 90, 3000, 4_000_000, 27)...)
+	if _, ok := MidImplied(rows, midWinLo, midWinHi); ok {
+		t.Fatal("cc 段覆盖不足时应返回 ok=false，不得回退旧行积分")
+	}
+}
+
+// 同一段里某窗格只有一部分区间有 cc：该窗格必须 Q 与 pass 一起丢弃，
+// 不能拿部分 Q 去撞一整次穿越（否则隐含值会被拉偏）。
+func TestMidImpliedDropsPartiallyCoveredBin(t *testing.T) {
+	var rows []SampleRow
+	ts := int64(1_700_000_000)
+	cc := int64(10_000_000)
+	for p := 0; p < 3; p++ { // 3 段完整 cc 穿越（5000mAh）
+		for cap := 30; cap < 90; cap++ {
+			for k := 0; k < 3; k++ {
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				ts += 15
+				cc += 50_000 / 3
+			}
+		}
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		ts += midSegMaxDt + 60
+	}
+	// 一段 30→31 的部分覆盖：跨 30→31 的那拍缺 cc，30 格只剩部分 Q
+	rows = append(rows,
+		SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: 30, CC: 1_000},
+		SampleRow{TS: ts + 15, UA: 6_000_000, UV: 3_900_000, Cap: 30, CC: 151_000},
+		SampleRow{TS: ts + 30, UA: 6_000_000, UV: 3_900_000, Cap: 31},
+		SampleRow{TS: ts + 45, UA: 0, UV: 3_900_000, Cap: 31},
+	)
+	got, ok := MidImplied(rows, midWinLo, midWinHi)
+	if !ok {
+		t.Fatal("完整段覆盖应达标")
+	}
+	if d := got - 5_000_000; d < -30_000 || d > 30_000 {
+		t.Fatalf("部分覆盖的窗格应整格丢弃，隐含应约 5000mAh，got %d", got)
 	}
 }
 
