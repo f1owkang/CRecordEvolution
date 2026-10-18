@@ -159,7 +159,7 @@ func newApp() (*app, error) {
 	}
 	fs := SysFS{}
 	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
-	// 设计容量窗口而保持「学习期」，但内核读数（当前容量/循环次数）仍可正常展示。
+	// 设计容量窗口而保持「学习期」，但内核读数（满充容量/循环次数）仍可正常展示。
 	designUA := int64(0)
 	if node, err := fs.FindNode("charge_full_design"); err == nil {
 		if v, rerr := fs.ReadInt(node); rerr == nil {
@@ -626,13 +626,13 @@ func runOnce() error {
 		fmt.Printf("出厂设计容量：%d mAh\n", d.DesignMah)
 	}
 	if d.HasFull {
-		fmt.Printf("当前电池容量：%d mAh\n", d.FullMah)
+		fmt.Printf("满充容量：%d mAh\n", d.FullMah)
 	}
 	if d.HasCycles {
 		fmt.Printf("循环次数：%d\n", d.Cycles)
 	}
 	if d.HasPct {
-		fmt.Printf("剩余容量：%d%%\n", d.Pct)
+		fmt.Printf("内核健康：%d%%\n", d.Pct)
 	}
 	fmt.Printf("实测估算：%s\n", estText)
 	if snap.SigmaMah != nil {

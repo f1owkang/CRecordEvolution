@@ -15,7 +15,7 @@ func fullDesign() Design {
 func TestBuildDescriptionBase(t *testing.T) {
 	d := fullDesign()
 	snap := Snapshot{}
-	want := "健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "内核健康 96%｜满充 3850 mAh｜设计 4000 mAh｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
@@ -26,10 +26,10 @@ func TestBuildDescriptionBase(t *testing.T) {
 }
 
 func TestBuildDescriptionWithMeasured(t *testing.T) {
-	estUA := int64(3820000)
+	estUA := int64(3600000)
 	d := fullDesign()
 	snap := Snapshot{EstUA: &estUA}
-	want := "实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "内核健康 96%｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
@@ -42,13 +42,44 @@ func TestBuildDescriptionWithMeasured(t *testing.T) {
 func TestBuildDescriptionPartial(t *testing.T) {
 	// 仅全容量与循环次数（缺设计容量），按可用段组装
 	d := Design{FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true}
-	want := "当前 3850 mAh｜循环 210次"
+	want := "满充 3850 mAh｜循环 210次"
 	got, err := BuildDescription(d, Snapshot{})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionEstimateWithoutDesign(t *testing.T) {
+	// 有实测但缺设计容量：无法折算百分比，只报实测容量；内核健康仍保留
+	estUA := int64(3_600_000)
+	d := Design{FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
+	got, err := BuildDescription(d, Snapshot{EstUA: &estUA})
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	want := "内核健康 96%｜实测 3600 mAh｜循环 210次"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildDescriptionMLZeroSigmaWithEstimate(t *testing.T) {
+	old := channel
+	channel = "ml"
+	defer func() { channel = old }()
+	estUA := int64(3_600_000)
+	sigma := 0.0
+	d := fullDesign()
+	got, err := BuildDescription(d, Snapshot{EstUA: &estUA, SigmaMah: &sigma})
+	if err != nil {
+		t.Fatalf("BuildDescription: %v", err)
+	}
+	want := "[ML实验版]内核健康 96%｜实测健康 90%（3600 mAh）｜循环 210次"
+	if got != want {
+		t.Fatalf("零区间不应追加 ±: got %q, want %q", got, want)
 	}
 }
 
@@ -67,7 +98,7 @@ func TestBuildDescriptionStableNoPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
-	want := "健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "内核健康 96%｜满充 3850 mAh｜设计 4000 mAh｜循环 210次"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -77,10 +108,10 @@ func TestBuildDescriptionMLPrefix(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA := int64(3820000)
+	estUA := int64(3600000)
 	d := fullDesign()
 	snap := Snapshot{EstUA: &estUA}
-	want := "[ML实验版]实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "[ML实验版]内核健康 96%｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
@@ -94,11 +125,11 @@ func TestBuildDescriptionMLSigmaSuffix(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA := int64(3820000)
+	estUA := int64(3600000)
 	sigma := 15.6
 	d := fullDesign()
 	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
-	want := "[ML实验版]实测 3820±16 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "[ML实验版]内核健康 96%｜实测健康 90%（3600±16 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
@@ -112,11 +143,11 @@ func TestBuildDescriptionStableIgnoresSigma(t *testing.T) {
 	old := channel
 	channel = "stable"
 	defer func() { channel = old }()
-	estUA := int64(3820000)
+	estUA := int64(3600000)
 	sigma := 15.6
 	d := fullDesign()
 	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
-	want := "实测 3820 mAh｜健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "内核健康 96%｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
@@ -133,7 +164,7 @@ func TestBuildDescriptionMLZeroSigmaOmitted(t *testing.T) {
 	sigma := 0.0
 	d := fullDesign()
 	snap := Snapshot{SigmaMah: &sigma}
-	want := "[ML实验版]健康 96%｜当前 3850 mAh｜设计 4000 mAh｜循环 210次"
+	want := "[ML实验版]内核健康 96%｜满充 3850 mAh｜设计 4000 mAh｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)

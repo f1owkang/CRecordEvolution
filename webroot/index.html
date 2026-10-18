@@ -150,6 +150,13 @@ button.theme:disabled { opacity: .55; cursor: default; }
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 6px 14px 8px;
+  /* 长页面最佳实践：视口外的面板跳过布局与绘制，滚动到附近再渲染；
+     不支持 content-visibility 的旧 WebView 会自动忽略这两行 */
+  content-visibility: auto;
+  /* 旧 Chromium 不认 auto 关键字时，整条声明会失效并导致离屏高度为 0；
+     先给一条普通值兜底 */
+  contain-intrinsic-size: 260px;
+  contain-intrinsic-size: auto 260px;
 }
 .ptitle { font-size: 13px; color: var(--mute); padding: 9px 0 3px; }
 .row {
@@ -207,7 +214,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     </div>
   </header>
 
-  <section id="err" class="err"></section>
+  <section id="err" class="err" role="alert"></section>
 
   <main id="app" style="display:flex;flex-direction:column;gap:12px;">
     <section class="hero">
@@ -217,7 +224,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
     <section class="grid">
       <div class="cell"><div class="label">设计容量</div><div id="design" class="val">—</div></div>
-      <div class="cell"><div class="label">当前容量</div><div id="full" class="val">—</div></div>
+      <div class="cell"><div class="label">满充容量</div><div id="full" class="val">—</div></div>
       <div class="cell"><div class="label">循环次数</div><div id="cycles" class="val">—</div></div>
       <div class="cell"><div class="label">实测估算</div><div id="est" class="val">—</div></div>
       <div class="cell"><div class="label">循环当量</div><div id="cyceq" class="val">—</div></div>
@@ -438,12 +445,12 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       setText('pct', String(Math.round(est / design * 100)));
       setText('badge', '实测');
       $('badge').className = 'badge meas';
-      setText('sub', est + ' mAh / ' + design + ' mAh');
+      setText('sub', est + ' / ' + design + ' mAh');
     } else {
       setText('pct', fmtInt(doc.pct));
       setText('badge', '内核');
       $('badge').className = 'badge kernel';
-      setText('sub', doc.full_mah != null ? '当前容量 ' + doc.full_mah + ' mAh' : '\u00a0');
+      setText('sub', doc.full_mah != null ? '满充容量 ' + doc.full_mah + ' mAh' : '\u00a0');
     }
     setText('design', fmtInt(design));
     setText('full', fmtInt(doc.full_mah));
@@ -503,6 +510,55 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return pts.map(function (p, i) { return (i ? 'L' : 'M') + (p.x * w).toFixed(1) + ',' + ((1 - p.y) * h).toFixed(1); }).join('');
   }
 
+  // 单调三次插值（Fritsch–Carlson）：曲线平滑但不过冲，适合容量/耗时这类
+  // 不该在相邻数据点之间冒出虚假峰谷的序列；两点时退化为直线，重复 x 或
+  // 非正间隔的段落回退为直线段。输入 pts 已归一化到 [0,1]。
+  function smoothPath(pts, w, h) {
+    var n = pts.length;
+    if (n < 2) return '';
+    var xs = [], ys = [], i;
+    for (i = 0; i < n; i++) {
+      xs.push(pts[i].x * w);
+      ys.push((1 - pts[i].y) * h);
+    }
+    var d = [], m = [];
+    for (i = 0; i < n - 1; i++) {
+      var dx = xs[i + 1] - xs[i];
+      d.push(dx > 0 ? (ys[i + 1] - ys[i]) / dx : 0);
+    }
+    m[0] = d[0];
+    for (i = 1; i < n - 1; i++) {
+      // 极值点切线归零，避免曲线在点间冲出数据范围
+      m[i] = (d[i - 1] * d[i] <= 0) ? 0 : (d[i - 1] + d[i]) / 2;
+    }
+    m[n - 1] = d[n - 2];
+    // Fritsch–Carlson 限幅：|m| ≤ 3·|delta|
+    for (i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      var a = m[i] / d[i], b = m[i + 1] / d[i];
+      var s = a * a + b * b;
+      if (s > 9) {
+        var t = 3 / Math.sqrt(s);
+        m[i] = t * a * d[i];
+        m[i + 1] = t * b * d[i];
+      }
+    }
+    var out = 'M' + xs[0].toFixed(1) + ',' + ys[0].toFixed(1);
+    for (i = 0; i < n - 1; i++) {
+      var dx2 = xs[i + 1] - xs[i];
+      if (!(dx2 > 0)) {
+        out += 'L' + xs[i + 1].toFixed(1) + ',' + ys[i + 1].toFixed(1);
+        continue;
+      }
+      var c1x = xs[i] + dx2 / 3, c1y = ys[i] + m[i] * dx2 / 3;
+      var c2x = xs[i + 1] - dx2 / 3, c2y = ys[i + 1] - m[i + 1] * dx2 / 3;
+      out += 'C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) + ' ' +
+        c2x.toFixed(1) + ',' + c2y.toFixed(1) + ' ' +
+        xs[i + 1].toFixed(1) + ',' + ys[i + 1].toFixed(1);
+    }
+    return out;
+  }
+
   function svgOpen(w, h) {
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" role="img">';
   }
@@ -526,6 +582,14 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return out;
   }
 
+  // 图表内部按 ts 升序绘制；点按详情必须用同一份升序数组，否则 data-i 会
+  // 与后端倒序数组错位（点最左的数据点却显示最右那条记录）。
+  function ascByTs(rows) {
+    return (Array.isArray(rows) ? rows : []).slice().sort(function (a, b) {
+      return Number(a && a.ts) - Number(b && b.ts);
+    });
+  }
+
   function minMax(vals) {
     var mn = Infinity, mx = -Infinity, i;
     for (i = 0; i < vals.length; i++) {
@@ -541,7 +605,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
   }
 
   // data: [{ts,v}]，自动 min/max 归一化；0 点返回 ''（由调用方决定占位/隐藏），仅 1 点渲染单点
-  // trendMpw: mAh/周 斜率；有效时按首尾 ts 两端点叠一条拟合虚线（下置于主折线之下，颜色区分）
+  // trendMpw: mAh/周 斜率；有效时按首尾 ts 两端点叠一条拟合虚线（下置于主曲线之下，颜色区分）
   function svgLine(data, w, h, color, trendMpw) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
     if (!raw.length) return '';
@@ -575,7 +639,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
       overlay = '<path d="' + ptsToPath(trendPts.map(toXY), w, h) + '" fill="none" style="stroke:var(--blue)" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>';
     }
     return svgOpen(w, h) + chartBase(w, h) + overlay +
-      '<path d="' + ptsToPath(pts, w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="' + smoothPath(pts, w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
       dots + '</svg>';
   }
 
@@ -618,7 +682,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     return svgOpen(w, h) + chartBase(w, h) + rects + '</svg>';
   }
 
-  // ts→key 通用折线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线；
+  // ts→key 通用曲线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线；
   // 仅 1 点渲染单点（含参考线）
   function svgTsLine(data, w, h, color, key, refY) {
     var raw = pickPairs(Array.isArray(data) ? data : [], 'ts', key);
@@ -646,7 +710,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         '<circle cx="' + cx + '" cy="' + cy + '" r="2.5" style="fill:' + color + '" pointer-events="none"/>';
     }
     if (raw.length >= 2) {
-      body = '<path d="' + ptsToPath(raw.map(toXY), w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' + marks;
+      body = '<path d="' + smoothPath(raw.map(toXY), w, h) + '" fill="none" style="stroke:' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' + marks;
     } else {
       body = marks;
     }
@@ -839,7 +903,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     }
 
     // 恒流时长：倍率门控需设计容量；缺失 ⇒ 结构性隐藏
-    var ccctRows = Array.isArray(doc.ccct) ? doc.ccct : [];
+    var ccctRows = ascByTs(doc.ccct);
     if (!designOK && !ccctRows.length) {
       setPanel('panel_ccct', 'hide');
       clearDetail('chart_ccct');
@@ -856,7 +920,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
 
     // 容量主峰：与 CCCT 同源门控（复用其过倍率门控的恒流段样本）；
     // peak_h_rel 缺省（非有限值被后端省略）的行整条跳过——Number(null)=0 会画出 0 点假数据
-    var icaRows = (Array.isArray(doc.ica_peaks) ? doc.ica_peaks : []).filter(function (r) { return r && r.peak_h_rel != null; });
+    var icaRows = ascByTs((Array.isArray(doc.ica_peaks) ? doc.ica_peaks : []).filter(function (r) { return r && r.peak_h_rel != null; }));
     if (!designOK && !icaRows.length) {
       setPanel('panel_ica', 'hide');
       clearDetail('chart_ica');
@@ -870,7 +934,7 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     }
 
     // 放电记录：读电量计库仑计差分，插充电器即结算；仅观测，不参与健康度
-    var disRows = Array.isArray(doc.discharge_recent) ? doc.discharge_recent : [];
+    var disRows = ascByTs(doc.discharge_recent);
     if (!disRows.length) {
       setPanel('panel_dis', 'hide');
       clearDetail('chart_dis');
@@ -901,34 +965,59 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     });
   }
 
+  // 通道名面向用户：stable/ml 是内部代号，直接展示不友好
+  var CHANNEL_NAME = { stable: '稳定版', ml: 'ML 实验版' };
+
   function setMeta(doc) {
-    setText('meta', '通道 ' + (doc.channel || '—') + ' · 更新于 ' + (doc.updated || '—'));
+    var ch = CHANNEL_NAME[doc.channel] || doc.channel || '—';
+    setText('meta', ch + ' · 更新于 ' + (doc.updated || '—'));
   }
+
+  // fetchData 返回 Promise<boolean>：true=本轮数据可用（含「未变化」），
+  // false=执行/解析/渲染失败，供轮询调度做指数退避。
+  // 同一个请求在飞时复用同一个 Promise，避免定时器、可见性切换和手动刷新叠加
+  // 出多次 root 进程；force=true 会等在飞请求结束后再取一次。
+  var fetchPromise = null;
 
   function fetchData(force) {
     // 页面不可见时不取数：每次都要 fork 一个 root 进程（batteryd json），
     // 后台锁屏期间纯属白耗电；转回前台由 visibilitychange 立即补一次
-    if (document.hidden) return Promise.resolve();
+    if (document.hidden) return Promise.resolve(true);
+    if (fetchPromise) {
+      if (!force) return fetchPromise;
+      return fetchPromise.then(function () { return fetchData(true); });
+    }
+    fetchPromise = doFetch(force).then(function (ok) {
+      fetchPromise = null;
+      return ok;
+    }, function () {
+      fetchPromise = null;
+      return false;
+    });
+    return fetchPromise;
+  }
+
+  function doFetch(force) {
     return run(CMD_JSON).then(function (r) {
       if (r.errno !== 0) {
         showError('执行失败：' + (r.stderr || ('errno ' + r.errno)));
-        return;
+        return false;
       }
       var stdout = (r.stdout || '').trim();
       if (!stdout) {
         showError('无输出：batteryd 未返回数据');
-        return;
+        return false;
       }
       var doc;
       try {
         doc = JSON.parse(stdout);
       } catch (e) {
         showError('数据解析失败：输出不是有效 JSON');
-        return;
+        return false;
       }
       if (!doc || typeof doc !== 'object') {
         showError('数据解析失败：意外的数据结构');
-        return;
+        return false;
       }
       hideError();
       try {
@@ -936,15 +1025,37 @@ button#refresh:disabled { opacity: .55; cursor: default; }
         if (!force && fp === lastFP) {
           // 数据未变：只刷新「更新于」，不重建面板（保住用户点开的详情）
           setMeta(doc);
-          return;
+          return true;
         }
         lastFP = fp;
         render(doc);
         renderCharts(doc);
+        return true;
       } catch (e) {
         showError('渲染失败：' + e.message);
+        return false;
       }
     });
+  }
+
+  // 轮询：链式 setTimeout（上一轮结束才排下一轮，避免 setInterval 叠加），
+  // 失败后按 120→240→300 秒退避（正常间隔 60 秒），成功立即复位
+  var pollTimer = null;
+  var pollDelay = 60000;
+  var POLL_BASE = 60000, POLL_MAX = 300000;
+
+  function schedulePoll(delay) {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    pollTimer = setTimeout(function () {
+      pollTimer = null;
+      fetchData().then(function (ok) {
+        pollDelay = ok ? POLL_BASE : Math.min(pollDelay * 2, POLL_MAX);
+        schedulePoll(pollDelay);
+      }, function () {
+        pollDelay = Math.min(pollDelay * 2, POLL_MAX);
+        schedulePoll(pollDelay);
+      });
+    }, delay);
   }
 
   function refreshNow() {
@@ -963,7 +1074,14 @@ button#refresh:disabled { opacity: .55; cursor: default; }
           if (top) top.disabled = false;
         };
         // 手动刷新强制重绘：数据碰巧没变时也要给用户一次可见反馈
-        fetchData(true).then(done, done);
+        fetchData(true).then(function (ok) {
+          if (ok) {
+            // 刷新成功即结束失败退避，并重排下一次轮询，避免还要等满一个退避周期
+            pollDelay = POLL_BASE;
+            schedulePoll(POLL_BASE);
+          }
+          done();
+        }, done);
       }, 1000);
     });
   }
@@ -978,11 +1096,10 @@ button#refresh:disabled { opacity: .55; cursor: default; }
     }
     $('refresh').addEventListener('click', refreshNow);
     $('refreshTop').addEventListener('click', refreshNow);
-    fetchData();
-    setInterval(function () { fetchData(); }, 60000);
-    // 后台期间轮询被跳过，转回前台立即补一次，用户不必等下一分钟
+    schedulePoll(0);
+    // 后台期间轮询被跳过，转回前台立即补一次并重置轮询节奏
     document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) fetchData();
+      if (!document.hidden) schedulePoll(0);
     });
   }
 
