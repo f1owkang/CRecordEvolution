@@ -22,8 +22,8 @@
 
 | 资产 | 通道 | 说明 |
 | :-- | :--: | :-- |
-| `ChargingRecordEvolution-v*.zip` | 稳定 | 统计算法，支持应用内更新 |
-| `ChargingRecordEvolution_ML-v*.zip` | 实验 | 在线学习算法，只能手动刷入 |
+| `CRecordEvolution-*.zip` | 稳定 | 统计算法，支持应用内更新 |
+| `CRecordEvolution_ML-*.zip` | 实验 | 在线学习算法，只能手动刷入 |
 
 刷入就是常规流程：管理器选 zip，音量+ 确认（音量- 取消），重启。重启后模块描述就是电池健康数据，之后每次充电结算完自动更新。
 

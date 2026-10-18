@@ -37,7 +37,13 @@ jobs:
 
       - name: Pack stable zip
         run: |
-          zip -r "ChargingRecordEvolution-${GITHUB_REF_NAME}.zip" module.prop customize.sh service.sh action.sh bin webroot META-INF
+          VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
+          VERSION_CODE="$(grep '^versionCode=' module.prop | cut -d= -f2)"
+          [ -n "$VERSION_CODE" ] || { echo "::error::module.prop 缺少 versionCode"; exit 1; }
+          # 资产名沿用 KernelSU module-release action 的规范：{id}-{versionCode}-{version}.zip
+          echo "ASSET_NAME=CRecordEvolution-${VERSION_CODE}-${VERSION}.zip" >> "$GITHUB_ENV"
+          echo "ML_ASSET_NAME=CRecordEvolution_ML-${VERSION_CODE}-${VERSION}.zip" >> "$GITHUB_ENV"
+          zip -r "CRecordEvolution-${VERSION_CODE}-${VERSION}.zip" module.prop customize.sh service.sh action.sh bin webroot META-INF
 
       - name: Build batteryd (ML)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.channel=ml" -o bin/batteryd.ml ./cmd/batteryd
@@ -51,17 +57,27 @@ jobs:
           sed -i 's/^name=.*/name=ChargingRecord Evolution ML/' mlstage/module.prop
           sed -i 's/^description=/description=[ML实验版]/' mlstage/module.prop
           sed -i '/^updateJson=/d' mlstage/module.prop
-          cd mlstage && zip -r "../ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip" . && cd ..
+          cd mlstage && zip -r "../${ML_ASSET_NAME}" . && cd ..
 
       - name: Generate changelog
         run: |
           PREV_TAG="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
           if [ -n "$PREV_TAG" ]; then
-            git log "$PREV_TAG..${GITHUB_REF_NAME}" --oneline > changelog.txt
+            git log "$PREV_TAG..${GITHUB_REF_NAME}" --pretty='- %s' > changelog.txt
           else
-            git log --oneline > changelog.txt
+            git log --pretty='- %s' > changelog.txt
           fi
-          printf '%s\n' "ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新" >> changelog.txt
+          # 这份文件同时作为 release notes（KernelSU 模块页/更新弹窗的更新日志）
+          # 与 update.json 的 changelog 资产，保持 Markdown 可读
+          printf '\n`%s` 为实验通道（在线学习算法），手动刷入，不提供应用内更新。\n' "${ML_ASSET_NAME}" >> changelog.txt
+
+      # 官方校验器：发布前检查 ZIP 结构、module.prop、versionCode 是否大于上一版、
+      # assetPattern 是否只命中一个资产；失败则不会创建 release，不浪费不可变版本号
+      - name: KernelSU Modules precheck
+        uses: KernelSU-Modules/tools/actions/module-release@72a151d23b3e655ac2e331dd0a1eb30a2b0e37e9
+        with:
+          zip: ${{ env.ASSET_NAME }}
+          dry-run: true
 
       # 仓库开启 release immutability 后，资源只能在 release 仍为 draft 时上传：
       # 先建 draft、传完资源，再由下一步发布（发布瞬间才锁定）。
@@ -69,13 +85,15 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           name: ChargingRecord Evolution ${{ github.ref_name }}
+          # release notes 同时是 KernelSU 模块页与更新弹窗里的更新日志
+          body_path: changelog.txt
           draft: true
           # v3 的合法输入是 overwrite_files（旧版写成 overwrite，会报
           # "Unexpected input(s) 'overwrite'"）
           overwrite_files: true
           files: |
-            ChargingRecordEvolution-${{ github.ref_name }}.zip
-            ChargingRecordEvolution_ML-${{ github.ref_name }}.zip
+            ${{ env.ASSET_NAME }}
+            ${{ env.ML_ASSET_NAME }}
             changelog.txt
 
       - name: Publish release
@@ -96,7 +114,7 @@ jobs:
           VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
           VERSION_CODE="$(grep '^versionCode=' module.prop | cut -d= -f2)"
           [ -n "$VERSION_CODE" ] || { echo "::error::module.prop 缺少 versionCode"; exit 1; }
-          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/ChargingRecordEvolution-%s.zip",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" "${GITHUB_REF_NAME}" "${GITHUB_REF_NAME}" "${GITHUB_REF_NAME}" > update.json
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/%s",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" "${GITHUB_REF_NAME}" "$ASSET_NAME" "${GITHUB_REF_NAME}" > update.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add update.json
