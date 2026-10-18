@@ -1,0 +1,21 @@
+# KernelSU Modules 展示元数据（仅展示用；version/versionCode 以 release ZIP 里的 module.prop 为准）
+schemaVersion: 1
+id: CRecordEvolution
+name: ChargingRecord Evolution
+summary: 在 root 管理器的模块描述里实时显示电池健康度，刷入即用、零配置。
+description: README.md
+license: GPL-2.0-only
+homepage: https://github.com/f1owkang/CRecordEvolution
+support: https://github.com/f1owkang/CRecordEvolution/issues
+tags: [battery, power, root, magisk, kernelsu]
+
+authors:
+  - name: f1owkang
+    url: https://github.com/f1owkang
+  - name: hcnk3HrzQe
+    url: https://github.com/hcnk3HrzQe
+
+release:
+  # 同一 release 同时挂 stable 与 ML 两个 zip；用 glob 只圈 stable，
+  # 否则 KernelSU Modules 报 asset-multiple（ML 实验版仅手动刷入）
+  assetPattern: "ChargingRecordEvolution-*.zip"

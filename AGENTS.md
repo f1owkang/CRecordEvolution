@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1owkang、不会梦游的鱼、阿巴酱`）：Go 二进制 `batteryd` 读取 sysfs 并结合充电会话库仑积分估算电池健康度，结果显示在管理器的模块描述里。业务逻辑全部在 Go（`cmd/batteryd/`）；仓库里的 `service.sh` / `action.sh` / `customize.sh` 只是 POSIX sh 引导/交互壳，在 Android 设备上由 root 管理器执行，本机无法运行验证。
+Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1owkang、hcnk3HrzQe`）：Go 二进制 `batteryd` 读取 sysfs 并结合充电会话库仑积分估算电池健康度，结果显示在管理器的模块描述里。业务逻辑全部在 Go（`cmd/batteryd/`）；仓库里的 `service.sh` / `action.sh` / `customize.sh` 只是 POSIX sh 引导/交互壳，在 Android 设备上由 root 管理器执行，本机无法运行验证。
 
 ## 构建
 
@@ -23,8 +23,9 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 - `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。模块元信息（name/version/author）直接从 `$MODPATH/module.prop` 读取（不依赖安装器注入的 `$MODNAME/$MODVERSION` 等变量，各管理器环境差异大）；升级时把旧模块 `data/` 复制进新 `$MODPATH/data`，因为 Magisk/KSU 的 staged update 重启会整体删除旧模块目录、否则 `data/battery.db`（学习记录）会丢。
 - `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），取数走管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名字符串)` 并带 15s 超时与级联回退，调 `/data/adb/modules/CRecordEvolution/bin/batteryd json`。权限由安装器接管，**不要给它加 chmod/set_perm**。
 - `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
+- `module.yaml` — KernelSU Modules 的展示元数据：`id` 须与 `module.prop` 一致，`description` 指向仓库内 Markdown（`README.md`），`release.assetPattern: "ChargingRecordEvolution-*.zip"` 只圈 stable 包（同 release 里的 ML 包不参与检查，否则报 `asset-multiple`）。改动只需推 main，不需要发版。
 - 运行期数据：`$MODDIR/data/battery.db`（SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge，90 天自动清理）。WAL 模式（并发读写低锁竞争），`wal_autocheckpoint=256` 页 + 每日 `wal_checkpoint(TRUNCATE)`，保证主库文件接近自包含（用户只复制 `.db` 报障时不缺最近数据）。旧库升级时 `OpenStore` 会做幂等的一次性数据修复（`repairSampleUnits`，按 25A 物理上界把量纲误判的样本 ÷1000 回原值，kv 标记 `samples_unit_repair` 防重复），并给 `samples` 补 `cc` 列（电量计读数，旧行默认 0）。
-- `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 Release → 回写 `update.json`。
+- `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → 创建 **draft** Release 并上传资源 → 发布（immutable）→ 回写 `update.json`。
 - `docs/` — 论文文档库：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）。**设计笔记、superpowers 过程文档（`docs/superpowers/` 规格与计划）、「核对报告」类中间调研文档一律只存本地工作区，禁止提交进仓库。**
 - `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。
 
@@ -32,7 +33,7 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 
 - shell 脚本是 POSIX sh（`#!/system/bin/sh`）。不要按 pwsh 或 GNU bash 习惯“修正”语法，也不要尝试本地执行验证，只能靠通读代码推演设备端行为；Go 侧改动必须本地 `go test ./...` 全绿。
 - 所有面向用户的文案（描述、once 输出、WebUI）为简体中文，新增输出保持中文风格一致；数值与复合单位间有空格（`%d mAh` 为定稿格式）；百分号与量词 `次` 紧邻数字不空格（`健康 92%`、`循环 210次` 为定稿格式）。
-- 双变体发布：同一源码打两个包——stable `ChargingRecordEvolution.zip` 与实验 `ChargingRecordEvolution_ML.zip`。CI 打 ML 包时改 `name=ChargingRecord Evolution ML`、description 加 `[ML实验版]` 前缀并**删除 updateJson 行**，故 ML 仅手动刷入、无应用内更新；`updateJson` 永远只指向 stable 资产。
+- 双变体发布：同一源码打两个包——stable `ChargingRecordEvolution-vX.Y.Z.zip` 与实验 `ChargingRecordEvolution_ML-vX.Y.Z.zip`。CI 打 ML 包时改 `name=ChargingRecord Evolution ML`、description 加 `[ML实验版]` 前缀并**删除 updateJson 行**，故 ML 仅手动刷入、无应用内更新；`updateJson` 永远只指向 stable 资产，`module.yaml` 的 `assetPattern` 也只匹配 stable。
 - 两变体 id 相同互斥安装，同一次发版 version/versionCode 相同。
 - 历史 id 曾为 `Charging_Record`：从旧 id 升级必须先卸载旧模块再刷入（README 安装节已注明），模块目录与数据目录随之迁移。
 - 打包发布由 `.github/workflows/release.yml` 完成；不要把生成的 zip 提交进仓库。
@@ -45,8 +46,9 @@ Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1
 
 ## 发版流程
 
+0. 仓库 Settings → General → Releases 必须已开启 **Enable release immutability**（只对新发布的 release 生效）。未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废、无法补救。
 1. 改 `module.prop` 的 `version` 与 `versionCode`（同步递增）
 2. 提交到 main
-3. `git tag vX.Y.Z && git push origin main --tags` —— CI 自动构建打包、创建 Release（固定资产名 `ChargingRecordEvolution.zip` / `ChargingRecordEvolution_ML.zip` / `changelog.txt`）并回写 `update.json`
+3. `git tag vX.Y.Z && git push origin main --tags` —— CI 自动构建打包、**先建 draft、传完资源再发布**（资产名 `ChargingRecordEvolution-vX.Y.Z.zip` / `ChargingRecordEvolution_ML-vX.Y.Z.zip` / `changelog.txt`）并回写 `update.json`；`module.yaml` 的 `release.assetPattern` 只匹配 stable 包
 4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败
 5. `versionCode` 必须严格递增，**不得复用历史值**（曾踩坑：1.3.0(15)→1.2.2(15) 撞号导致部分管理器缓存旧版本收不到更新）

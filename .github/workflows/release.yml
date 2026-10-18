@@ -63,10 +63,13 @@ jobs:
           fi
           printf '%s\n' "ChargingRecordEvolution_ML-${GITHUB_REF_NAME}.zip 为实验通道（在线学习算法），手动刷入，不提供应用内更新" >> changelog.txt
 
-      - name: Create GitHub Release
+      # 仓库开启 release immutability 后，资源只能在 release 仍为 draft 时上传：
+      # 先建 draft、传完资源，再由下一步发布（发布瞬间才锁定）。
+      - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           name: ChargingRecord Evolution ${{ github.ref_name }}
+          draft: true
           # v3 的合法输入是 overwrite_files（旧版写成 overwrite，会报
           # "Unexpected input(s) 'overwrite'"）
           overwrite_files: true
@@ -74,6 +77,19 @@ jobs:
             ChargingRecordEvolution-${{ github.ref_name }}.zip
             ChargingRecordEvolution_ML-${{ github.ref_name }}.zip
             changelog.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
+          # 未开启 immutability 时 KernelSU Modules 会拒收该 release（release-not-immutable），
+          # 这里只告警不失败：资源已发布，失败也撤不回来
+          IMMUTABLE="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .immutable)"
+          if [ "$IMMUTABLE" != "true" ]; then
+            echo "::warning::release ${GITHUB_REF_NAME} 不是 immutable，请到 Settings → General → Releases 开启 Enable release immutability 后发下一个版本"
+          fi
 
       - name: Update update.json on main
         run: |
