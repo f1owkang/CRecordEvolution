@@ -78,7 +78,7 @@ func localNow() time.Time {
 var channel = "stable"
 
 const (
-	usageText = "用法: batteryd <daemon|once|json>\n"
+	usageText = "用法: batteryd <daemon|once|json|history> [options]\n"
 
 	refreshRetryMax  = 10
 	refreshRetryWait = 30 * time.Second
@@ -115,6 +115,8 @@ func main() {
 		err = runOnce()
 	case "json":
 		err = runJson()
+	case "history":
+		err = runHistory(os.Args[2:])
 	default:
 		printUsage(os.Stderr)
 		os.Exit(2)
@@ -153,6 +155,9 @@ func newApp() (*app, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建数据目录失败：%w", err)
 	}
+	// 语言偏好文件（安装器/WebUI 写入 zh/en）；存在时优先于系统语言，
+	// 让安装时的选择也作用于模块描述与 once 输出。
+	setUILangPrefFile(filepath.Join(dataDir, "lang"))
 	st, err := OpenStore(filepath.Join(dataDir, "battery.db"))
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
@@ -613,50 +618,81 @@ func runOnce() error {
 		return err
 	}
 
-	estText := "学习期"
-	if snap.EstUA != nil {
-		estText = fmt.Sprintf("%d mAh（%d次有效会话）", *snap.EstUA/1000, snap.Samples)
+	// 放电记录摘要（初步观测通道）：取最近一次会话
+	var dis *DischargeRow
+	if disRows, derr := a.st.RecentDischarge(1); derr == nil && len(disRows) > 0 {
+		dis = &disRows[0]
 	}
-	resText := "采集中"
+	fmt.Print(onceText(d, snap, dis))
+	return nil
+}
+
+// onceText 生成 `batteryd once` 的面向用户输出（按界面语言本地化）。
+// 抽成不碰设备的纯函数便于单测；dis 为最近一次放电会话，可为 nil。
+// 内部日志/events/stderr 不经过这里，保持中文。
+func onceText(d Design, snap Snapshot, dis *DischargeRow) string {
+	var b strings.Builder
+	if d.HasDesign {
+		fmt.Fprintln(&b, uiKV("出厂设计容量", "Design capacity", fmt.Sprintf("%d mAh", d.DesignMah)))
+	}
+	if d.HasFull {
+		fmt.Fprintln(&b, uiKV("满充容量", "Full charge capacity", fmt.Sprintf("%d mAh", d.FullMah)))
+	}
+	if d.HasCycles {
+		fmt.Fprintln(&b, uiKV("循环次数", "Cycle count", fmt.Sprintf("%d", d.Cycles)))
+	}
+	if d.HasPct {
+		fmt.Fprintln(&b, uiKV("内核健康", "Kernel health", fmt.Sprintf("%d%%", d.Pct)))
+	}
+	estText := uiText("学习期", "Learning period")
+	if snap.EstUA != nil {
+		estText = fmt.Sprintf("%d mAh", *snap.EstUA/1000)
+		if uiLang() == langEn {
+			// 英文单复数：1 次有效会话时不能写 "1 valid sessions"
+			noun := "valid sessions"
+			if snap.Samples == 1 {
+				noun = "valid session"
+			}
+			estText += fmt.Sprintf(" (%d %s)", snap.Samples, noun)
+		} else {
+			estText += fmt.Sprintf("（%d次有效会话）", snap.Samples)
+		}
+	}
+	fmt.Fprintln(&b, uiKV("实测估算", "Measured estimate", estText))
+	if snap.SigmaMah != nil {
+		fmt.Fprintln(&b, uiKV("估计不确定度", "Estimate uncertainty", fmt.Sprintf("±%.0f mAh", *snap.SigmaMah)))
+	}
+	if math.IsNaN(snap.CycleEquiv) || math.IsInf(snap.CycleEquiv, 0) {
+		fmt.Fprintln(&b, uiKV("循环当量", "Cycle equivalent", "--"))
+	} else {
+		fmt.Fprintln(&b, uiKV("循环当量", "Cycle equivalent", fmt.Sprintf("%.2f", snap.CycleEquiv)))
+	}
+	resText := uiText("采集中", "Collecting")
 	if snap.RMoh != nil {
 		resText = fmt.Sprintf("%.1f mΩ", *snap.RMoh)
 	}
-
-	if d.HasDesign {
-		fmt.Printf("出厂设计容量：%d mAh\n", d.DesignMah)
-	}
-	if d.HasFull {
-		fmt.Printf("满充容量：%d mAh\n", d.FullMah)
-	}
-	if d.HasCycles {
-		fmt.Printf("循环次数：%d\n", d.Cycles)
-	}
-	if d.HasPct {
-		fmt.Printf("内核健康：%d%%\n", d.Pct)
-	}
-	fmt.Printf("实测估算：%s\n", estText)
-	if snap.SigmaMah != nil {
-		fmt.Printf("估计不确定度：±%.0f mAh\n", *snap.SigmaMah)
-	}
-	if math.IsNaN(snap.CycleEquiv) || math.IsInf(snap.CycleEquiv, 0) {
-		fmt.Printf("循环当量：--\n")
-	} else {
-		fmt.Printf("循环当量：%.2f\n", snap.CycleEquiv)
-	}
-	fmt.Printf("内阻：%s\n", resText)
-	// 放电记录摘要（初步观测通道）：最近一次会话与累计段数
-	if disRows, derr := a.st.RecentDischarge(1); derr == nil && len(disRows) > 0 {
-		r := disRows[0]
-		line := fmt.Sprintf("放电记录：%d→%d%% 放出 %d mAh", r.StartCap, r.EndCap, r.Uah/1000)
-		if r.Implied != nil {
-			line += fmt.Sprintf("（隐含 %d mAh）", *r.Implied/1000)
+	fmt.Fprintln(&b, uiKV("内阻", "Internal resistance", resText))
+	if dis != nil {
+		body := uiText(
+			fmt.Sprintf("%d→%d%% 放出 %d mAh", dis.StartCap, dis.EndCap, dis.Uah/1000),
+			fmt.Sprintf("%d→%d%% released %d mAh", dis.StartCap, dis.EndCap, dis.Uah/1000),
+		)
+		if dis.Implied != nil {
+			body += uiText(
+				fmt.Sprintf("（隐含 %d mAh）", *dis.Implied/1000),
+				fmt.Sprintf(" (implied %d mAh)", *dis.Implied/1000),
+			)
 		}
-		fmt.Printf("%s\n", line)
+		fmt.Fprintln(&b, uiKV("放电记录", "Discharge record", body))
 	}
 	if snap.TempC != nil {
-		fmt.Printf("电池温度：%.1f℃\n", *snap.TempC)
+		tempText := fmt.Sprintf("%.1f℃", *snap.TempC)
+		if uiLang() == langEn {
+			tempText = fmt.Sprintf("%.1f°C", *snap.TempC)
+		}
+		fmt.Fprintln(&b, uiKV("电池温度", "Battery temperature", tempText))
 	}
-	return nil
+	return b.String()
 }
 
 func runJson() error {
@@ -713,7 +749,8 @@ func runJson() error {
 	disch := make([]dischargeEntry, 0, len(disRows))
 	for _, dr := range disRows {
 		e := dischargeEntry{TS: dr.TS, Secs: dr.Secs, UahMah: dr.Uah / 1000,
-			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied}
+			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
+			InvalidReason: dr.InvalidReason}
 		if e.Implied != nil {
 			v := *e.Implied / 1000
 			e.Implied = &v

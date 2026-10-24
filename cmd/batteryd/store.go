@@ -453,6 +453,141 @@ func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
 	return out, rows.Err()
 }
 
+// SessionsSince 返回 end_ts >= since 的全部充电会话（新→旧）。
+func (s *Store) SessionsSince(since int64) ([]Session, error) {
+	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+		temp_avg,valid,invalid_reason FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Session{}
+	for rows.Next() {
+		var se Session
+		var v int64
+		var reason sql.NullString
+		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
+			&se.Ua, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
+			return nil, err
+		}
+		se.Valid = v == 1
+		se.InvalidReason = reason.String
+		out = append(out, se)
+	}
+	return out, rows.Err()
+}
+
+// DischargeSince 返回 end_ts >= since 的全部放电会话（新→旧）。
+func (s *Store) DischargeSince(since int64) ([]DischargeRow, error) {
+	rows, err := s.db.Query(`SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
+		FROM discharge WHERE end_ts >= ? ORDER BY end_ts DESC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DischargeRow{}
+	for rows.Next() {
+		var r DischargeRow
+		var implied sql.NullInt64
+		var reason sql.NullString
+		if err := rows.Scan(&r.TS, &r.Secs, &r.Uah, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
+			return nil, err
+		}
+		if implied.Valid {
+			v := implied.Int64
+			r.Implied = &v
+		}
+		if reason.Valid {
+			r.InvalidReason = reason.String
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RestPointsSince 返回 ts >= since 的最近 limit 条静置点（新→旧）。
+func (s *Store) RestPointsSince(since int64, limit int) ([]RestPoint, error) {
+	rows, err := s.db.Query(`SELECT ts, uv, cap FROM rest_points
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RestPoint{}
+	for rows.Next() {
+		var rp RestPoint
+		if err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap); err != nil {
+			return nil, err
+		}
+		out = append(out, rp)
+	}
+	return out, rows.Err()
+}
+
+// CCCTSince 返回 ts >= since 的最近 limit 条 CCCT 记录（新→旧）。
+func (s *Store) CCCTSince(since int64, limit int) ([]CcctRow, error) {
+	rows, err := s.db.Query(`SELECT ts, vw_lo, vw_hi, secs FROM ccct
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CcctRow{}
+	for rows.Next() {
+		var c CcctRow
+		if err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ICAPeaksSince 返回 session_end_ts >= since 的最近 limit 条 ICA 主峰（新→旧）。
+func (s *Store) ICAPeaksSince(since int64, limit int) ([]ICAPeakRow, error) {
+	rows, err := s.db.Query(`SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks
+		WHERE session_end_ts >= ? ORDER BY session_end_ts DESC LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ICAPeakRow{}
+	for rows.Next() {
+		var r ICAPeakRow
+		if err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EstimatesSince 返回 ts >= since 的最近 limit 条容量估算（新→旧）。
+func (s *Store) EstimatesSince(since int64, limit int) ([]TsVal, error) {
+	rows, err := s.db.Query(`SELECT ts, mah FROM estimates
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TsVal{}
+	for rows.Next() {
+		var tv TsVal
+		if err := rows.Scan(&tv.TS, &tv.V); err != nil {
+			return nil, err
+		}
+		out = append(out, tv)
+	}
+	return out, rows.Err()
+}
+
+// CountSamplesSince 统计 ts >= since 的采样行数。
+func (s *Store) CountSamplesSince(since int64) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM samples WHERE ts >= ?`, since).Scan(&n)
+	return n, err
+}
+
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name  string
