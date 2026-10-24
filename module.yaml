@@ -2,7 +2,7 @@
 schemaVersion: 1
 id: CRecordEvolution
 name: ChargingRecord Evolution
-summary: 在 root 管理器的模块描述里实时显示电池健康度，刷入即用、零配置。
+summary: "在 root 管理器的模块描述里实时显示电池健康度，内置 WebUI 估算曲线，刷入即用、零配置。 | Real-time battery health in your root manager's module description, with a built-in WebUI — flash and go, zero configuration."
 description: README.md
 license: GPL-2.0-only
 homepage: https://github.com/f1owkang/CRecordEvolution
