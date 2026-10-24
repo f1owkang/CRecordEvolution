@@ -1,0 +1,7 @@
+# Android 设备端脚本必须使用 LF 换行。
+# Windows 下 checkout 若走 core.autocrlf 会把它们变成 CRLF，直接打包会让
+# mksh 报 “: not found / unexpected word (expecting do)”，因此在这里固定。
+*.sh text eol=lf
+module.prop text eol=lf
+META-INF/** text eol=lf
+webroot/** text eol=lf
