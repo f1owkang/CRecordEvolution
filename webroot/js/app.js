@@ -1,0 +1,203 @@
+'use strict';
+
+var HOST = hasExec();
+
+  function App() {
+    var langState = useState(initialLang());
+    var lang = langState[0], setLang = langState[1];
+    var themeState = useState(storedThemeMode());
+    var themeMode = themeState[0], setThemeMode = themeState[1];
+    var barState = useState(storedBarMode());
+    var barMode = barState[0], setBarMode = barState[1];
+    var pageState = useState(0);
+    var page = pageState[0], setPage = pageState[1];
+    var docState = useState(null);
+    var doc = docState[0], setDoc = docState[1];
+    var errState = useState(null);
+    var err = errState[0], setErr = errState[1];
+    var busyState = useState(false);
+    var busy = busyState[0], setBusy = busyState[1];
+    var histReloadState = useState(0);
+    var histReload = histReloadState[0], setHistReload = histReloadState[1];
+
+    var scrollPos = useRef([0, 0, 0]);
+    var lastFP = useRef(null);
+    var fetchInFlight = useRef(null);
+    var pollCtl = useRef({ reset: null });
+
+    var tr = function (key, vars) { return translate(lang, key, vars); };
+
+    useEffect(function () {
+      document.documentElement.setAttribute('data-lang', lang);
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      document.title = page === 0 ? 'ChargingRecord Evolution'
+        : translate(lang, page === 1 ? 'page_history' : 'page_settings') + ' · ChargingRecord Evolution';
+    }, [lang, page]);
+
+    useEffect(function () {
+      applyThemeDocument(themeMode);
+      if (themeMode !== 'auto' || !window.matchMedia) return;
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      function onChange() { applyThemeDocument('auto'); }
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+      return function () {
+        if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+        else if (mq.removeListener) mq.removeListener(onChange);
+      };
+    }, [themeMode]);
+
+    useEffect(function () {
+      document.documentElement.setAttribute('data-bar', barMode);
+    }, [barMode]);
+
+    useEffect(function () {
+      try { window.scrollTo(0, scrollPos.current[page] || 0); } catch (e) {}
+    }, [page]);
+
+    var fetchDoc = useCallback(function (force) {
+      if (document.hidden) return Promise.resolve(true);
+      if (fetchInFlight.current) {
+        if (!force) return fetchInFlight.current;
+        return fetchInFlight.current.then(function () { return fetchDoc(true); });
+      }
+      var p = run(CMD_JSON).then(function (r) {
+        if (r.errno !== 0) {
+          setErr({ key: 'err_run', vars: { detail: r.stderr || ('errno ' + r.errno) } });
+          return false;
+        }
+        var stdout = String(r.stdout || '').trim();
+        if (!stdout) { setErr({ key: 'err_noout' }); return false; }
+        var data;
+        try { data = JSON.parse(stdout); } catch (e) { setErr({ key: 'err_json' }); return false; }
+        if (!data || typeof data !== 'object') { setErr({ key: 'err_struct' }); return false; }
+        var fp = contentFP(data);
+        if (!force && fp === lastFP.current) { setDoc(data); setErr(null); return true; }
+        lastFP.current = fp;
+        setDoc(data); setErr(null); return true;
+      });
+      fetchInFlight.current = p.then(function (ok) {
+        fetchInFlight.current = null;
+        return ok;
+      }, function (e) {
+        fetchInFlight.current = null;
+        setErr({ key: 'err_render', vars: { msg: String(e && e.message || e) } });
+        return false;
+      });
+      return fetchInFlight.current;
+    }, []);
+
+    useEffect(function () {
+      if (!HOST) return;
+      var timer = null, delay = 0;
+      function tick() {
+        timer = setTimeout(function () {
+          timer = null;
+          fetchDoc(false).then(function (ok) {
+            delay = ok ? POLL_BASE : Math.min((delay || POLL_BASE) * 2, POLL_MAX);
+            tick();
+          });
+        }, delay);
+      }
+      function reset() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        delay = 0;
+        tick();
+      }
+      pollCtl.current.reset = reset;
+      tick();
+      function onVisibility() { if (!document.hidden) reset(); }
+      document.addEventListener('visibilitychange', onVisibility);
+      return function () {
+        if (timer) clearTimeout(timer);
+        document.removeEventListener('visibilitychange', onVisibility);
+        pollCtl.current.reset = null;
+      };
+    }, [fetchDoc]);
+
+    useEffect(function () {
+      if (!HOST) return;
+      run('cat ' + LANG_FILE).then(function (r) {
+        if (!r || Number(r.errno) !== 0) return;
+        var v = String(r.stdout || '').trim().toLowerCase();
+        var parsed = v.indexOf('zh') === 0 ? 'zh' : (v.indexOf('en') === 0 ? 'en' : '');
+        if (!parsed) return;
+        setLang(function (prev) {
+          if (prev === parsed) return prev;
+          try { localStorage.setItem(LANG_KEY, parsed); } catch (e) {}
+          return parsed;
+        });
+      }, function () {});
+    }, []);
+
+    function goPage(i) {
+      if (i === page) {
+        try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, 0); }
+        return;
+      }
+      scrollPos.current[page] = window.scrollY || 0;
+      setPage(i);
+    }
+
+    function changeLang(next) {
+      if (next !== 'zh' && next !== 'en') return;
+      if (next === lang) return;
+      setLang(next);
+      try { localStorage.setItem(LANG_KEY, next); } catch (e) {}
+      syncModuleLang(next);
+    }
+
+    function changeTheme(next) {
+      if (next !== 'auto' && next !== 'light' && next !== 'dark') return;
+      setThemeMode(next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+    }
+
+    function changeBar(next) {
+      if (next !== 'floating' && next !== 'classic') return;
+      setBarMode(next);
+      try { localStorage.setItem(BAR_KEY, next); } catch (e) {}
+    }
+
+    function refreshNow() {
+      if (busy) return;
+      setBusy(true);
+      run(CMD_ONCE).then(function () {
+        setTimeout(function () {
+          fetchDoc(true).then(function () {
+            if (pollCtl.current.reset) pollCtl.current.reset();
+            setHistReload(function (n) { return n + 1; });
+            setBusy(false);
+          });
+        }, 800);
+      });
+    }
+
+    if (!HOST) {
+      return E(LangCtx.Provider, { value: { lang: lang, t: tr } },
+        E(TopBar, { page: 0, busy: false, gateMode: true, onRefresh: null }),
+        E('main', null, E('div', { class: 'pagewrap' }, E(Gate))));
+    }
+
+    return E(LangCtx.Provider, { value: { lang: lang, t: tr } },
+      E(TopBar, { page: page, busy: busy, gateMode: false, onRefresh: refreshNow }),
+      E('main', null,
+        E('div', { class: 'pagewrap' },
+          E(ErrorBanner, { err: err }),
+          E(Overview, { doc: doc, active: page === 0 }),
+          E(History, { active: page === 1, reloadKey: histReload }),
+          E(Settings, {
+            doc: doc, active: page === 2,
+            themeMode: themeMode, barMode: barMode, busy: busy,
+            onThemeChange: changeTheme, onLangChange: changeLang,
+            onBarChange: changeBar, onRefresh: refreshNow
+          }))),
+      E(Dock, { page: page, onNavigate: goPage }));
+  }
+
+  if (CRE_VENDOR_OK) {
+    requestEdgeToEdge();
+    setTimeout(requestEdgeToEdge, 350);
+    window.addEventListener('load', requestEdgeToEdge);
+    render(E(App), document.getElementById('root'));
+  }

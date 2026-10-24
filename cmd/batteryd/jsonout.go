@@ -88,6 +88,8 @@ type dischargeEntry struct {
 	StartCap int64  `json:"start_cap"`
 	EndCap   int64  `json:"end_cap"`
 	Implied  *int64 `json:"implied_mah,omitempty"`
+	// InvalidReason 放电行未通过门控的原因（缺失即省略）
+	InvalidReason string `json:"invalid_reason,omitempty"`
 }
 
 func finitePtr(f *float64) *float64 {

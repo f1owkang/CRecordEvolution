@@ -45,44 +45,67 @@ type Snapshot struct {
 //	实测健康 = 本模块估算容量 / 设计容量
 //
 // 有实测值时，满充/设计等中间量留给 WebUI，描述行保持一行可读。
+// 文案按界面语言输出：中文分支保持原字节不变，英文分支见 i18n.go；
+// 数值与单位之间保留空格，中文分隔符「｜」对应英文 " | "。
 func BuildDescription(d Design, snap Snapshot) (string, error) {
 	var parts []string
 	if d.HasPct {
-		parts = append(parts, fmt.Sprintf("内核健康 %d%%", d.Pct))
+		if d.HasFull && d.FullMah > 0 {
+			parts = append(parts, uiText(
+				fmt.Sprintf("内核健康 %d%%（%d mAh）", d.Pct, d.FullMah),
+				fmt.Sprintf("Kernel health %d%% (%d mAh)", d.Pct, d.FullMah),
+			))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s %d%%", uiText("内核健康", "Kernel health"), d.Pct))
+		}
 	}
 	if snap.EstUA != nil {
 		estMah := *snap.EstUA / 1000
 		if d.HasDesign && d.DesignMah > 0 {
 			pct := int64(math.Round(float64(estMah) / float64(d.DesignMah) * 100))
+			body := fmt.Sprintf("%d mAh", estMah)
 			if channel == "ml" && snap.SigmaMah != nil && *snap.SigmaMah > 0 {
-				parts = append(parts, fmt.Sprintf("实测健康 %d%%（%d±%d mAh）", pct, estMah, int64(math.Round(*snap.SigmaMah))))
-			} else {
-				parts = append(parts, fmt.Sprintf("实测健康 %d%%（%d mAh）", pct, estMah))
+				body = fmt.Sprintf("%d±%d mAh", estMah, int64(math.Round(*snap.SigmaMah)))
 			}
+			// 中文全角括号紧贴百分号；英文半角括号前留空格，避免 "90%(3600 mAh)"
+			parts = append(parts, uiText(
+				fmt.Sprintf("实测健康 %d%%（%s）", pct, body),
+				fmt.Sprintf("Measured health %d%% (%s)", pct, body),
+			))
 		} else if channel == "ml" && snap.SigmaMah != nil && *snap.SigmaMah > 0 {
 			// 缺设计容量时无法折算百分比，只报实测容量
-			parts = append(parts, fmt.Sprintf("实测 %d±%d mAh", estMah, int64(math.Round(*snap.SigmaMah))))
+			parts = append(parts, fmt.Sprintf("%s %d±%d mAh", uiText("实测", "Measured"), estMah, int64(math.Round(*snap.SigmaMah))))
 		} else {
-			parts = append(parts, fmt.Sprintf("实测 %d mAh", estMah))
+			parts = append(parts, fmt.Sprintf("%s %d mAh", uiText("实测", "Measured"), estMah))
 		}
 	} else {
-		// 没有实测值时保留内核口径的上下文
-		if d.HasFull {
-			parts = append(parts, fmt.Sprintf("满充 %d mAh", d.FullMah))
+		// 没有实测值时保留内核口径的上下文；内核健康已带满充 mAh 时不再重复“满充”。
+		if d.HasFull && !d.HasPct {
+			parts = append(parts, fmt.Sprintf("%s %d mAh", uiText("满充", "Full charge"), d.FullMah))
 		}
 		if d.HasDesign {
-			parts = append(parts, fmt.Sprintf("设计 %d mAh", d.DesignMah))
+			parts = append(parts, fmt.Sprintf("%s %d mAh", uiText("设计", "Design"), d.DesignMah))
 		}
 	}
 	if d.HasCycles {
-		parts = append(parts, fmt.Sprintf("循环 %d次", d.Cycles))
+		parts = append(parts, fmt.Sprintf("%s %d%s", uiText("循环", "Cycles"), d.Cycles, uiText("次", "")))
+	}
+	if snap.TempC != nil {
+		t := *snap.TempC
+		if !math.IsNaN(t) && !math.IsInf(t, 0) {
+			parts = append(parts, uiText(
+				fmt.Sprintf("温度 %.1f℃", t),
+				fmt.Sprintf("Temp %.1f°C", t),
+			))
+		}
 	}
 	if len(parts) == 0 {
 		return "", ErrNoData
 	}
-	desc := strings.Join(parts, "｜")
+	desc := strings.Join(parts, uiText("｜", " | "))
 	if channel == "ml" {
-		desc = "[ML实验版]" + desc
+		// 英文前缀后补一个空格更自然；中文保持原样紧贴描述
+		desc = uiText("[ML实验版]", "[ML experimental] ") + desc
 	}
 	return desc, nil
 }
