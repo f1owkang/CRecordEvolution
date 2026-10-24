@@ -1,54 +1,227 @@
 # AGENTS.md
 
-Magisk 模块「ChargingRecord Evolution」（id=`CRecordEvolution`，作者 `f1owkang、hcnk3HrzQe`）：Go 二进制 `batteryd` 读取 sysfs 并结合充电会话库仑积分估算电池健康度，结果显示在管理器的模块描述里。业务逻辑全部在 Go（`cmd/batteryd/`）；仓库里的 `service.sh` / `action.sh` / `customize.sh` 只是 POSIX sh 引导/交互壳，在 Android 设备上由 root 管理器执行，本机无法运行验证。
+本文件面向在本仓库工作的编码代理，说明项目目标、构建/测试方式、代码约定、领域不变量和发布流程。面向用户的介绍、安装步骤和功能说明在 [README.md](README.md) / [README_EN.md](README_EN.md)，不在这里重复。
 
-## 构建
+## 项目概览
 
-- 本机验证：`go test ./...`（Windows 可直接跑，modernc.org/sqlite 纯 Go 无 CGO）。
-- 设备端构建命令（CI 同款，android/arm64 静态二进制）：
-  `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd`
-- `bin/batteryd` 是 CI 打包进 zip 的产物，不要提交进仓库；本地构建残留（如 `batteryd.exe`）同样勿提交。
+ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），用 Go 二进制 `batteryd` 读取电池 sysfs、结合充电会话估算健康度与容量，并把结果写入管理器的模块描述；模块自带一个三页 WebUI（概览 / 历史 / 设置），数据保存在本机 SQLite。
 
-## 文件职责
+- 业务逻辑全部在 `cmd/batteryd/`。仓库里的 `service.sh`、`action.sh`、`customize.sh` 只是 POSIX sh 引导/交互壳，由 Android 上的 root 管理器执行。
+- 支持 KernelSU / APatch / MMRL 的 WebUI；Magisk 通过标准 META-INF 刷入桩安装。
+- 只发布 arm64 静态二进制，支持 Android 设备 root 管理器，不需要在设备外运行 daemon。
+- 所有数据留在设备本地，没有网络请求、上传或遥测。
 
-- `cmd/batteryd/` — 全部业务逻辑：sysfs 探测与单位判别、60s 采样管道与会话结算、stable/ml 双通道 Estimator、SQLite 存储与 90 天清理、description 组装与原子写回、`daemon | once | json` 子命令分发。算法通道由构建注入 `-X main.channel=ml` 区分。分模块要点：
-  - `pipeline.go` — Tick 状态机与累计。充电期 15s / 其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，待电流停歇去抖结算。**会话电量双口径**：电量计差分（`charge_counter`，结算估算首选，与放电侧/内核 `charge_full` 同源）与电流积分（`avgI`、吞吐、样本口径）；两者相差 3 倍以上判刻度/单位异常，回退积分并落 `counter_scale` 事件（防其它机型 counter 量纲不同）。**满电后电压回落门控**（`chargeSuppressed`）：满电后系统高负载时内核仍报 Charging 且电流为正，但端电压较充电峰值回落 >30mV×电芯数，实为充电器直供系统的假电流，不计入会话电量与循环吞吐（只作用于电流积分口径；库仑计不会为假电流计数，无需替它过滤）。
-  - `trend.go` — 容量趋势三态（insufficient/stable/significant）。显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃——单次会话估算噪声远大于真实周衰减，实测 R² 长期为负、等于趋势永不可达。
-  - `midwin.go` — 中段分窗容量校准：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 [30%,90%) 窗口的隐含容量，每日至多一次按 1/10 权重并入 EMA。区间电量优先取样本的电量计读数差分（`samples.cc`，µAh 直读）；**有电量计时（样本出现过 cc>0）缺 cc 的旧区间直接跳过**，只有整批无 cc 才回退电流积分（µA·s÷3600）——实测旧行混入会把中段从 5747 拉到 5381mAh。收益是不满充也能出容量估计，且避开顶部压缩段。隐含值须过 `capacityInWindow` 门控（不设门会把量纲误判的垃圾灌进实测值），最近一次采信值存 kv `mid_implied_ua` 供互检。
-  - `discharge.go` — 放电会话记录：读电量计 `charge_counter` 差分累计（芯片内积分，免疫负载混叠），转入充电即结算。放电样本按 5 分钟降采样落 `samples`（带符号电流，放电为负）。结算后按门控（掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`）把隐含容量按 1/10 权重并入 EMA——该通道不经 `current_now`，实测同区间配对离散 ±5%（充电积分通道 ±48%），是四路容量口径里最稳的一路；采信值存 kv `dis_implied_ua` 供互检。
-  - `quality.go` — 通道互检（数据质量哨兵）：ema/mid/dis/full 四路容量口径互相印证，互差 >40% 判不一致（实测正常设备 18%、量纲误判期 160%），结论翻转才落 `quality_warn` 事件避免刷屏；结果经 `Snapshot.Quality` 进 JSON `quality` 字段（可用路数 <2 整体省略）。`CapacityQuality` 为无 IO 纯函数，装配在 `Pipeline.checkQuality` 与 `jsonout`。
-  - `sysfs.go` — 节点探测与单位判别。`NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位（≥100000 只可能是 µAh ⇒ 同驱动的 `current_now` 已是 µA 直通；以 mAh 计 ⇒ ×1000；无锚点时退化为幅值启发式），并以 25A 物理上界兜底。**勿拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，实测污染采样/积分/校准三层；`NormTempC` 截断 [-40,80]°C 防脏数据；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`（VIVO/iQOO 兼容，find 走绝对路径优先）。
-- `service.sh` — 开机延迟引导：等 `sys.boot_completed=1`（2s 轮询）后 `exec "$MODDIR/bin/batteryd" daemon`；首刷重试（10 次 × 30s）在 Go 内。
-- `action.sh` — Action 按钮：执行 `bin/batteryd once` 并透传退出码，失败提示查 events 表。
-- `customize.sh` — 刷入交互脚本：打印设备信息后音量键确认（音量+ 安装 / 音量- abort），解压后 `set_perm "$MODPATH/bin/batteryd" 0 0 0755`。模块元信息（name/version/author）直接从 `$MODPATH/module.prop` 读取（不依赖安装器注入的 `$MODNAME/$MODVERSION` 等变量，各管理器环境差异大）；升级时把旧模块 `data/` 复制进新 `$MODPATH/data`，因为 Magisk/KSU 的 staged update 重启会整体删除旧模块目录、否则 `data/battery.db`（学习记录）会丢。
-- `webroot/index.html` — KSU/APatch/MMRL WebUI 单文件仪表盘（内联 CSS/JS 零依赖），取数走管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名字符串)` 并带 15s 超时与级联回退，调 `/data/adb/modules/CRecordEvolution/bin/batteryd json`。权限由安装器接管，**不要给它加 chmod/set_perm**。
-- `module.prop` — 模块元数据。默认 `description=Magisk模块，通过读取系统容量估算电池健康度`；该行由 batteryd 运行期改写为实时电池健康数据（临时文件 + rename 原子写回，非 sed），手动修改只能存活到下次刷新。
-- `module.yaml` — KernelSU Modules 的展示元数据：`id` 须与 `module.prop` 一致，`description` 指向仓库内 Markdown（`README.md`），`icon` 指向 `assets/icon.png`，`compatibility.architectures` 声明仅 arm64；`release.assetPattern: "CRecordEvolution-*.zip"` 只圈 stable 包（同 release 里的 ML 包不参与检查，否则报 `asset-multiple`）。改动只需推 main，不需要发版。
-- 运行期数据：`$MODDIR/data/battery.db`（SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge，90 天自动清理）。WAL 模式（并发读写低锁竞争），`wal_autocheckpoint=256` 页 + 每日 `wal_checkpoint(TRUNCATE)`，保证主库文件接近自包含（用户只复制 `.db` 报障时不缺最近数据）。旧库升级时 `OpenStore` 会做幂等的一次性数据修复（`repairSampleUnits`，按 25A 物理上界把量纲误判的样本 ÷1000 回原值，kv 标记 `samples_unit_repair` 防重复），并给 `samples` 补 `cc` 列（电量计读数，旧行默认 0）。
-- `.github/workflows/release.yml` — 打 tag 后：校验标签↔version 一致 → Go 构建 → 打包两个变体 → **KernelSU 官方校验器 dry-run 预检** → 创建 **draft** Release（release notes 取 `changelog.txt`）并上传资源 → 发布（immutable）→ 回写 `update.json`。
-- `docs/` — 论文文档库：入库文件仅限按命名规范格式化的论文 PDF（`NN-作者年份-主题-venue-分级.pdf`，全小写连字符，`NN` 按核对清单权威排序，末段为权威分级 A/B/C/D，如 `01-severson2019-nature-energy-a.pdf`）。**设计笔记、superpowers 过程文档（`docs/superpowers/` 规格与计划）、「核对报告」类中间调研文档一律只存本地工作区，禁止提交进仓库。**
-- `META-INF/com/google/android/` — 标准 Magisk 刷入桩（要求 v20.4+），无需改动。
+### 两种构建变体
 
-## 约定与坑
+| 变体 | 构建差异 | 产物 |
+| :-- | :-- | :-- |
+| stable | 默认构建（`channel=stable`） | `CRecordEvolution-{versionCode}-{version}.zip` |
+| ML 实验版 | 构建时注入 `-X main.channel=ml`；CI 同时改名、description 加 `[ML实验版]`、删除 `updateJson` | `CRecordEvolution_ML-{versionCode}-{version}.zip` |
 
-- shell 脚本是 POSIX sh（`#!/system/bin/sh`）。不要按 pwsh 或 GNU bash 习惯“修正”语法，也不要尝试本地执行验证，只能靠通读代码推演设备端行为；Go 侧改动必须本地 `go test ./...` 全绿。
-- 所有面向用户的文案（描述、once 输出、WebUI）为简体中文，新增输出保持中文风格一致；数值与复合单位间有空格（`%d mAh` 为定稿格式）；百分号与量词 `次` 紧邻数字不空格（`健康 92%`、`循环 210次` 为定稿格式）。
-- 双变体发布：同一源码打两个包——stable `CRecordEvolution-{versionCode}-{version}.zip` 与实验 `CRecordEvolution_ML-{versionCode}-{version}.zip`（资产名沿用 KernelSU module-release action 规范）。CI 打 ML 包时改 `name=ChargingRecord Evolution ML`、description 加 `[ML实验版]` 前缀并**删除 updateJson 行**，故 ML 仅手动刷入、无应用内更新；`updateJson` 永远只指向 stable 资产，`module.yaml` 的 `assetPattern` 也只匹配 stable。
-- 两变体 id 相同互斥安装，同一次发版 version/versionCode 相同。
-- 历史 id 曾为 `Charging_Record`：从旧 id 升级必须先卸载旧模块再刷入（README 安装节已注明），模块目录与数据目录随之迁移。
-- 打包发布由 `.github/workflows/release.yml` 完成；不要把生成的 zip 提交进仓库。
-- WebUI 取数 JSON 的顶层字段与 `cmd/batteryd/jsonout.go` 一一对应（recent 按 ts 倒序、`delta_pct` 为容量百分点、空切片输出 `[]` 非 null）；新增字段须两端同步并保持「缺失即省略」降级纪律。samples/ccct/ica_peaks/discharge 等新表全部接入 90 天清理。
-- 时区：设备上 Go 运行时读不到系统时区（无 tzdata 路径），`time.Now()` 返回 UTC。面向用户的时间戳一律走 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → 诚实回落 UTC，内嵌 `time/tzdata`）；Pipeline 的时钟注入同样传 `localNow`，否则 `p.now().Format` 类日志会差 8 小时。`Unix()` 取值与时区无关，不受影响。
-- 双电芯判定阈值是 **5V**（不是 4.5V）：高压单电芯截止 4.45~4.53V 常见，4.5V 会误判并让所有电压窗口翻倍、CCCT/ICA 静默全哑；双电芯串联最低约 6.8V，5V 两侧余量充足。缩放函数（`initCCCTVoltage`/`initICAVoltage`）必须无条件赋值以支持复位，否则测试间全局状态互相污染。
-- 双电芯口径：`charge_full` 在内核上是否为整包值存在机型差异（开发过程中两种实测结论都出现过）。**不要对它乘电芯数**——若内核已是整包会翻倍；`healthPct(full*cc, design*cc)` 这类同乘是 no-op（分子分母约掉），不解决问题。口径差异需目标机型实测后再单独处理。
-- **勿拿 `current_now` 积分当绝对容量口径**：实机 12 天数据配对显示，同 SOC 区间充电积分只有放电差分（`charge_counter`）的 82~95%（中位 0.84）——其中满电停计占 4.6%、间隔截断 0.3%，其余是读数本身偏低；而放电差分与内核 `charge_full` 只差 0.8%。所以会话结算与中段校准都以电量计差分为首选口径，积分只在 counter 不可用/刻度异常时兜底。
-- 已知局限（勿当 bug 修，属有意取舍）：current 单位启发式在涓流 <10mA 时可能误判；RLS 无遗忘因子、P 矩阵长期膨胀属潜伏项；FindNode 全树兜底仅缺节点时触发；`current_now` 走带符号读取（放电为负），其余节点严格非负；节点缺失时描述/JSON/once 输出按可用字段降级，不整体失败；放电会话仅在 `status=Discharging` 拍累计，旁路供电机型（status=Full 但电池实际放电）漏记；放电隐含容量以「显示掉幅」为分母，顶部区间显示被压缩故绝对值偏高，只作观测不入估算通道。
+两个变体模块 id 相同、互斥安装；`updateJson` 只指向 stable，ML 只能手动刷入。
 
-## 发版流程
+## 构建与测试
 
-0. 仓库 Settings → General → Releases 必须已开启 **Enable release immutability**（只对新发布的 release 生效）。未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废、无法补救。
-1. 改 `module.prop` 的 `version` 与 `versionCode`（同步递增）
-2. 提交到 main
-3. `git tag vX.Y.Z && git push origin main --tags` —— CI 自动构建打包、**先跑 KernelSU 官方校验器 dry-run**、再建 draft 并上传资源、最后发布（资产名 `CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`）并回写 `update.json`；`module.yaml` 的 `release.assetPattern` 只匹配 stable 包
-4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败
-5. `versionCode` 必须严格递增，**不得复用历史值**（曾踩坑：1.3.0(15)→1.2.2(15) 撞号导致部分管理器缓存旧版本收不到更新）
+### 本机命令
+
+```sh
+go test ./... -count=1
+go vet ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
+```
+
+- Go 版本以 `go.mod` 为准；SQLite 使用纯 Go 的 `modernc.org/sqlite`，不需要 CGO，Windows 本机可以直接跑测试。
+- `bin/batteryd` 是构建产物，不得提交；`batteryd.exe` 等本地残留也不要提交。
+- WebUI 没有构建步骤：`webroot/index.html` 直接加载 `webroot/vendor/` 里的 Preact UMD，修改后刷新页面即可。
+
+### WebUI 冒烟检查
+
+修改 `webroot/` 后，在桌面浏览器打开 `webroot/index.html`，至少确认：
+
+- 三页可以切换，控制台没有 JS 报错；所有 `webroot/js/*.js`、`app.css` 和 vendor 脚本都能加载（无 404）；
+- 设置页主题、语言、底栏样式切换正常；
+- 历史页可以切换 7/30/90 天范围、筛选充电/放电、滚动加载更早记录，并展开记录详情；
+- 历史页的“趋势”视图有小多图，点按可展开大图；
+- 在没有 `ksu` 的普通浏览器里显示 gate 页而不是白屏。
+
+### 不能在本地验证的内容
+
+本仓库没有 Android 真机环境。以下内容只能通读代码推演，不能把本地 `bash`/PowerShell 行为当成设备行为：
+
+- root 管理器如何执行 `customize.sh`、`service.sh`、`action.sh`；
+- KernelSU/APatch/MMRL WebView 的 `exec` 回调、edge-to-edge、CSP 和系统栏行为；
+- Magisk/KernelSU 的模块安装/升级/数据保留流程。
+
+如果改动涉及这些路径，必须明确告诉用户“未在真机验证”，并给出最小验证步骤。
+
+### 测试要求
+
+- 改 Go 逻辑必须补/改测试，并保证 `go test ./...` 全绿、`go vet ./...` 通过。
+- 改 shell 至少运行 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义“修正”POSIX sh，也不要在 Windows 上执行安装流程。
+- 改 `module.yaml` / `module.json` 后用 YAML/JSON 解析器校验。
+- 改 README 任一侧必须同步另一侧，并检查标题锚点。
+- 打包本地测试 zip 时确认所有 `.sh`、`module.prop`、`META-INF` 文本文件是 LF；CRLF 会让设备端 mksh 报 `: not found` / `syntax error`。
+
+## 代码风格
+
+### Go
+
+- 使用 `gofmt`；新增逻辑优先写成可测试的纯函数，I/O 和状态机分层。
+- 错误向上返回并保留上下文；不要静默吞掉影响结算/存储的错误。
+- 面向用户的字符串必须走 `uiText` / `uiKV`，内部日志、events 表、stderr 保持中文。
+- 新增数据字段时同步 `cmd/batteryd/jsonout.go` 与 WebUI，保持“缺失即省略、按可用字段降级”的纪律。
+
+### POSIX sh
+
+- shebang 固定 `#!/system/bin/sh`；不使用 bash 数组、`[[`、`local` 等非 POSIX 特性。
+- 变量加引号，路径优先使用 `$MODPATH` / `$MODDIR`；不要写死 `/data/adb/modules/...` 以外的路径。
+- 安装器交互文案走 `T` / `L` 双语辅助函数，语言探测顺序与 `i18n.go` 保持一致；不要把逻辑改动混进文案替换。
+- 安装器只给 `bin/batteryd` 设权限，**不要给 `webroot` 加 chmod/set_perm**。
+
+### WebUI
+
+- 使用 Preact 10.27.2 + hooks（`webroot/vendor/`，MIT），用文件内 `E()` + `h()` 手写 vnode；**不引入 JSX、Vite、npm 或 htm**，保持零构建、离线可用。源码按职责拆分在 `webroot/js/`：`boot`（首屏主题/语言/底栏与 edge-to-edge）→ `i18n` → `core`（宿主协议、格式化、存储）→ `charts` → `ui`（共享组件/概览/设置）→ `history` → `app`（状态与挂载）。**保持这个加载顺序**，新增脚本只能追加在 `app` 之前，不能改成 module/import。
+- `index.html` 只做入口壳；新增 CSS 放 `app.css`，新增业务 JS 放对应 `webroot/js/*.js`，不要再把大段脚本塞回 HTML。
+- 不要加 CDN、远程脚本或网络字体；新增依赖必须本地 vendored 并更新 `webroot/vendor/README.md` 与许可证。**不要把 htm 加回来**（Apache-2.0 与本项目 GPL-2.0-only 不兼容）。
+- 所有面向用户的文案放 `LANGS.zh` / `LANGS.en`，渲染时通过 `LangCtx` 的 `t()` / `plural()` 取；禁止在组件里硬编码中文。两份字典必须同时补 key。
+- 用户数据只用 `textContent` / Preact children 渲染；唯一使用 `dangerouslySetInnerHTML` 的地方是内部生成的 SVG 字符串，不能把外部数据拼进 HTML。
+- 顶栏三页统一高度（`.topbar-inner` 的 `min-height`），不要因为设置页没有刷新按钮就让它变矮；内容区与顶栏保留间距。
+- 全局关闭 `-webkit-tap-highlight-color`、按钮 outline 和 user-select，避免 Android WebView 点按按钮出现原生蓝色浮层。
+
+### 双语文案与格式
+
+- Go：`uiText` / `uiKV`；WebUI：`LANGS` + `LangCtx`；shell：`L()` / `T`。内部日志、events、stderr 保持中文。
+- 数值与复合单位之间留空格：`%d mAh`、`%d ℃`；中文百分号/量词紧跟数字：`健康 92%`、`循环 210次`。
+- 英文描述风格：`Kernel health 96% | Measured health 90% (3600 mAh) | Cycles 210`；中文分隔符用“｜”，英文用 `" | "`。
+- 日期展示按语言分流（`fmtTs` / `fmtRange`，英文 `Oct 24 12:03`）。
+
+### 文档
+
+- README.md 与 README_EN.md 的章节和标题锚点一一对应；语言导航行放在徽章区之后。
+- 公开文档只描述本项目自身的行为、安装和使用方式，不写其他项目的来源归属或实现来源说明。
+- 设计笔记、过程规格、调研报告放在本地工作区，不提交进仓库；`docs/` 只放按命名规范格式化的论文 PDF。
+
+## 仓库结构
+
+| 路径 | 用途 |
+| :-- | :-- |
+| `cmd/batteryd/` | Go daemon：采样、结算、容量估计、SQLite、description、`daemon` / `once` / `json` / `history` 子命令 |
+| `service.sh` | 开机等待 `sys.boot_completed=1` 后启动 daemon |
+| `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
+| `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
+| `webroot/index.html` | WebUI 入口壳：meta / insets / boot 脚本 / CSS 与 JS 引用 |
+| `webroot/app.css` | WebUI 全部样式 |
+| `webroot/js/` | 按职责拆分的经典脚本：`boot` / `i18n` / `core` / `charts` / `ui` / `history` / `app`，按顺序加载、无构建 |
+| `webroot/vendor/` | 本地 Preact + hooks UMD 及许可证；不参与构建 |
+| `module.prop` | 模块元数据；description 运行期由 batteryd 原子改写 |
+| `module.yaml` / `module.json` / `update.json` | KernelSU Modules 展示/更新元数据 |
+| `META-INF/com/google/android/` | 标准 Magisk 刷入桩，一般无需改动 |
+| `.github/workflows/release.yml` | CI 构建、KernelSU 校验、双变体打包与发布 |
+| `README.md` / `README_EN.md` | 中英用户文档，必须同步 |
+| `docs/` | 论文 PDF 库；过程文档不入库 |
+
+- 运行时数据只在 `$MODDIR/data/` 内；历史查询按 90 天保留窗口取数，趋势点最多 120 个/类，事件正文按游标分页。
+
+## WebUI 与宿主集成
+
+### 取数协议
+
+- 通过管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名)` 调用固定命令：`/data/adb/modules/CRecordEvolution/bin/batteryd json`、`... once` 和 `... history`。
+- 历史页使用 `history --days 7|30|90 --limit 20 --type all|charge|discharge [--before TS]`：服务端在范围内合并充电/放电事件，按时间倒序游标分页，并返回范围内摘要与趋势点；`json` 命令保持原样，仅供概览/设置使用。
+- 有 15s 超时和 `ksu` → `APatch`/`apatch` 的宿主级联回退；普通浏览器没有 `ksu` 时显示 gate 页。
+- 命令必须是常量或由固定模板拼接；`history` 的参数只接受数字与固定枚举，不要把用户输入、远端数据或任意字符串拼进 shell 命令。
+
+### Edge-to-edge / 系统栏
+
+- `<head>` 使用根相对路径请求 `/internal/insets.css`；KSU/APatch 的 WebView asset loader 会拦截该请求，自动把 WebView 铺到系统栏下、把宿主 padding 置 0，并下发 `--window-inset-*`。KSU 新版还会动态注入 `--safe-area-inset-*`。
+- 页面在 head 里尽早调用 `ksu.enableEdgeToEdge(true)`，旧接口 `enableInsets(true)` 兜底；脚本末尾、350ms 和 `load` 时再各调一次，兼容接口就绪较晚的宿主。
+- CSS 变量回退链：`--safe-area-inset-*` → `--window-inset-*` → `env(safe-area-inset-*)` → 0。**不要删除 insets.css 请求，也不要把 inset 写死。**
+- 不要把宿主没 edge-to-edge 的情况当成 bug：KSU ≤2.1.2 / APatch ≤11142 本来就会内缩，页面不能再重复加 padding。
+- **不要画 `#sysbar` / `#navbar` 对比带**：`prefers-color-scheme` 与页面主题判断不一致时会变成上下黑/白条。inset 区域交给页面背景铺满；MMRL 若提供 legacy `setLightStatusBars()`，用 `syncStatusBarStyle()` 同步图标明暗。
+
+### 三页与设置项
+
+- 概览：健康度主卡、容量/循环/估算/内阻/趋势/可信度、估算趋势图。
+- 历史：摘要统计；`记录` 视图按日期分组的时间轴（充电/放电，范围与类型筛选合并为一行 chip，7/30/90 天 + 全部/充电/放电，分页“加载更早”）；`趋势` 视图的容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图，小图点按展开；记录详情渐进展开。
+- 设置：外观（主题/语言/底栏）、手动刷新、数据信息、关于。
+- 底栏支持悬浮胶囊 / 传统贴底（`cre_barmode`，默认悬浮）；主题 `cre_theme` 为 `auto|light|dark`；语言 `cre_lang`。
+- 切页保存/恢复滚动位置；设置页隐藏顶部刷新按钮，换成页内“立即刷新”。
+
+### 语言文件
+
+- 优先级：`data/lang`（安装器/WebUI 写入，启动时 `cat` 读取并覆盖自动检测）> localStorage `cre_lang` > `navigator.languages`。
+- 设置页切换语言时同时原子写 `data/lang`（临时文件 + `mv`），再执行一次 `batteryd once` 刷新模块描述；连续快速切换要排队，避免旧写入覆盖新选择。
+
+## 领域不变量与已知坑
+
+### 采样与会话结算
+
+- 采样间隔：充电期 15s，其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，待电流停歇去抖后结算。
+- 会话电量双口径：电量计差分（`charge_counter`，结算估算首选）与电流积分（`avgI`、吞吐、样本口径）。两者相差 3 倍以上判刻度/单位异常，回退积分并写入 `counter_scale` 事件。
+- `chargeSuppressed`：满电后系统高负载时内核仍报 Charging 且电流为正，但端电压相对充电峰值回落超过 `30mV × 电芯数`，视为充电器直供系统的假电流，不计入会话电量与循环吞吐；该门控只作用于电流积分口径。
+
+### 容量估计、校准与趋势
+
+- 构建注入 `main.channel` 选择 stable/ml Estimator。
+- 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)` 窗口；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc` 的电量计差分；有 cc 时，缺 cc 的旧区间直接跳过，只有整批无 cc 才回退电流积分。隐含值必须过 `capacityInWindow` 门控，最近一次采信值存 kv `mid_implied_ua`。
+- 放电通道 `discharge`：读 `charge_counter` 差分累计，转入充电即结算；放电样本按 5 分钟降采样。结算门控为掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`，按 1/10 权重并入 EMA，采信值存 `dis_implied_ua`。该通道不经 `current_now`，是四路容量口径中最稳的一路。
+- 质量哨兵 `quality`：ema/mid/dis/full 四路互检，互差 >40% 判不一致；结论翻转才写 `quality_warn` 事件。可用路数 <2 时整体省略 `quality` 字段。
+- 趋势 `trend`：三态 `insufficient|stable|significant`，显著性用 Mann-Kendall 点对符号检验（双侧 5%）。R² 门控已废弃，单次估算噪声远大于真实周衰减。
+
+### sysfs 与单位
+
+- `NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位：≥100000 只可能是 µAh，同驱动 `current_now` 已是 µA 直通；以 mAh 计则 ×1000；无锚点退化为幅值启发式；最后用 25A 物理上界兜底。
+- **不要拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，污染采样、积分和校准。
+- `NormTempC` 截断 `[-40, 80]°C`；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`，绝对路径优先。
+- `current_now` 带符号读取（放电为负），其余节点严格非负。
+
+### 时间与存储
+
+- 设备上 Go 的 `time.Now()` 可能返回 UTC（无 tzdata）。面向用户的时间戳一律走 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → UTC），内嵌 `time/tzdata`；Pipeline 注入时钟同样传 `localNow`。
+- SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；90 天清理。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
+- 旧库升级会做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000，kv 标记 `samples_unit_repair`；给 `samples` 补 `cc` 列。
+- `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
+
+### 关键数值与口径（勿随意改）
+
+- 双电芯判定阈值是 **5V**，不是 4.5V：高压单电芯截止 4.45~4.53V，4.5V 会误判并让电压窗口翻倍、CCCT/ICA 全哑；双电芯串联最低约 6.8V。
+- 缩放函数 `initCCCTVoltage` / `initICAVoltage` 必须无条件赋值以支持复位，否则测试之间全局状态互相污染。
+- **不要对 `charge_full` 乘电芯数**：不同内核口径不同，若已是整包会翻倍；`healthPct(full*cc, design*cc)` 这类同乘是 no-op。
+- **不要拿 `current_now` 积分当绝对容量口径**：实机同 SOC 区间充电积分只有放电差分的 82~95%，放电差分与内核 `charge_full` 只差 0.8%。会话结算与中段校准首选 `charge_counter` 差分，积分只在 counter 不可用/刻度异常时兜底。
+
+### 已知局限（有意取舍，勿当 bug）
+
+- 电流单位启发式在涓流 <10mA 时可能误判；RLS 无遗忘因子、P 矩阵长期膨胀是潜伏项；`FindNode` 全树兜底只在缺节点时触发。
+- 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
+- 放电会话只在 `status=Discharging` 时累计；旁路供电机型（status=Full 但实际放电）会漏记。
+- 放电隐含容量以“显示掉幅”为分母，顶部区间显示被压缩，绝对值偏高，只作观测，不进估算通道。
+
+## 安全注意事项
+
+- WebUI 的 `exec` 在 root 下执行，命令必须是固定字符串或固定模板；**绝不要**把用户输入、语言值、模块描述、数据库内容拼进 shell。
+- 不要引入远程脚本、CDN、遥测或上传；数据只留在本机，vendor 依赖必须固定版本并附许可证。
+- 不要给 `webroot` 加 chmod/set_perm；安装器只处理 `bin/batteryd`。
+- 不要提交 `bin/`、`dist/`、生成 zip、`data/`、`*.exe` 或任何密钥/签名文件。
+- 处理图表 SVG 时只使用内部生成的数据；不要把宿主/远端字符串注入 `dangerouslySetInnerHTML`。
+- 修改安装器或 service 时，先确认不会删除 `$MODDIR/data/battery.db`；升级必须保留旧 `data/`。
+
+## 发布流程
+
+0. 仓库 Settings → Releases 必须已开启 **Enable release immutability**；未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废。
+1. 同步修改 `module.prop` 的 `version` 与 `versionCode`，必须严格递增，**不得复用历史值**。
+2. 提交到 main。
+3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → Go 构建 → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
+4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败。
+5. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。
+
+## 提交前检查清单
+
+- [ ] 已读相关源码和 README/AGENTS 约定，没有覆盖用户未提交的改动。
+- [ ] 改动的 Go 逻辑有测试；`go test ./...`、`go vet ./...` 通过。
+- [ ] shell 改动通过 `bash -n`，并说明无法在真机验证。
+- [ ] WebUI 改动在浏览器做过三页/设置/图表冒烟检查。
+- [ ] 新增 UI 文案同时更新 zh/en；新增 JSON 字段两端同步。
+- [ ] 需要发布的版本才改 `module.prop` 版本号；不提交 `bin/`、`dist/`、zip。
+- [ ] 本地打包时 `.sh`、`module.prop`、`META-INF` 是 LF，不是 CRLF。
+- [ ] 没有提交密钥、签名、数据文件或本地调试产物。
+- [ ] 未经用户明确要求，不自行 `git commit`、打 tag 或触发发布。
