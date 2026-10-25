@@ -12,11 +12,23 @@
 
 English | [简体中文](README.md)
 
-[Installation](#installation) | [How it works](#how-it-works) | [Logs](#logs) | [FAQ](#faq) | [Acknowledgements](#acknowledgements)
+[Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [Logs](#logs) | [FAQ](#faq) | [Acknowledgements](#acknowledgements)
 
 </div>
 
 ---
+
+## Screenshots
+
+The three WebUI pages (Overview / History / Settings) at a glance. The battery data in the screenshots is **fabricated demo data**, used only to illustrate the UI — it does not represent any real device or any measured result.
+
+<div align="center">
+
+| Overview | History · Records | History · Trends | Settings |
+| :---: | :---: | :---: | :---: |
+| <a href=".github/images/overview-en.png"><img src=".github/images/overview-en.png" width="200" alt="Overview page"></a> | <a href=".github/images/history-en.png"><img src=".github/images/history-en.png" width="200" alt="History records"></a> | <a href=".github/images/trends-en.png"><img src=".github/images/trends-en.png" width="200" alt="History trends"></a> | <a href=".github/images/settings-en.png"><img src=".github/images/settings-en.png" width="200" alt="Settings page"></a> |
+
+</div>
 
 ## Installation
 
@@ -27,49 +39,62 @@ Requires Magisk v20.4+, KernelSU, or APatch (arm64 only). Download from [Release
 | `CRecordEvolution-*.zip` | Stable | Statistical algorithm, supports in-app updates |
 | `CRecordEvolution_ML-*.zip` | Experimental | Online-learning algorithm, manual flash only |
 
-Flashing is the usual routine: select the zip in your manager, choose the installer language (Volume Up = Chinese, Volume Down = English, timeout = follow system), confirm with Volume Up (Volume Down cancels), reboot. The installer prints the device codename, Android version, build number and ABI, and explains what the module does, the WebUI entry point, and that upgrades keep the learning history; an explicit language choice is stored in the module and also applies to the module description and the WebUI (and can be changed later in the WebUI). After the reboot the module description becomes your battery health data, and it refreshes automatically after each charge session settles.
+### Flashing
 
-A few things worth noting:
+Pick the zip in your manager, choose the prompt language (Volume Up = Chinese, Volume Down = English, timeout = follow system), confirm with Volume Up (Volume Down cancels), reboot. The installer prints the device codename, Android version and ABI; the chosen language is stored in the module and can be changed later in the WebUI. After the reboot the module description becomes your battery health data and refreshes after each charge session.
 
-- Both variants share the same id and are mutually exclusive — flashing one replaces the other;
-- Upgrades keep the `data/battery.db` learning history (the installer copies the old data into the new module directory automatically), so no manual backup is needed;
-- Older Magisk versions have no Action button; if you don't see one, wait for the reboot to refresh;
-- Upgrading from an old version (module id `Charging_Record`)? Uninstall the old module first, then flash — the two directory layouts are not interchangeable;
-- KernelSU / APatch / MMRL users can open the bundled WebUI: three pages (Overview / History / Settings) with bottom navigation (floating pill or classic edge-to-edge bar). Overview shows the health and capacity summary; History has a date-grouped timeline, 7/30/90-day range and charge/discharge filters on one row, paginated older records, large capacity and charge-session charts, and discharge/resting/CCCT/ICA trend small multiples; Settings lets you switch theme/language and refresh manually; every point on a chart can be tapped to see its exact value.
+### Notes
+
+- Both variants share the same id and are mutually exclusive;
+- Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
+- Older Magisk versions have no Action button; wait for a reboot;
+- Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
+- KernelSU / APatch / MMRL can open the bundled WebUI (Overview / History / Settings): the bottom bar toggles between a floating pill and the classic edge-to-edge style, and chart points can be tapped for exact values.
 
 ## Languages
 
-The module UI supports Simplified Chinese and English. The language is chosen in this order: an explicit choice at install time (stored in the module's `data/lang`) → a manual switch on the WebUI Settings page (also stored in `data/lang`) → automatic detection of the system language. The installer, the module description, `batteryd once` output, Action button messages and the WebUI all share this setting; the language selector on the WebUI Settings page switches at any time and immediately refreshes the module description, with no reboot needed. With no stored choice the module follows the system language (after a system language change, the module description refreshes only after the daemon restarts).
+The module UI supports Simplified Chinese and English, chosen by this priority: an explicit install-time choice (stored in `data/lang`) → a switch on the WebUI Settings page (also stored in `data/lang`) → automatic system-language detection.
+
+The installer, module description, `batteryd once` output, Action messages and the WebUI share this setting; switching refreshes the module description immediately, with no reboot; with no stored choice it follows the system language (after a system language change the description refreshes only after the daemon restarts).
 
 ## How it works
 
-The numbers in the description come from two independent paths.
+The numbers in the description come from two independent paths: one reads the kernel fuel gauge, the other back-calculates from the charging process.
 
-One is the kernel reading: take the fuel gauge's `charge_full` and divide it by `charge_full_design`. On many devices the kernel calibrates this value itself, which makes it both the easiest and the most stable option.
+<div align="center">
 
-The other is a measured estimate: while charging, current and voltage are sampled every 15 seconds (once a minute the rest of the time), and when a charge session ends the charge that went in is divided by the percentage gain to derive the battery's current actual capacity. The module doesn't integrate indefinitely the way a conventional coulomb counter does: that error keeps compounding, whereas re-deriving the capacity on every charge is like re-syncing a clock each time, so historical error never accumulates.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/how-it-works-en-dark.png">
+  <img src=".github/images/how-it-works-en.png" width="820" alt="How it works: sampling → four settlement paths (with session gates and quality check) → aggregation → output">
+</picture>
 
-Both readings include their corresponding capacity in mAh in the description, followed by the current battery temperature; when no measured value is available, full-charge/design capacities bridge the gap.
+</div>
 
-Not every session is accepted. Sessions with less than a 20% gain, temperatures outside 15–45 °C, or obviously implausible results (below half or above 1.5× the design capacity) are discarded outright; sessions unplugged before reaching full still count, but at one third of the weight of a full charge — their derived capacity tends to run high, by as much as 10% in measured data.
+### Why it works this way
 
-Not reaching full is no obstacle either. The module also takes the middle stretch of each charge (30%–90%) and works it out separately: percentage readings are the most honest there, while the top few percentage steps tend to report full early (in measurements, above 95% each step holds only about 60% of the charge of a normal step — it rises fast while charging and falls slowly while discharging, both for the same reason). This path produces a number after just a few charges, is calibrated at most once a day, and is weighted very lightly: it only fine-tunes and never dominates.
+- **No indefinite integration**: a coulomb counter would keep accumulating error; re-deriving the capacity on every charge is like re-syncing a clock.
+- **Partial sessions are unreliable**: their derived capacity tends to run high — by up to 10% in measured data.
+- **The mid stretch gets its own calibration**: the top few percentage points tend to report full early (above 95% each step holds only about 60% of a normal step), so percentages in the middle are more trustworthy.
+- **Both variants agree early on**: they behave identically for the first 30 valid sessions; after that ML pulls ahead, and its ± is a relative-uncertainty indicator rather than a strict confidence interval.
+- **The discharge differential is the steadiest path**: it never goes through `current_now`; integration happens inside the chip and is immune to load transients, making it the least scattered of the paths.
 
-The two variants differ at the aggregation step. The Stable build uses the moving average described above; ML adds two layers: interquartile-range rejection of outlier sessions, then an online regression that learns how temperature, charge rate, and starting voltage affect capacity. The two behave identically for the first 30 valid sessions; after that the ML build starts to diverge from Stable, and it reports an uncertainty figure (±).
+### Capacity trend
 
-The capacity trend on the home page has three states: it shows progress until 21 days of data have accumulated; "no significant change" once there is enough data but no clear movement can be measured; and a weekly loss figure only once real degradation sets in. A healthy battery sitting at "no significant change" for a long time is normal — short-term noise is far larger than real degradation, and capacity doesn't decline linearly either.
+Three states: progress until 21 days of data; "no significant change" when no clear movement can be measured; and a weekly loss only once real degradation sets in. A healthy battery staying at "no significant change" is normal — short-term noise is usually larger than real degradation.
 
-The module also quietly collects a few more things locally while the data builds up for the next step: resting voltage (the recovered voltage after the load is removed; it takes about 10 minutes of screen-off rest to converge), constant-current time (the time spent charging through the 0.1 V window between 4.2 V and 4.3 V during the CC phase, which shortens with age; a fully charged LFP battery only reaches 3.65 V and never enters that window, so the feature will keep showing as still collecting — not a fault), and the incremental-capacity main peak (computed from accepted sessions at ≤1C; the higher the charge rate, the less sharp the peak). Discharge is tracked too: the module reads the fuel gauge chip's own coulomb counter differentially (the integration happens inside the chip, immune to load transients), a session starts when the charger is unplugged and settles when it is plugged back in, recording how much charge was used and how many percentage points were lost. Of these, resting voltage, constant-current time, and the incremental-capacity main peak currently only indicate a trend direction, or are purely observational — none of them promises absolute accuracy, and none affects health; the discharge differential is folded into the measured estimate at low weight (it never goes through `current_now` and is the least scattered of the several capacity paths), while charging sessions remain the primary source.
+### Extra observations
+
+These are observations only and never affect health: resting voltage (converging after about 10 minutes of screen-off rest), constant-current time (the time spent crossing the 0.1 V window between 4.2 V and 4.3 V; it shortens with age, and a full LFP battery only reaches 3.65 V, so it keeps showing as collecting — not a fault), and the incremental-capacity main peak (computed only on accepted sessions at ≤1C; a higher rate makes the peak less sharp).
 
 > [!WARNING]
 > Known inaccuracies:
-> Using the phone while charging can cause load current to be counted as charge input, so readings run high; screen-off charging is the most accurate (the module detects prolonged high-load use after reaching full and stops counting it);
-> Current nodes on some vendors' devices are in mA rather than µA; the module infers the current unit mainly from the scale of `charge_full` and falls back to magnitude-based inference only when that node is missing, so extreme cases (trickle below 10 mA) can still be misjudged;
-> On devices without a `cycle_count` node the corresponding field is omitted from the description without affecting anything else; devices without `charge_full_design` (e.g. VIVO/iQOO) read the design capacity from the device tree instead, and only if that fails is the field omitted, leaving the measured estimate at "Learning period".
+> - Using the phone while charging can count load current as charge input, so readings run high; screen-off charging is the most accurate (prolonged high-load use after reaching full is detected and stopped);
+> - Current nodes on some vendors' devices are in mA rather than µA; the module infers the unit mainly from the scale of `charge_full` and falls back to magnitude-based inference only when that node is missing, so extreme cases (trickle below 10 mA) can still be misjudged;
+> - Devices without a `cycle_count` node omit that field without affecting anything else; devices without `charge_full_design` (e.g. VIVO/iQOO) read the design capacity from the device tree; only if that fails is the field omitted, leaving the measured estimate at "Learning period".
 
 ## Logs
 
-Runtime data lives in `data/battery.db` (SQLite) under the module directory, kept for the last 90 days and pruned automatically every day. With a root terminal you can dig through the history yourself:
+Runtime data lives in `data/battery.db` (SQLite) under the module directory, kept for the last 90 days and pruned automatically every day. With a root terminal you can query the history directly:
 
 ```sh
 sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
@@ -95,7 +120,7 @@ The idea is similar — both integrate charge. The difference is that this modul
 <details>
 <summary>How long until I see a measured estimate?</summary>
 
-A few days of normal use gets you the first number. The ML build needs 30 valid sessions before it starts to diverge from Stable.
+A few days of normal use gets you the first number; the ML build needs 30 valid sessions before it starts to diverge.
 
 </details>
 
@@ -117,7 +142,7 @@ Papers consulted during design (PDF library in [`docs/`](docs/)):
 - arXiv 2410.06422 — probabilistic ML uncertainty quantification
 - Zhang et al., ICCK 2025 — coulomb-counter accumulation error
 
-The degree of adoption varies: Lin 2022 (CCCT) and He & Shin (resting voltage) are the method prototypes adopted directly, with parameters recalibrated against the development device's data; the rest served as motivation and background reading. The core capacity back-calculation is a standard engineering practice and does not depend on the papers above.
+Adoption varies: Lin 2022 (CCCT) and He & Shin (resting voltage) are the method prototypes adopted directly, with parameters recalibrated against this device's data; the rest served as motivation and background reading. The core capacity back-calculation is a standard engineering practice and does not depend on the papers above.
 
 > The ± shown by the ML build is an RLS relative-uncertainty indicator, not a strict statistical confidence interval.
 
