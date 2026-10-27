@@ -6,6 +6,14 @@ data/
 # 本地打包产物（测试 zip、暂存目录）
 /dist/
 
+# WebUI 依赖与构建产物（webroot/ 由 pnpm build 生成，进模块 zip 但不入库）
+/node_modules/
+/webroot/
+/artifacts/
+
+# 本地一次性迁移/调试脚本
+/.tmp-*
+
 .playwright-mcp/
 
 # 本地构建残留（只匹配仓库根目录，勿写成裸名 batteryd——会误匹配 cmd/batteryd 目录）

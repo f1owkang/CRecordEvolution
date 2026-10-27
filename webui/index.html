@@ -11,21 +11,13 @@
   KernelSU / APatch 的 SuFilePathHandler 拦截 /internal/insets.css 时会自动把
   WebView 铺到系统栏底下并下发 --window-inset-*；KSU 新版还会动态注入
   --safe-area-inset-*。根相对路径可以避免某些管理器只拦截当前 origin 下的 internal 资源。
+  这行不能被 Vite 当成项目内资源处理，见 vite.config.js 的 insetsCss 插件。
 -->
-<link rel="stylesheet" type="text/css" href="/internal/insets.css">
-<script src="js/boot.js"></script>
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" type="text/css" href="__INSETS_CSS__">
+<script src="/boot.js"></script>
+<script type="module" src="./src/main.jsx"></script>
 </head>
 <body>
 <div id="root"></div>
-
-<script src="vendor/preact.umd.js"></script>
-<script src="vendor/hooks.umd.js"></script>
-<script src="js/i18n.js"></script>
-<script src="js/core.js"></script>
-<script src="js/charts.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/history.js"></script>
-<script src="js/app.js"></script>
 </body>
 </html>

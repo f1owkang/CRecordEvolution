@@ -1,4 +1,14 @@
-'use strict';
+import { render } from 'preact';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
+import { translate } from './i18n.js';
+import {
+  CMD_JSON, CMD_ONCE, LANG_FILE, LANG_KEY, THEME_KEY, BAR_KEY,
+  POLL_BASE, POLL_MAX, run, syncModuleLang, hasExec, requestEdgeToEdge,
+  contentFP, storedThemeMode, storedBarMode, applyThemeDocument, initialLang
+} from './core.js';
+import { E, LangCtx, TopBar, Overview, Settings, Dock, Gate, ErrorBanner } from './ui/index.js';
+import { History } from './history/index.js';
+import './app.css';
 
 var HOST = hasExec();
 
@@ -195,9 +205,7 @@ var HOST = hasExec();
       E(Dock, { page: page, onNavigate: goPage }));
   }
 
-  if (CRE_VENDOR_OK) {
-    requestEdgeToEdge();
-    setTimeout(requestEdgeToEdge, 350);
-    window.addEventListener('load', requestEdgeToEdge);
-    render(E(App), document.getElementById('root'));
-  }
+  requestEdgeToEdge();
+setTimeout(requestEdgeToEdge, 350);
+window.addEventListener('load', requestEdgeToEdge);
+render(E(App), document.getElementById('root'));

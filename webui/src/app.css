@@ -203,9 +203,6 @@ html[data-bar="classic"] body { padding-bottom: calc(76px + var(--inset-bottom))
   font-variant-numeric: tabular-nums;
 }
 .row:last-child { border-bottom: none; }
-.row .t { color: var(--dim); }
-.row .ok { color: var(--accent); font-weight: 600; }
-.row .bad { color: var(--mute); }
 .row.empty { justify-content: center; color: var(--faint); }
 
 .chart svg { display: block; width: 100%; height: auto; }
@@ -225,14 +222,6 @@ html[data-bar="classic"] body { padding-bottom: calc(76px + var(--inset-bottom))
 }
 .hist-stat .n { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .hist-stat .l { font-size: 11px; color: var(--mute); margin-top: 3px; }
-.rec { padding: 11px 0; border-bottom: 1px solid var(--border-soft); }
-.rec:last-child { border-bottom: none; }
-.rec-main { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
-.rec-main .ok { color: var(--accent); font-weight: 600; }
-.rec-main .bad { color: var(--mute); }
-.rec-sub { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 4px; font-size: 12px; color: var(--mute); font-variant-numeric: tabular-nums; }
-.rec-sub .v { color: var(--fg); }
-.list { margin-top: 4px; }
 
 /* 历史页：记录时间轴 / 趋势视图 */
 .hist-controls { display: flex; flex-direction: column; gap: 8px; }

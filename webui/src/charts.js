@@ -1,5 +1,3 @@
-'use strict';
-
 function spanPad(p) { return 0.05 + p * 0.9; }
 
   // pts: [{x,y}] 已归一化到 [0,1]
@@ -214,15 +212,4 @@ function spanPad(p) { return 0.05 + p * 0.9; }
     return svgOpen(w, h) + chartBase(w, h) + refLine + body + '</svg>';
   }
 
-  // key 字段可数值化的行数（口径与 pickPairs 一致）
-  function validCount(rows, key) {
-    var n = 0, i, v;
-    for (i = 0; i < rows.length; i++) {
-      v = Number(rows[i] == null ? null : rows[i][key]);
-      if (isFinite(v)) n++;
-    }
-    return n;
-  }
-
-
-
+export { pickPairs, ascByTs, svgLine, svgScatter, svgBars, svgTsLine };

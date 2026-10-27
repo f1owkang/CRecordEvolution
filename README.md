@@ -131,6 +131,18 @@ sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
 
 </details>
 
+## 从源码构建
+
+WebUI 源码在 `webui/`（Preact + Vite），构建产物输出到 `webroot/`（生成目录，不提交）：
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run verify   # 构建 + 离线扫描 + 50KB gzip 上限
+pnpm run smoke    # 无头 Chrome/Edge 冒烟（可选）
+```
+
+Go daemon 的构建与完整发版流程见 [`AGENTS.md`](AGENTS.md)。
+
 ## 论文支撑
 
 设计过程中参考过的论文（PDF 库见 [`docs/`](docs/)）：

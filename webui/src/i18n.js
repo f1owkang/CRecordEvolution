@@ -1,5 +1,3 @@
-'use strict';
-
 var LANGS = {
     zh: {
       loading: '正在获取数据…',
@@ -13,7 +11,6 @@ var LANGS = {
       history_summary_valid: '有效会话',
       history_summary_discharges: '放电记录',
       history_summary_samples: '采样数',
-      history_est_records: '估算记录',
       hist_mode_records: '记录',
       hist_mode_trends: '趋势',
       hist_range_7: '7 天',
@@ -35,16 +32,12 @@ var LANGS = {
       hist_trend_rest: '静置电压',
       hist_trend_ccct: '恒流时长',
       hist_trend_ica: '容量主峰',
-      hist_points: '{n} 个点',
       hist_point_zero: '暂无数据点',
       hist_point_one: '{n} 个点',
       hist_point_many: '{n} 个点',
-      hist_latest: '最新',
       hist_records_count: '共 {n} 条',
       hist_status_recorded: '已记录',
       hist_retry: '重试',
-      hist_expand: '展开详情',
-      hist_collapse: '收起详情',
       hist_detail_time: '时间',
       hist_detail_duration: '时长',
       hist_detail_temp: '平均温度',
@@ -57,15 +50,8 @@ var LANGS = {
       hist_session_gain: '涨幅 {n}%',
       hist_session_est: '估算 {n} mAh',
       hist_session_temp: '温度 {n}℃',
-      hist_session_crate: '倍率 {n}C',
-      hist_discharge_release: '放出 {n} mAh',
       hist_duration: '历时 {n} 分钟',
       hist_implied: '隐含 {n} mAh',
-      hist_rest_cap: '电量 {n}%',
-      hist_ccct_duration: '耗时 {n} 分钟',
-      hist_ccct_window: '穿窗 {lo}→{hi} mV',
-      hist_ica_peak: '主峰 {v} V',
-      hist_ica_height: '相对高度 {h}',
 
       nav_overview: '概览',
       nav_history: '历史',
@@ -111,9 +97,6 @@ var LANGS = {
 
       panel_est: '估算趋势',
       panel_ses: '充电会话',
-      panel_rest: '静置电压',
-      panel_ccct: '恒流时长',
-      panel_ica: '容量主峰',
       panel_dis: '放电记录',
 
       gate_title: '无法连接管理器',
@@ -155,27 +138,7 @@ var LANGS = {
       samples_one: '累计采样 1 次',
       samples_many: '累计采样 {n} 次',
       samples_zero: '累计采样 0 次',
-      ses_empty: '等待下一次充电结算',
-      ses_cap_one: '有效会话 1 次 · 合计 {pct}%',
-      ses_cap_many: '有效会话 {n} 次 · 合计 {pct}%',
-      rest_empty: '等待放电静置采样',
-      rest_one: '已采集 1 条静置点',
-      rest_range: '区间 {min} ~ {max} V',
-      ccct_empty: '等待符合条件的恒流充电段',
-      ccct_cap: '方向指示，非绝对 SoH',
-      ica_empty: '等待合格充电会话的主峰',
-      ica_cap: '方向指示，非绝对 SoH',
-      dis_empty: '等待一次完整放电',
-      dis_cap_one: '放电 1 次 · 合计 {mah} mAh',
-      dis_cap_many: '放电 {n} 次 · 合计 {mah} mAh',
 
-      point_rest_cap: ' · 电量 {cap}%',
-      point_ccct_window: ' · 穿窗 {lo}→{hi} mV',
-      point_ccct: '{ts}{win} · 耗时 {min} 分钟',
-      point_ica: '{ts} · 主峰 {v} V · 相对高度 {h}',
-      point_dis: '{ts} · {start}→{end}% · 放出 {mah} mAh',
-      point_dis_dur: ' · 历时 {min} 分钟',
-      point_dis_implied: ' · 隐含 {mah} mAh',
 
       channel_stable: '稳定版',
       channel_ml: 'ML 实验版',
@@ -185,7 +148,6 @@ var LANGS = {
       err_json: '数据解析失败：输出不是有效 JSON',
       err_struct: '数据解析失败：意外的数据结构',
       err_render: '渲染失败：{msg}',
-      err_timeout: '执行超时'
     },
     en: {
       loading: 'Loading data…',
@@ -199,7 +161,6 @@ var LANGS = {
       history_summary_valid: 'Valid sessions',
       history_summary_discharges: 'Discharges',
       history_summary_samples: 'Samples',
-      history_est_records: 'Estimate records',
       hist_mode_records: 'Records',
       hist_mode_trends: 'Trends',
       hist_range_7: '7 d',
@@ -221,16 +182,12 @@ var LANGS = {
       hist_trend_rest: 'Resting V',
       hist_trend_ccct: 'CCCT',
       hist_trend_ica: 'ICA peak',
-      hist_points: '{n} points',
       hist_point_zero: 'No points',
       hist_point_one: '{n} point',
       hist_point_many: '{n} points',
-      hist_latest: 'Latest',
       hist_records_count: '{n} records',
       hist_status_recorded: 'Recorded',
       hist_retry: 'Retry',
-      hist_expand: 'Expand details',
-      hist_collapse: 'Collapse details',
       hist_detail_time: 'Time',
       hist_detail_duration: 'Duration',
       hist_detail_temp: 'Avg temp',
@@ -243,15 +200,8 @@ var LANGS = {
       hist_session_gain: 'Gain {n}%',
       hist_session_est: 'Estimate {n} mAh',
       hist_session_temp: 'Temp {n}°C',
-      hist_session_crate: 'C-rate {n}C',
-      hist_discharge_release: 'Released {n} mAh',
       hist_duration: '{n} min',
       hist_implied: 'Implied {n} mAh',
-      hist_rest_cap: 'Charge {n}%',
-      hist_ccct_duration: '{n} min',
-      hist_ccct_window: 'Window {lo}→{hi} mV',
-      hist_ica_peak: 'Peak {v} V',
-      hist_ica_height: 'Relative height {h}',
 
       nav_overview: 'Overview',
       nav_history: 'History',
@@ -297,9 +247,6 @@ var LANGS = {
 
       panel_est: 'Estimate trend',
       panel_ses: 'Charge sessions',
-      panel_rest: 'Resting voltage',
-      panel_ccct: 'Constant-current time',
-      panel_ica: 'Capacity peak',
       panel_dis: 'Discharge records',
 
       gate_title: 'Manager not connected',
@@ -341,27 +288,7 @@ var LANGS = {
       samples_one: '1 sample',
       samples_many: '{n} samples',
       samples_zero: 'No samples yet',
-      ses_empty: 'Waiting for the next charge session to settle',
-      ses_cap_one: '1 valid session · {pct}% total',
-      ses_cap_many: '{n} valid sessions · {pct}% total',
-      rest_empty: 'Waiting for a resting-voltage sample after discharge',
-      rest_one: '1 resting point collected',
-      rest_range: 'Range {min}–{max} V',
-      ccct_empty: 'Waiting for a qualifying constant-current segment',
-      ccct_cap: 'Directional only, not absolute SoH',
-      ica_empty: 'Waiting for a qualifying charge-session peak',
-      ica_cap: 'Directional only, not absolute SoH',
-      dis_empty: 'Waiting for a complete discharge',
-      dis_cap_one: '1 discharge · {mah} mAh total',
-      dis_cap_many: '{n} discharges · {mah} mAh total',
 
-      point_rest_cap: ' · {cap}%',
-      point_ccct_window: ' · crossed {lo}→{hi} mV',
-      point_ccct: '{ts}{win} · {min} min',
-      point_ica: '{ts} · peak {v} V · relative height {h}',
-      point_dis: '{ts} · {start}→{end}% · released {mah} mAh',
-      point_dis_dur: ' · {min} min',
-      point_dis_implied: ' · implied {mah} mAh',
 
       channel_stable: 'Stable',
       channel_ml: 'ML experimental',
@@ -371,7 +298,6 @@ var LANGS = {
       err_json: 'Parse error: output is not valid JSON',
       err_struct: 'Parse error: unexpected data structure',
       err_render: 'Render error: {msg}',
-      err_timeout: 'Timed out'
     }
   };
 
@@ -395,3 +321,5 @@ var LANGS = {
     return translate(lang, Number(n) === 1 ? oneKey : manyKey, vars);
   }
 
+
+export { translate, plural };

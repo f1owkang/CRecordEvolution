@@ -4,4 +4,16 @@
 *.sh text eol=lf
 module.prop text eol=lf
 META-INF/** text eol=lf
-webroot/** text eol=lf
+webui/** text eol=lf
+
+# 构建脚本与元数据统一 LF，避免 Windows 检出后 CI 行为差异
+*.js text eol=lf
+*.jsx text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

@@ -7,6 +7,7 @@
 ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），用 Go 二进制 `batteryd` 读取电池 sysfs、结合充电会话估算健康度与容量，并把结果写入管理器的模块描述；模块自带一个三页 WebUI（概览 / 历史 / 设置），数据保存在本机 SQLite。
 
 - 业务逻辑全部在 `cmd/batteryd/`。仓库里的 `service.sh`、`action.sh`、`customize.sh` 只是 POSIX sh 引导/交互壳，由 Android 上的 root 管理器执行。
+- WebUI 源码在 `webui/`（Preact + Vite，ES module/JSX），构建到 `webroot/`；模块 zip 里带的是构建产物，`webroot/` 不提交。
 - 支持 KernelSU / APatch / MMRL 的 WebUI；Magisk 通过标准 META-INF 刷入桩安装。
 - 只发布 arm64 静态二进制，支持 Android 设备 root 管理器，不需要在设备外运行 daemon。
 - 所有数据留在设备本地，没有网络请求、上传或遥测。
@@ -28,17 +29,28 @@ ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），�
 go test ./... -count=1
 go vet ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
+
+pnpm install --frozen-lockfile
+pnpm run verify   # build → 离线扫描 → 50KB gzip 上限
+pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate 截图
 ```
 
 - Go 版本以 `go.mod` 为准；SQLite 使用纯 Go 的 `modernc.org/sqlite`，不需要 CGO，Windows 本机可以直接跑测试。
 - `bin/batteryd` 是构建产物，不得提交；`batteryd.exe` 等本地残留也不要提交。
-- WebUI 没有构建步骤：`webroot/index.html` 直接加载 `webroot/vendor/` 里的 Preact UMD，修改后刷新页面即可。
+- Node 版本以 `package.json` 的 `engines` 为准，pnpm 版本由 `packageManager` 固定。`webroot/` 是生成目录，不提交；不要直接改 `webroot/` 里的文件。
+- WebUI 源码入口是 `webui/index.html`，Vite root 在 `webui/`。`pnpm run dev` 可起本地开发服务器；产物路径由 `vite.config.js` 固定为 `webroot/`。
+- 构建产物必须满足两条硬约束：完全离线（CI 扫描 `webroot/` 里的 `fetch`/`XMLHttpRequest`/远程 URL/远程 import）和 gzip 上限 50KB（`scripts/check-size.mjs`）。改依赖或改大段代码后先跑 `pnpm run verify`。
 
 ### WebUI 冒烟检查
 
-修改 `webroot/` 后，在桌面浏览器打开 `webroot/index.html`，至少确认：
+修改 `webui/` 后先 `pnpm run build`，再二选一：
 
-- 三页可以切换，控制台没有 JS 报错；所有 `webroot/js/*.js`、`app.css` 和 vendor 脚本都能加载（无 404）；
+- 直接运行 `pnpm run smoke`：脚本会起本地静态服务器、注入 mock `ksu.exec`，在无头 Edge/Chrome 里检查三页切换、历史分页/展开、趋势小图展开、主题/语言切换、gate 页，并把截图写到 `artifacts/smoke/`；
+- 或 `pnpm run dev` 用桌面浏览器手动检查同样的路径。没有宿主时只能看到 gate 页，要看数据页需 mock `ksu` 或真机。
+
+最低检查项：
+
+- 三页可以切换，控制台没有 JS 报错；构建产物里的 `assets/*.js`、`assets/*.css`、`boot.js` 都能加载（无 404）；
 - 设置页主题、语言、底栏样式切换正常；
 - 历史页可以切换 7/30/90 天范围、筛选充电/放电、滚动加载更早记录，并展开记录详情；
 - 历史页的“趋势”视图有小多图，点按可展开大图；
@@ -80,9 +92,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 ### WebUI
 
-- 使用 Preact 10.27.2 + hooks（`webroot/vendor/`，MIT），用文件内 `E()` + `h()` 手写 vnode；**不引入 JSX、Vite、npm 或 htm**，保持零构建、离线可用。源码按职责拆分在 `webroot/js/`：`boot`（首屏主题/语言/底栏与 edge-to-edge）→ `i18n` → `core`（宿主协议、格式化、存储）→ `charts` → `ui`（共享组件/概览/设置）→ `history` → `app`（状态与挂载）。**保持这个加载顺序**，新增脚本只能追加在 `app` 之前，不能改成 module/import。
-- `index.html` 只做入口壳；新增 CSS 放 `app.css`，新增业务 JS 放对应 `webroot/js/*.js`，不要再把大段脚本塞回 HTML。
-- 不要加 CDN、远程脚本或网络字体；新增依赖必须本地 vendored 并更新 `webroot/vendor/README.md` 与许可证。**不要把 htm 加回来**（Apache-2.0 与本项目 GPL-2.0-only 不兼容）。
+- 使用 Preact 10.29.8 + hooks（npm 依赖，MIT），源码在 `webui/src/`；Vite + `@preact/preset-vite` 构建到 `webroot/`。**保持完全离线**：不加 CDN、远程脚本/字体或运行时网络请求；新增运行时依赖必须进 bundle 并更新 `webui/public/THIRD_PARTY_NOTICES.txt`。
+- 组件可以用 JSX（`.jsx`）或 `h()`；新代码优先拆小函数/组件，避免再长出几百行的 `Overview` / `History`。**不要引入 htm**（Apache-2.0 与本项目 GPL-2.0-only 不兼容）。
+- `webui/index.html` 只做入口壳；`webui/public/boot.js` 保持在 `<head>` 里同步加载（首屏主题/语言/底栏），`/internal/insets.css` 用占位符交给 `vite.config.js` 替换，不要改成 Vite 能解析的项目内资源。
+- 源码按职责分：`i18n`（字典）、`core`（宿主协议、格式化、存储/主题）、`charts`（SVG 纯函数）、`ui/`（context / components / overview / settings / Stat.jsx）、`history/`（History / timeline / trends）、`main.jsx`（状态与挂载）。模块之间用 import/export，不要再回退到全局变量。
+- 产物必须满足两条硬约束：完全离线（CI 扫描 `fetch` / `XMLHttpRequest` / 远程 URL / 远程 import）和 50KB gzip 上限；`build.modulePreload.polyfill` 必须保持关闭（Vite 的预加载 polyfill 会注入 `fetch`）。
+- `webroot/` 是生成目录：不要手改、不要提交；改样式去 `webui/src/app.css`，改逻辑去 `webui/src/`。
 - 所有面向用户的文案放 `LANGS.zh` / `LANGS.en`，渲染时通过 `LangCtx` 的 `t()` / `plural()` 取；禁止在组件里硬编码中文。两份字典必须同时补 key。
 - 用户数据只用 `textContent` / Preact children 渲染；唯一使用 `dangerouslySetInnerHTML` 的地方是内部生成的 SVG 字符串，不能把外部数据拼进 HTML。
 - 顶栏三页统一高度（`.topbar-inner` 的 `min-height`），不要因为设置页没有刷新按钮就让它变矮；内容区与顶栏保留间距。
@@ -109,14 +124,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 | `service.sh` | 开机等待 `sys.boot_completed=1` 后启动 daemon |
 | `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
 | `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
-| `webroot/index.html` | WebUI 入口壳：meta / insets / boot 脚本 / CSS 与 JS 引用 |
-| `webroot/app.css` | WebUI 全部样式 |
-| `webroot/js/` | 按职责拆分的经典脚本：`boot` / `i18n` / `core` / `charts` / `ui` / `history` / `app`，按顺序加载、无构建 |
-| `webroot/vendor/` | 本地 Preact + hooks UMD 及许可证；不参与构建 |
+| `webui/` | WebUI 源码：`index.html`、`public/boot.js`、`src/main.jsx` / `i18n` / `core` / `charts` / `ui/` / `history/` / `app.css` |
+| `webui/public/` | 构建时原样复制的静态文件：`boot.js`、第三方许可证 |
+| `webroot/` | `pnpm build` 生成的 WebUI 产物（模块 zip 使用），不提交 |
+| `scripts/` | WebUI 构建守卫：离线扫描、gzip 体积检查、无头冒烟 |
+| `package.json` / `pnpm-lock.yaml` / `vite.config.js` | WebUI 构建工具链与依赖锁定 |
 | `module.prop` | 模块元数据；description 运行期由 batteryd 原子改写 |
 | `module.yaml` / `module.json` / `update.json` | KernelSU Modules 展示/更新元数据 |
 | `META-INF/com/google/android/` | 标准 Magisk 刷入桩，一般无需改动 |
-| `.github/workflows/release.yml` | CI 构建、KernelSU 校验、双变体打包与发布 |
+| `.github/workflows/release.yml` | CI 构建、WebUI 守卫、KernelSU 校验、双变体打包与发布 |
+| `.github/workflows/webui.yml` | PR/push 的 WebUI 构建、离线/体积守卫与无头冒烟 |
 | `README.md` / `README_EN.md` | 中英用户文档，必须同步 |
 | `docs/` | 论文 PDF 库；过程文档不入库 |
 
@@ -134,7 +151,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 ### Edge-to-edge / 系统栏
 
 - `<head>` 使用根相对路径请求 `/internal/insets.css`；KSU/APatch 的 WebView asset loader 会拦截该请求，自动把 WebView 铺到系统栏下、把宿主 padding 置 0，并下发 `--window-inset-*`。KSU 新版还会动态注入 `--safe-area-inset-*`。
-- 页面在 head 里尽早调用 `ksu.enableEdgeToEdge(true)`，旧接口 `enableInsets(true)` 兜底；脚本末尾、350ms 和 `load` 时再各调一次，兼容接口就绪较晚的宿主。
+- 页面在 head 里尽早调用 `ksu.enableEdgeToEdge(true)`，旧接口 `enableInsets(true)` 兜底；`main.jsx` 挂载时、350ms 和 `load` 时再各调一次，兼容接口就绪较晚的宿主。
 - CSS 变量回退链：`--safe-area-inset-*` → `--window-inset-*` → `env(safe-area-inset-*)` → 0。**不要删除 insets.css 请求，也不要把 inset 写死。**
 - 不要把宿主没 edge-to-edge 的情况当成 bug：KSU ≤2.1.2 / APatch ≤11142 本来就会内缩，页面不能再重复加 padding。
 - **不要画 `#sysbar` / `#navbar` 对比带**：`prefers-color-scheme` 与页面主题判断不一致时会变成上下黑/白条。inset 区域交给页面背景铺满；MMRL 若提供 legacy `setLightStatusBars()`，用 `syncStatusBarStyle()` 同步图标明暗。
@@ -199,7 +216,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 ## 安全注意事项
 
 - WebUI 的 `exec` 在 root 下执行，命令必须是固定字符串或固定模板；**绝不要**把用户输入、语言值、模块描述、数据库内容拼进 shell。
-- 不要引入远程脚本、CDN、遥测或上传；数据只留在本机，vendor 依赖必须固定版本并附许可证。
+- 不要引入远程脚本、CDN、遥测或上传；数据只留在本机。运行时依赖由 lockfile 固定版本并随产物附许可证（见 `webui/public/THIRD_PARTY_NOTICES.txt`）。
 - 不要给 `webroot` 加 chmod/set_perm；安装器只处理 `bin/batteryd`。
 - 不要提交 `bin/`、`dist/`、生成 zip、`data/`、`*.exe` 或任何密钥/签名文件。
 - 处理图表 SVG 时只使用内部生成的数据；不要把宿主/远端字符串注入 `dangerouslySetInnerHTML`。
@@ -209,8 +226,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 0. 仓库 Settings → Releases 必须已开启 **Enable release immutability**；未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废。
 1. 同步修改 `module.prop` 的 `version` 与 `versionCode`，必须严格递增，**不得复用历史值**。
-2. 提交到 main。
-3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → Go 构建 → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
+2. 提交到 main（只提交源码；`webroot/` 是生成目录，不入库）。
+3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → Go 构建 → `pnpm install --frozen-lockfile` + `pnpm run verify` 构建并守卫 WebUI → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
 4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败。
 5. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。
 
@@ -219,7 +236,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 - [ ] 已读相关源码和 README/AGENTS 约定，没有覆盖用户未提交的改动。
 - [ ] 改动的 Go 逻辑有测试；`go test ./...`、`go vet ./...` 通过。
 - [ ] shell 改动通过 `bash -n`，并说明无法在真机验证。
-- [ ] WebUI 改动在浏览器做过三页/设置/图表冒烟检查。
+- [ ] WebUI 改动通过 `pnpm run verify` 与 `pnpm run smoke`（或真机/模拟宿主），三页/设置/图表/分页都检查过。
+- [ ] 没有把 `webroot/`、`node_modules/`、`artifacts/` 加入提交。
 - [ ] 新增 UI 文案同时更新 zh/en；新增 JSON 字段两端同步。
 - [ ] 需要发布的版本才改 `module.prop` 版本号；不提交 `bin/`、`dist/`、zip。
 - [ ] 本地打包时 `.sh`、`module.prop`、`META-INF` 是 LF，不是 CRLF。

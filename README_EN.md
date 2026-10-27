@@ -131,6 +131,18 @@ No. The flash script copies the old version's `data/` directory (including `batt
 
 </details>
 
+## Build from source
+
+The WebUI source lives in `webui/` (Preact + Vite) and builds into `webroot/` (generated, not committed):
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run verify   # build + offline scan + 50KB gzip ceiling
+pnpm run smoke    # headless Chrome/Edge smoke test (optional)
+```
+
+See [`AGENTS.md`](AGENTS.md) for the Go daemon build and the full release flow.
+
 ## Research
 
 Papers consulted during design (PDF library in [`docs/`](docs/)):

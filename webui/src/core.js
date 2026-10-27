@@ -1,15 +1,4 @@
-'use strict';
-
-var CRE_VENDOR_OK = !!(window.preact && window.preactHooks);
-var h = CRE_VENDOR_OK ? window.preact.h : null;
-var render = CRE_VENDOR_OK ? window.preact.render : function () {};
-var createContext = CRE_VENDOR_OK ? window.preact.createContext : function (v) { return { value: v }; };
-var useState = CRE_VENDOR_OK ? window.preactHooks.useState : function (v) { return [v, function () {}]; };
-var useEffect = CRE_VENDOR_OK ? window.preactHooks.useEffect : function () {};
-var useRef = CRE_VENDOR_OK ? window.preactHooks.useRef : function (v) { return { current: v }; };
-var useCallback = CRE_VENDOR_OK ? window.preactHooks.useCallback : function (f) { return f; };
-var useContext = CRE_VENDOR_OK ? window.preactHooks.useContext : function (ctx) { return ctx && ctx.value ? ctx.value : { lang: 'zh', t: function (k) { return k; } }; };
-if (!CRE_VENDOR_OK) document.getElementById('root').innerHTML = '<div style="padding:24px;color:#fca5a5;font:14px system-ui">WebUI 资源加载失败（vendor/preact.umd.js 等）<br>Failed to load WebUI vendor scripts.</div>';
+import { translate } from './i18n.js';
 
 var CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
   var CMD_HISTORY = '/data/adb/modules/CRecordEvolution/bin/batteryd history';
@@ -212,4 +201,68 @@ function pad(n) { n = String(n); return n.length < 2 ? '0' + n : n; }
     });
   }
 
-  
+function contentFP(doc) {
+    return JSON.stringify(doc, function (k, v) {
+      return (k === 'updated' || k === 'temp_c') ? undefined : v;
+    });
+  }
+
+  function storedThemeMode() {
+    var s = null;
+    try { s = localStorage.getItem(THEME_KEY); } catch (e) {}
+    return (s === 'light' || s === 'dark') ? s : 'auto';
+  }
+
+  function systemTheme() {
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+    } catch (e) {}
+    return 'dark';
+  }
+
+  function resolvedTheme(mode) { return mode === 'auto' ? systemTheme() : mode; }
+
+  function applyThemeDocument(mode) {
+    var theme = resolvedTheme(mode);
+    document.documentElement.setAttribute('data-theme', theme);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'light' ? '#f6f8fa' : '#0b0e14');
+    try {
+      var api = window.$CRecordEvolution;
+      if (api && typeof api.setLightStatusBars === 'function') {
+        api.setLightStatusBars(theme === 'light');
+      }
+    } catch (e) { /* 非 MMRL 宿主 */ }
+  }
+
+  function storedBarMode() {
+    var s = null;
+    try { s = localStorage.getItem(BAR_KEY); } catch (e) {}
+    return s === 'classic' ? 'classic' : 'floating';
+  }
+
+  function storedHistMode() {
+    var s = null;
+    try { s = localStorage.getItem(HIST_MODE_KEY); } catch (e) {}
+    return s === 'trends' ? 'trends' : 'records';
+  }
+
+  function storedHistDays() {
+    var s = null;
+    try { s = Number(localStorage.getItem(HIST_DAYS_KEY)); } catch (e) {}
+    return (s === 7 || s === 30 || s === 90) ? s : 30;
+  }
+
+  function initialLang() {
+    return document.documentElement.getAttribute('data-lang') === 'en' ? 'en' : 'zh';
+  }
+
+export {
+  CMD_JSON, CMD_HISTORY, CMD_ONCE, LANG_FILE,
+  THEME_KEY, LANG_KEY, BAR_KEY, HIST_MODE_KEY, HIST_DAYS_KEY, HIST_PAGE_LIMIT,
+  POLL_BASE, POLL_MAX, CHART_W, CHART_H, CHANNEL_KEY, REASON_KEY,
+  fmtTs, fmtRange, fmtInt, fmtFix, dayStart, fmtClock, fmtDayLabel, fmtShortDate,
+  contentFP, storedThemeMode, applyThemeDocument, storedBarMode,
+  storedHistMode, storedHistDays, initialLang,
+  hasExec, requestEdgeToEdge, run, syncModuleLang
+};
