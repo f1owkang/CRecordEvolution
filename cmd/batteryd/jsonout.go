@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
+// recentEntry 为容量估算时间序列点（Mah 单位为 mAh）。
 type recentEntry struct {
 	TS  int64 `json:"ts"`
 	Mah int64 `json:"mah"`
 }
 
+// sessionEntry 为充电会话 JSON 条目（DeltaPct 为显示涨幅，EstMah 单位为 mAh）。
 type sessionEntry struct {
 	StartTs  int64    `json:"start_ts"`
 	EndTs    int64    `json:"end_ts"`
@@ -24,12 +26,14 @@ type sessionEntry struct {
 	InvalidReason string `json:"invalid_reason,omitempty"`
 }
 
+// restEntry 为静置点 JSON 条目（UV 单位 µV，Cap 为显示电量 %）。
 type restEntry struct {
 	TS  int64 `json:"ts"`
 	UV  int64 `json:"uv"`
 	Cap int64 `json:"cap"`
 }
 
+// ccctEntry 为 CCCT 特征 JSON 条目（穿窗电压 µV，Secs 为耗时秒）。
 type ccctEntry struct {
 	TS   int64 `json:"ts"`
 	Secs int64 `json:"secs"`
@@ -39,6 +43,7 @@ type ccctEntry struct {
 	VwHi int64 `json:"vw_hi,omitempty"`
 }
 
+// icaEntry 为 ICA 主峰 JSON 条目（PeakUV 单位 µV）。
 type icaEntry struct {
 	TS     int64 `json:"ts"`
 	PeakUV int64 `json:"peak_uv"`
@@ -47,6 +52,7 @@ type icaEntry struct {
 	PeakHRel *float64 `json:"peak_h_rel,omitempty"`
 }
 
+// jsonDoc 是 `batteryd json` 的输出结构；字段全为指针或 omitempty，缺失即省略。
 type jsonDoc struct {
 	Channel         string   `json:"channel"`
 	DesignMah       *int64   `json:"design_mah"`
@@ -79,12 +85,13 @@ type jsonDoc struct {
 	SamplesN        int64            `json:"samples_n"`
 }
 
-// dischargeEntry：uah 为放出电量（mAh），implied 为按显示掉幅反推的隐含
-// 满容量（mAh，掉幅不足时省略）。
+// dischargeEntry 为放电会话 JSON 条目：Mah 为放出电量（mAh），Implied 为按显示
+// 掉幅反推的隐含满容量（mAh，掉幅不足时省略）；JSON 字段名 uah_mah 是历史契约，
+// 保持不变。
 type dischargeEntry struct {
 	TS       int64  `json:"ts"`
 	Secs     int64  `json:"secs"`
-	UahMah   int64  `json:"uah_mah"`
+	Mah      int64  `json:"uah_mah"`
 	StartCap int64  `json:"start_cap"`
 	EndCap   int64  `json:"end_cap"`
 	Implied  *int64 `json:"implied_mah,omitempty"`
@@ -105,7 +112,7 @@ func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
 		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid, InvalidReason: se.InvalidReason}
 	if e.DeltaPct > 0 {
-		mah := se.Ua * 100 / (e.DeltaPct * 3_600_000)
+		mah := se.AccUAs * 100 / (e.DeltaPct * 3_600_000)
 		e.EstMah = &mah
 	}
 	if se.TempAvg > 0 {
@@ -118,6 +125,7 @@ func convSession(se Session) sessionEntry {
 	return e
 }
 
+// RenderJSON 把概览数据渲染为 `batteryd json` 的 JSON 输出。
 func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, disch []dischargeEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:         ch,
@@ -147,8 +155,8 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	if !math.IsNaN(snap.CycleEquiv) && !math.IsInf(snap.CycleEquiv, 0) {
 		doc.CycleEquiv = &snap.CycleEquiv
 	}
-	if snap.EstUA != nil {
-		mah := *snap.EstUA / 1000
+	if snap.EstUAh != nil {
+		mah := *snap.EstUAh / 1000
 		doc.EstMah = &mah
 	}
 	doc.Quality = snap.Quality

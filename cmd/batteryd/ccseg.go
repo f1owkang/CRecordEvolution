@@ -1,7 +1,7 @@
 // 准恒流段识别器：滑动窗电流变异系数 |σ/μ| ≤ 0.10 判平稳，相邻平稳窗同向衔接
 // 合并成段；电压位于观察序列最高 3% 区间且电流较段均值下滑逾 30% 的后续窗判为
 // CV 尾段剔除。恒流前提溯源 Lin 2022, Energy（A 级）；倍率门控不在识别器内做，
-// 由调用方持 designUA 过滤（阈值为本机数据定标的工程取舍），保持纯函数。
+// 由调用方持 designUAh 过滤（阈值为本机数据定标的工程取舍），保持纯函数。
 
 package main
 
@@ -16,10 +16,12 @@ const (
 	ccTopVoltFrac = 0.03 // CV 尾段：电压须处观察序列最高 3% 区间
 )
 
-// SampleRow 一行采样。CC 为电量计 charge_counter（µAh），0 表示该行未采到
-// （旧库遗留行或节点不可读）；有电量计时消费方跳过该区间，仅整批无 cc 才回退电流积分。
-type SampleRow struct{ TS, UA, UV, Cap, CC int64 }
+// SampleRow 一行采样。UA 为电流（µA，带符号），UV 为电压（µV），Cap 为显示电量
+// （%），CounterUAh 为电量计 charge_counter 读数（µAh，0 表示该行未采到——旧库
+// 遗留行或节点不可读）；有电量计时消费方跳过该区间，仅整批无读数才回退电流积分。
+type SampleRow struct{ TS, UA, UV, Cap, CounterUAh int64 }
 
+// CCSeg 描述一个准恒流段：起止时刻（Unix 秒）与段内平均电流（µA）。
 type CCSeg struct {
 	FromTs int64
 	ToTs   int64

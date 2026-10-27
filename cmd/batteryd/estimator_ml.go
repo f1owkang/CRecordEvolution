@@ -28,6 +28,7 @@ const (
 	learningSamples = 30
 )
 
+// Learning 是 ML 实验版估算器：RLS 拟合会话特征到容量比，σ 由 P 矩阵与实测散布给出。
 type Learning struct {
 	kv        KVStore
 	cellCount int
@@ -43,6 +44,7 @@ func (l *Learning) ResetModel() {
 	_ = l.kv.KVSet(kvKeySamples, "0")
 }
 
+// OnSession 结算一个充电会话：门控、离群剔除后更新 RLS 模型与 EMA 基线。
 func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if tempOutOfRange(sr) {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "temp_out_of_range"}}
@@ -51,13 +53,13 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if delta < minDeltaCap {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "delta_lt_20"}}
 	}
-	sFull := fullCapacityUA(sr, delta)
-	if !capacityInWindow(sFull, sr.DesignUA) {
+	sFull := fullCapacityUAh(sr, delta)
+	if !capacityInWindow(sFull, sr.DesignUAh) {
 		return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "out_of_window"}}
 	}
 
 	samples := kvInt(l.kv, kvKeySamples)
-	ema := kvInt(l.kv, kvKeyEmaUA)
+	ema := kvInt(l.kv, kvKeyEmaUAh)
 	if samples <= 0 || ema <= 0 {
 		return l.seed(sFull)
 	}
@@ -128,11 +130,11 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if err := l.persist(theta, p, hist, sfullHist, est, samples, sigmaMah); err != nil {
 		return EstUpdate{}, err
 	}
-	return EstUpdate{EstUA: est, Samples: samples, Changed: true, SigmaMah: sigmaMah}, nil
+	return EstUpdate{EstUAh: est, Samples: samples, Changed: true, SigmaMah: sigmaMah}, nil
 }
 
-func (l *Learning) seed(uaFull int64) (EstUpdate, error) {
-	if err := l.kv.KVSet(kvKeyEmaUA, strconv.FormatInt(uaFull, 10)); err != nil {
+func (l *Learning) seed(fullUAh int64) (EstUpdate, error) {
+	if err := l.kv.KVSet(kvKeyEmaUAh, strconv.FormatInt(fullUAh, 10)); err != nil {
 		return EstUpdate{}, err
 	}
 	if err := l.kv.KVSet(kvKeySamples, "1"); err != nil {
@@ -141,7 +143,7 @@ func (l *Learning) seed(uaFull int64) (EstUpdate, error) {
 	if err := l.kv.KVSet(kvKeyEmaSigma, "0"); err != nil {
 		return EstUpdate{}, err
 	}
-	return EstUpdate{EstUA: uaFull, Samples: 1, Changed: true}, nil
+	return EstUpdate{EstUAh: fullUAh, Samples: 1, Changed: true}, nil
 }
 
 func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist, sfullHist []float64, ema, samples int64, sigmaMah float64) error {
@@ -173,7 +175,7 @@ func (l *Learning) persist(theta [4]float64, p [4][4]float64, hist, sfullHist []
 	if err := l.kv.KVSet(kvKeySFullHist, string(sfullJSON)); err != nil {
 		return err
 	}
-	if err := l.kv.KVSet(kvKeyEmaUA, strconv.FormatInt(ema, 10)); err != nil {
+	if err := l.kv.KVSet(kvKeyEmaUAh, strconv.FormatInt(ema, 10)); err != nil {
 		return err
 	}
 	if err := l.kv.KVSet(kvKeySamples, strconv.FormatInt(samples, 10)); err != nil {

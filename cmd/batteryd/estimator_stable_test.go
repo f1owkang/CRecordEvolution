@@ -20,7 +20,7 @@ func baseSession() Session {
 	return Session{
 		StartTs: 1000, EndTs: 2000,
 		StartCap: 40, EndCap: 100,
-		Ua:      8208000000,
+		AccUAs:  8208000000,
 		AvgI:    1500000,
 		CRate:   0.375,
 		TempMin: 25, TempMax: 33, TempAvg: 29,
@@ -50,7 +50,7 @@ func TestOnSessionRejectsTempOutOfRange(t *testing.T) {
 			sess := baseSession()
 			sess.TempMin = tc.tempMin
 			sess.TempMax = tc.tempMax
-			sr := SettledSession{Session: sess, AccUA: 8208000000, DesignUA: 4000000}
+			sr := SettledSession{Session: sess, AccUAs: 8208000000, DesignUAh: 4000000}
 
 			upd, err := est.OnSession(sr)
 			if err == nil {
@@ -83,7 +83,7 @@ func TestStableAcceptsUnknownTemp(t *testing.T) {
 	sess := baseSession()
 	sess.TempMin = 0
 	sess.TempMax = 0
-	sr := SettledSession{Session: sess, AccUA: 8208000000, DesignUA: 4000000}
+	sr := SettledSession{Session: sess, AccUAs: 8208000000, DesignUAh: 4000000}
 
 	upd, err := est.OnSession(sr)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestOnSessionRejectsDeltaBelow20(t *testing.T) {
 
 	sess := baseSession()
 	sess.EndCap = 55
-	sr := SettledSession{Session: sess, AccUA: 8208000000, DesignUA: 4000000}
+	sr := SettledSession{Session: sess, AccUAs: 8208000000, DesignUAh: 4000000}
 
 	upd, err := est.OnSession(sr)
 	if err == nil {
@@ -127,15 +127,15 @@ func TestOnSessionRejectsOutsideWindow(t *testing.T) {
 	est, _ := newTestStable(t)
 
 	cases := []struct {
-		name  string
-		accUA int64
+		name   string
+		accUAs int64
 	}{
 		{"低于0.5倍设计容量", 3420000000},
 		{"高于1.5倍设计容量", 13176000000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sr := SettledSession{Session: baseSession(), AccUA: tc.accUA, DesignUA: 4000000}
+			sr := SettledSession{Session: baseSession(), AccUAs: tc.accUAs, DesignUAh: 4000000}
 
 			upd, err := est.OnSession(sr)
 			if err == nil {
@@ -158,7 +158,7 @@ func TestOnSessionRejectsOutsideWindow(t *testing.T) {
 func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	est, st := newTestStable(t)
 
-	first := SettledSession{Session: baseSession(), AccUA: 1440000000, DesignUA: 4000000}
+	first := SettledSession{Session: baseSession(), AccUAs: 1440000000, DesignUAh: 4000000}
 	first.StartCap = 80
 	first.EndCap = 100
 	first.TempMin = 15
@@ -171,8 +171,8 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	if !upd.Changed {
 		t.Fatal("接受时 Changed 应为 true")
 	}
-	if upd.EstUA != 2000000 {
-		t.Fatalf("首会话 EstUA = %d, want 2000000(种子即 ua_full)", upd.EstUA)
+	if upd.EstUAh != 2000000 {
+		t.Fatalf("首会话 EstUAh = %d, want 2000000(种子即 ua_full)", upd.EstUAh)
 	}
 	if upd.Samples != 1 {
 		t.Fatalf("首会话 Samples = %d, want 1", upd.Samples)
@@ -184,7 +184,7 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 		t.Fatalf(`kv[ema_ua] = (%q,%v), want ("2000000",true)`, v, ok)
 	}
 
-	second := SettledSession{Session: baseSession(), AccUA: 3000000240, DesignUA: 4000000}
+	second := SettledSession{Session: baseSession(), AccUAs: 3000000240, DesignUAh: 4000000}
 	second.StartCap = 80
 	second.EndCap = 100
 	second.StartTs = 5000
@@ -197,8 +197,8 @@ func TestOnSessionEMAAcrossSessions(t *testing.T) {
 	if !upd2.Changed {
 		t.Fatal("接受时 Changed 应为 true")
 	}
-	if upd2.EstUA != 2650000 {
-		t.Fatalf("第二会话 EstUA = %d, want 2650000((2000000*7+4166667*3)/10 向下取整)", upd2.EstUA)
+	if upd2.EstUAh != 2650000 {
+		t.Fatalf("第二会话 EstUAh = %d, want 2650000((2000000*7+4166667*3)/10 向下取整)", upd2.EstUAh)
 	}
 	if upd2.Samples != 2 {
 		t.Fatalf("第二会话 Samples = %d, want 2", upd2.Samples)
@@ -216,16 +216,16 @@ func TestOnSessionPartialWeightReduced(t *testing.T) {
 	// 抑制其偏高隐含容量对显示值的拉动
 	est, st := newTestStable(t)
 
-	first := SettledSession{Session: baseSession(), AccUA: 1440000000, DesignUA: 4000000}
+	first := SettledSession{Session: baseSession(), AccUAs: 1440000000, DesignUAh: 4000000}
 	first.StartCap = 80
 	first.EndCap = 100
 	if upd, err := est.OnSession(first); err != nil {
 		t.Fatalf("种子会话应被接受: %v", err)
-	} else if upd.EstUA != 2000000 {
-		t.Fatalf("种子 EstUA = %d, want 2000000", upd.EstUA)
+	} else if upd.EstUAh != 2000000 {
+		t.Fatalf("种子 EstUAh = %d, want 2000000", upd.EstUAh)
 	}
 
-	second := SettledSession{Session: baseSession(), AccUA: 3000000240, DesignUA: 4000000}
+	second := SettledSession{Session: baseSession(), AccUAs: 3000000240, DesignUAh: 4000000}
 	second.StartCap = 78
 	second.EndCap = 98
 	second.StartTs = 5000
@@ -235,10 +235,10 @@ func TestOnSessionPartialWeightReduced(t *testing.T) {
 		t.Fatalf("未满充会话应被接受（不作门控）: %v", err)
 	}
 	// est=4166667，降权融合：(2000000*9+4166667)/10 = 2216666
-	if want := int64(2216666); upd2.EstUA != want {
-		t.Fatalf("未满充会话 EstUA = %d, want %d", upd2.EstUA, want)
+	if want := int64(2216666); upd2.EstUAh != want {
+		t.Fatalf("未满充会话 EstUAh = %d, want %d", upd2.EstUAh, want)
 	}
-	if v, _ := st.KVGet(kvKeyEmaUA); v != "2216666" {
+	if v, _ := st.KVGet(kvKeyEmaUAh); v != "2216666" {
 		t.Fatalf(`kv[ema_ua] = %q, want "2216666"`, v)
 	}
 }
@@ -247,7 +247,7 @@ func TestStableNeverProducesSigma(t *testing.T) {
 	// stable 通道无 P 矩阵：返回值 SigmaMah 恒为 0，且不落 kv 键
 	est, st := newTestStable(t)
 
-	sr := SettledSession{Session: baseSession(), AccUA: 8208000000, DesignUA: 4000000}
+	sr := SettledSession{Session: baseSession(), AccUAs: 8208000000, DesignUAh: 4000000}
 	upd, err := est.OnSession(sr)
 	if err != nil {
 		t.Fatalf("会话应被接受: %v", err)
@@ -268,7 +268,7 @@ func (brokenKV) KVSet(string, string) error  { return errors.New("disk full") }
 func TestOnSessionPropagatesKVPersistError(t *testing.T) {
 	est := NewStable(brokenKV{})
 
-	sr := SettledSession{Session: baseSession(), AccUA: 8208000000, DesignUA: 4000000}
+	sr := SettledSession{Session: baseSession(), AccUAs: 8208000000, DesignUAh: 4000000}
 
 	upd, err := est.OnSession(sr)
 	if err == nil || err.Error() != "disk full" {
@@ -283,10 +283,10 @@ func TestOnSessionPropagatesKVPersistError(t *testing.T) {
 // 量纲误判或脏样本会同比放大，门控口径必须一致。
 func TestCapacityInWindow(t *testing.T) {
 	cases := []struct {
-		name   string
-		uaFull int64
-		design int64
-		want   bool
+		name    string
+		fullUAh int64
+		design  int64
+		want    bool
 	}{
 		{"0.75 倍设计容量", 3_000_000, 4_000_000, true},
 		{"下边界 0.5 倍", 2_000_000, 4_000_000, true},
@@ -298,8 +298,8 @@ func TestCapacityInWindow(t *testing.T) {
 		{"设计容量缺失一律放行", 999_999, 0, true},
 	}
 	for _, c := range cases {
-		if got := capacityInWindow(c.uaFull, c.design); got != c.want {
-			t.Errorf("%s: capacityInWindow(%d, %d) = %v, want %v", c.name, c.uaFull, c.design, got, c.want)
+		if got := capacityInWindow(c.fullUAh, c.design); got != c.want {
+			t.Errorf("%s: capacityInWindow(%d, %d) = %v, want %v", c.name, c.fullUAh, c.design, got, c.want)
 		}
 	}
 }

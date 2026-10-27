@@ -134,7 +134,7 @@ type app struct {
 	fs        SysFS
 	st        *Store
 	est       Estimator
-	designUA  int64
+	designUAh int64
 	cellCount int
 
 	nodePaths    map[string]string
@@ -165,21 +165,21 @@ func newApp() (*app, error) {
 	fs := SysFS{}
 	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
 	// 设计容量窗口而保持「学习期」，但内核读数（满充容量/循环次数）仍可正常展示。
-	designUA := int64(0)
+	designUAh := int64(0)
 	if node, err := fs.FindNode("charge_full_design"); err == nil {
 		if v, rerr := fs.ReadInt(node); rerr == nil {
-			designUA = v
+			designUAh = v
 		}
 	}
 	// Fallback: 部分设备（如 VIVO/iQOO）内核不把设计容量暴露到 sysfs，
 	// 但在设备树 (DTB) 中存储了 vivo,bat-capacity-mah。
-	if designUA <= 0 {
+	if designUAh <= 0 {
 		if v, err := readDTBatteryCapacity(); err == nil && v > 0 {
-			designUA = v
+			designUAh = v
 			_ = st.InsertEvent("design_dt", fmt.Sprintf("从设备树读取设计容量 %dµAh", v))
 		}
 	}
-	if designUA <= 0 {
+	if designUAh <= 0 {
 		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
 	}
 	// 双电芯检测：读 voltage_now，超过 5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
@@ -208,17 +208,17 @@ func newApp() (*app, error) {
 		fs:        fs,
 		st:        st,
 		est:       est,
-		designUA:  designUA,
+		designUAh: designUAh,
 		cellCount: cellCount,
 	}, nil
 }
 
 // redetectCellCount 周期性重检电芯数：启动时可能因电池深度放电导致误判。
-// 检测到变化时重新初始化 CCCT/ICA 电压阈值。同时刷新 fullUA。
+// 检测到变化时重新初始化 CCCT/ICA 电压阈值。同时刷新 fullUAh。
 func (a *app) redetectCellCount(p *Pipeline) {
 	// 刷新 charge_full（满充后会更新）
 	if full, err := a.readIntNode("charge_full"); err == nil {
-		p.setFullUA(full)
+		p.setFullUAh(full)
 	}
 	v, err := a.readIntNode("voltage_now")
 	if err != nil {
@@ -270,35 +270,35 @@ func (a *app) nodePath(name string) (string, error) {
 	return p, nil
 }
 
-func healthPct(fullUA, designUA int64) int64 {
-	if designUA <= 0 {
+func healthPct(fullUAh, designUAh int64) int64 {
+	if designUAh <= 0 {
 		return 0
 	}
-	return fullUA * 100 / designUA
+	return fullUAh * 100 / designUAh
 }
 
 // cycleEquiv 循环当量：累计充入电量 ÷ 设计容量。charged_ua_total 单位 µA·s，
-// 须先 ÷3600 折算 µAh 再与 designUA（µAh）同纲相除，否则差 3600 倍；
-// designUA 缺失时返回 +Inf，由出口按非有限值降级省略。
-func cycleEquiv(totalUAs, designUA int64) float64 {
-	if designUA <= 0 {
+// 须先 ÷3600 折算 µAh 再与 designUAh（µAh）同纲相除，否则差 3600 倍；
+// designUAh 缺失时返回 +Inf，由出口按非有限值降级省略。
+func cycleEquiv(totalUAs, designUAh int64) float64 {
+	if designUAh <= 0 {
 		return math.Inf(1)
 	}
-	return float64(totalUAs) / (float64(designUA) * 3600)
+	return float64(totalUAs) / (float64(designUAh) * 3600)
 }
 
 func (a *app) basics() Design {
 	// 内核 charge_full / charge_full_design 按原值展示，不乘电芯数：
 	// charge_full 在双电芯机上已是整包值（真机以 charge_counter/charge_full
-	// ≈ capacity% 验证过），再乘会翻倍；而 healthPct 两侧同乘 cc 属分子分母
+	// ≈ capacity% 验证过），再乘会翻倍；而 healthPct 两侧同乘 cellCount 属分子分母
 	// 约掉、结果不变（no-op），并不能修 200% 之类口径不一致。双电芯口径差异
 	// 需真机实测后再单独处理，此处保持原值最稳妥。
-	d := Design{DesignMah: a.designUA / 1000, HasDesign: a.designUA > 0}
+	d := Design{DesignMah: a.designUAh / 1000, HasDesign: a.designUAh > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
 		d.FullMah = full / 1000
 		d.HasFull = true
 		if d.HasDesign {
-			d.Pct = healthPct(full, a.designUA)
+			d.Pct = healthPct(full, a.designUAh)
 			d.HasPct = true
 		}
 	}
@@ -310,7 +310,7 @@ func (a *app) basics() Design {
 }
 
 func (a *app) refresh() error {
-	// 用 stats() 组装描述，让实测估算（EstUA）也能写进 module.prop
+	// 用 stats() 组装描述，让实测估算（EstUAh）也能写进 module.prop
 	d, snap, err := a.stats()
 	if err != nil {
 		return err
@@ -345,18 +345,18 @@ func (a *app) refreshPruned() error {
 func (a *app) stats() (Design, Snapshot, error) {
 	d := a.basics()
 	snap := Snapshot{
-		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUA),
+		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUAh),
 		RMoh:       a.rMoh(),
 	}
 	// 通道互检：四路容量口径互相印证，量纲误判/脏数据类问题的出口（见 quality.go）
-	fullUA := int64(0)
+	fullUAh := int64(0)
 	if v, err := a.readIntNode("charge_full"); err == nil {
-		fullUA = v
+		fullUAh = v
 	}
-	snap.Quality = CapacityQuality(kvInt(a.st, kvKeyEmaUA),
-		kvInt(a.st, kvMidImpliedUA), kvInt(a.st, kvDisImpliedUA), fullUA)
+	snap.Quality = CapacityQuality(kvInt(a.st, kvKeyEmaUAh),
+		kvInt(a.st, kvMidImpliedUAh), kvInt(a.st, kvDisImpliedUAh), fullUAh)
 	if ema, samples, ok := a.estimate(); ok {
-		snap.EstUA = &ema
+		snap.EstUAh = &ema
 		snap.Samples = samples
 	}
 	// σ 仅 ML 通道有效：stable 读到残留 kv 值会污染 once/json 出口（describe 另有硬 gate）
@@ -390,7 +390,7 @@ func (a *app) stats() (Design, Snapshot, error) {
 
 func (a *app) estimate() (int64, int64, bool) {
 	samples := kvInt(a.st, kvKeySamples)
-	ema := kvInt(a.st, kvKeyEmaUA)
+	ema := kvInt(a.st, kvKeyEmaUAh)
 	if samples <= 0 || ema <= 0 {
 		return 0, 0, false
 	}
@@ -472,7 +472,7 @@ func runDaemon() error {
 	// 注入 localNow 而非 time.Now：Pipeline 用 p.now().Format 打决策点日志
 	// （如「[会话] 开始于」），time.Now 在设备上返回 UTC，会与 appendLog 的
 	// 本地时间戳差 8 小时；p.now().Unix() 取值不受影响
-	p := NewPipeline(a.fs, a.st, a.est, a.designUA, a.cellCount, localNow)
+	p := NewPipeline(a.fs, a.st, a.est, a.designUAh, a.cellCount, localNow)
 	p.Logf(a.appendLog)
 	lastStatus := ""
 	count := 0
@@ -645,8 +645,8 @@ func onceText(d Design, snap Snapshot, dis *DischargeRow) string {
 		fmt.Fprintln(&b, uiKV("内核健康", "Kernel health", fmt.Sprintf("%d%%", d.Pct)))
 	}
 	estText := uiText("学习期", "Learning period")
-	if snap.EstUA != nil {
-		estText = fmt.Sprintf("%d mAh", *snap.EstUA/1000)
+	if snap.EstUAh != nil {
+		estText = fmt.Sprintf("%d mAh", *snap.EstUAh/1000)
 		if uiLang() == langEn {
 			// 英文单复数：1 次有效会话时不能写 "1 valid sessions"
 			noun := "valid sessions"
@@ -674,8 +674,8 @@ func onceText(d Design, snap Snapshot, dis *DischargeRow) string {
 	fmt.Fprintln(&b, uiKV("内阻", "Internal resistance", resText))
 	if dis != nil {
 		body := uiText(
-			fmt.Sprintf("%d→%d%% 放出 %d mAh", dis.StartCap, dis.EndCap, dis.Uah/1000),
-			fmt.Sprintf("%d→%d%% released %d mAh", dis.StartCap, dis.EndCap, dis.Uah/1000),
+			fmt.Sprintf("%d→%d%% 放出 %d mAh", dis.StartCap, dis.EndCap, dis.UAh/1000),
+			fmt.Sprintf("%d→%d%% released %d mAh", dis.StartCap, dis.EndCap, dis.UAh/1000),
 		)
 		if dis.Implied != nil {
 			body += uiText(
@@ -748,7 +748,7 @@ func runJson() error {
 	}
 	disch := make([]dischargeEntry, 0, len(disRows))
 	for _, dr := range disRows {
-		e := dischargeEntry{TS: dr.TS, Secs: dr.Secs, UahMah: dr.Uah / 1000,
+		e := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
 			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
 			InvalidReason: dr.InvalidReason}
 		if e.Implied != nil {

@@ -23,14 +23,17 @@ const (
 	trendMKZ        = 1.96 // Mann-Kendall 双侧 5% 显著性临界值
 )
 
+// TrendState 为趋势三态：insufficient / stable / significant。
 type TrendState string
 
+// 趋势三态取值：insufficient 数据不足、stable 无显著变化、significant 显著变化。
 const (
 	TrendInsufficient TrendState = "insufficient"
 	TrendStable       TrendState = "stable"
 	TrendSignificant  TrendState = "significant"
 )
 
+// TrendResult 为稳健趋势拟合结果：MahPerWeek 与估算点同单位（µAh/周），SpanDay 为跨度天数。
 type TrendResult struct {
 	MahPerWeek float64
 	R2         float64

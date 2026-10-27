@@ -12,6 +12,7 @@ import (
 	"strings"
 )
 
+// ErrNodeNotFound 表示 sysfs 节点不存在（区别于瞬时读失败，用于负缓存判定）。
 var ErrNodeNotFound = errors.New("sysfs 节点未找到")
 
 const (
@@ -19,6 +20,7 @@ const (
 	defaultDevicesRoot     = "/sys/devices"
 )
 
+// SysFS 封装 power_supply sysfs 节点查找与整数读取；Base/devices 为空时用默认路径。
 type SysFS struct {
 	Base    string
 	devices string
@@ -38,6 +40,7 @@ func (s SysFS) devicesRoot() string {
 	return defaultDevicesRoot
 }
 
+// FindNode 先查 battery/<name> 固定路径，未命中再全树扫描；均失败返回 ErrNodeNotFound。
 func (s SysFS) FindNode(name string) (string, error) {
 	fixed := filepath.Join(s.base(), "battery", name)
 	if f, err := os.Open(fixed); err == nil {
@@ -65,6 +68,7 @@ func (s SysFS) FindNode(name string) (string, error) {
 	return found, nil
 }
 
+// ReadInt 读取严格非负整数节点；内容非纯数字时报错。
 func (s SysFS) ReadInt(path string) (int64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -98,10 +102,10 @@ func (s SysFS) ReadIntSigned(path string) (int64, error) {
 }
 
 const (
-	// microUnitChargeMinUA 量纲锚点分界：power_supply 同一驱动的 charge/current
+	// microUnitChargeMinUAh 量纲锚点分界：power_supply 同一驱动的 charge/current
 	// 单位一致。手机电池容量以 µAh 计必 ≥ 100mAh，以 mAh 计不可能 ≥ 100000
 	// （100Ah），故此界两侧无歧义，可据 charge_full 的量纲定 current_now 量纲。
-	microUnitChargeMinUA int64 = 100_000
+	microUnitChargeMinUAh int64 = 100_000
 	// noAnchorUA 无锚点时的幅值分界：mA 读数超过 10000 即意味着 10A（手机电池
 	// 快充上限），故大值必为 µA；小值两种量纲都讲得通，按 mA 处理。保留历史
 	// 取值以兼容既有设备行为，两侧残留误差都在尾部（µA 设备 <10mA、mA 设备 >10A）。
@@ -121,7 +125,7 @@ func NormCurrentUA(raw int64) int64 {
 // 读数折算成 µA。判据是「量纲」而非「幅值」：同一 power_supply 驱动下 charge 与
 // current 单位一致，而 charge_full 是缓变的大量程值，拿它当幅值阈值会把小电流
 // 整批误判。
-//   - charge_full ≥ microUnitChargeMinUA（µAh 量纲）⇒ current_now 已是 µA，直通；
+//   - charge_full ≥ microUnitChargeMinUAh（µAh 量纲）⇒ current_now 已是 µA，直通；
 //   - charge_full 以 mAh 计 ⇒ current_now 为 mA，×1000 折算；
 //   - charge_full 不可读（≤0）时退化为幅值启发式，见 noAnchorUA 注。
 //
@@ -131,12 +135,12 @@ func NormCurrentUA(raw int64) int64 {
 // < 0.6A 的真实 µA 读数 ×1000（40mA 变 40A）。实机采样库显示换上该实现当天起
 // 每天 200+ 条百安级电流，充电积分、中段校准、CCCT/ICA 倍率门控全线失真，
 // 「实测」估算被推到设计容量的 114%。
-func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
+func NormCurrentUAWithFull(raw, chargeFullUAh int64) int64 {
 	var ua int64
 	switch {
-	case chargeFullUA >= microUnitChargeMinUA:
+	case chargeFullUAh >= microUnitChargeMinUAh:
 		ua = raw
-	case chargeFullUA > 0:
+	case chargeFullUAh > 0:
 		ua = raw * 1000
 	case absI64(raw) > noAnchorUA:
 		ua = raw
@@ -149,6 +153,7 @@ func NormCurrentUAWithFull(raw, chargeFullUA int64) int64 {
 	return ua
 }
 
+// NormTempC 把 temp 节点读数归一为摄氏度，并截断到 [-40, 80]。
 func NormTempC(raw int64) float64 {
 	var c float64
 	if raw >= 100 {

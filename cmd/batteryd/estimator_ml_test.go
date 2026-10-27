@@ -36,13 +36,13 @@ func kvFloats(t *testing.T, st *Store, key string, wantLen int) []float64 {
 
 func seedML(t *testing.T, est *Learning) {
 	t.Helper()
-	sr := SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000}
+	sr := SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000}
 	upd, err := est.OnSession(sr)
 	if err != nil {
 		t.Fatalf("种子会话应被接受: %v", err)
 	}
-	if upd.EstUA != 3000000 || upd.Samples != 1 {
-		t.Fatalf("种子会话 = (%d,%d), want (3000000,1)", upd.EstUA, upd.Samples)
+	if upd.EstUAh != 3000000 || upd.Samples != 1 {
+		t.Fatalf("种子会话 = (%d,%d), want (3000000,1)", upd.EstUAh, upd.Samples)
 	}
 }
 
@@ -53,7 +53,7 @@ func TestLearningRejectsColdSeed(t *testing.T) {
 	sess := baseSession()
 	sess.TempMin = 8
 	sess.TempMax = 10
-	sr := SettledSession{Session: sess, AccUA: 6480000000, DesignUA: 4000000}
+	sr := SettledSession{Session: sess, AccUAs: 6480000000, DesignUAh: 4000000}
 
 	_, err := est.OnSession(sr)
 	if err == nil {
@@ -66,7 +66,7 @@ func TestLearningRejectsColdSeed(t *testing.T) {
 	if re.Result.Reason != "temp_out_of_range" {
 		t.Fatalf("Reason = %q, want temp_out_of_range", re.Result.Reason)
 	}
-	if _, ok := est.kv.KVGet(kvKeyEmaUA); ok {
+	if _, ok := est.kv.KVGet(kvKeyEmaUAh); ok {
 		t.Fatal("拒绝后 EMA 不应被写入")
 	}
 }
@@ -77,11 +77,11 @@ func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 
 	var lastSess Session
 	for i := 0; i < 60; i++ {
-		e := kvInt(st, kvKeyEmaUA)
+		e := kvInt(st, kvKeyEmaUAh)
 		sess := baseSession()
 		sess.StartTs += int64(i) * 10000
 		sess.EndTs = sess.StartTs + 6000
-		sr := SettledSession{Session: sess, AccUA: e * 2160, DesignUA: 4000000}
+		sr := SettledSession{Session: sess, AccUAs: e * 2160, DesignUAh: 4000000}
 
 		upd, err := est.OnSession(sr)
 		if err != nil {
@@ -119,15 +119,15 @@ func TestLearningClipsCorrectionAtUpperBound(t *testing.T) {
 	if err := st.KVSet(kvKeySamples, "50"); err != nil {
 		t.Fatalf("写 kv[samples]: %v", err)
 	}
-	if err := st.KVSet(kvKeyEmaUA, "3000000"); err != nil {
+	if err := st.KVSet(kvKeyEmaUAh, "3000000"); err != nil {
 		t.Fatalf("写 kv[ema_ua]: %v", err)
 	}
 	setKVJSON(t, st, kvKeyRlsTheta, []float64{2.0, 0, 0, 0})
 	setKVJSON(t, st, kvKeyRlsPSym, []float64{100, 0, 0, 0, 100, 0, 0, 100, 0, 100})
 
 	sess := baseSession()
-	emaBefore := kvInt(st, kvKeyEmaUA)
-	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 9288000000, DesignUA: 4000000})
+	emaBefore := kvInt(st, kvKeyEmaUAh)
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUAs: 9288000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("探测会话应被接受: %v", err)
 	}
@@ -142,8 +142,8 @@ func TestLearningClipsCorrectionAtUpperBound(t *testing.T) {
 	w := mlWeight(50)
 	corrected := float64(emaBefore) * clipRatio(pred)
 	want := int64((1-w)*float64(emaBefore) + w*corrected)
-	if upd.EstUA != want {
-		t.Fatalf("clip 生效时 EstUA = %d, want %d((1-%v)*%d+%v*%v)", upd.EstUA, want, w, emaBefore, w, corrected)
+	if upd.EstUAh != want {
+		t.Fatalf("clip 生效时 EstUAh = %d, want %d((1-%v)*%d+%v*%v)", upd.EstUAh, want, w, emaBefore, w, corrected)
 	}
 	if upd.Samples != 51 {
 		t.Fatalf("探测会话 Samples = %d, want 51", upd.Samples)
@@ -156,15 +156,15 @@ func TestLearningBaselineMovesDuringLearning(t *testing.T) {
 	est, st := newTestLearning(t)
 	seedML(t, est) // ema=3000000
 
-	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 9288000000, DesignUA: 4000000})
+	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUAs: 9288000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("学习期会话应被接受: %v", err)
 	}
 	// sFull = 9288000000×100/(60×3600) = 4300000；est = (3000000×7+4300000×3)/10
-	if want := int64(3390000); upd.EstUA != want {
-		t.Fatalf("学习期 EstUA = %d, want %d(基线应随会话移动)", upd.EstUA, want)
+	if want := int64(3390000); upd.EstUAh != want {
+		t.Fatalf("学习期 EstUAh = %d, want %d(基线应随会话移动)", upd.EstUAh, want)
 	}
-	if v, _ := st.KVGet(kvKeyEmaUA); v != "3390000" {
+	if v, _ := st.KVGet(kvKeyEmaUAh); v != "3390000" {
 		t.Fatalf(`学习期 kv[ema_ua] = %q, want "3390000"`, v)
 	}
 }
@@ -177,15 +177,15 @@ func TestLearningPartialWeightDuringLearning(t *testing.T) {
 	sess := baseSession()
 	sess.StartCap = 78
 	sess.EndCap = 98
-	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 3096000000, DesignUA: 4000000})
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUAs: 3096000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("学习期未满充会话应被接受: %v", err)
 	}
 	// sFull = 3096000000×100/(20×3600) = 4300000；est = (3000000*9+4300000)/10
-	if want := int64(3130000); upd.EstUA != want {
-		t.Fatalf("学习期 EstUA = %d, want %d(未满充降权 1/10)", upd.EstUA, want)
+	if want := int64(3130000); upd.EstUAh != want {
+		t.Fatalf("学习期 EstUAh = %d, want %d(未满充降权 1/10)", upd.EstUAh, want)
 	}
-	if v, _ := st.KVGet(kvKeyEmaUA); v != "3130000" {
+	if v, _ := st.KVGet(kvKeyEmaUAh); v != "3130000" {
 		t.Fatalf(`学习期 kv[ema_ua] = %q, want "3130000"`, v)
 	}
 }
@@ -228,7 +228,7 @@ func TestLearningIQROnlyFromEighthRatio(t *testing.T) {
 	est, st := newTestLearning(t)
 	seedML(t, est)
 
-	low := SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000}
+	low := SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000}
 	for i := 0; i < 7; i++ {
 		upd, err := est.OnSession(low)
 		if err != nil {
@@ -242,7 +242,7 @@ func TestLearningIQROnlyFromEighthRatio(t *testing.T) {
 		t.Fatalf("7 条正常会话后 ratio_hist 应恰有 7 个元素, got %q", v)
 	}
 
-	outlier := SettledSession{Session: baseSession(), AccUA: 9288000000, DesignUA: 4000000}
+	outlier := SettledSession{Session: baseSession(), AccUAs: 9288000000, DesignUAh: 4000000}
 	upd, err := est.OnSession(outlier)
 	if err != nil {
 		t.Fatalf("K=7 时不应做 IQR 剔除，离群会话应被接受: %v", err)
@@ -275,7 +275,7 @@ func TestLearningIQROnlyFromEighthRatio(t *testing.T) {
 		t.Fatalf(`剔除后 kv[samples] = %q, want "9"`, v)
 	}
 	// 基线在被剔除会话前已随第 8 条离群会话移动到 3390000，剔除本身不再改写
-	if v, _ := st.KVGet(kvKeyEmaUA); v != "3390000" {
+	if v, _ := st.KVGet(kvKeyEmaUAh); v != "3390000" {
 		t.Fatalf(`剔除后 kv[ema_ua] = %q, want "3390000"`, v)
 	}
 }
@@ -291,7 +291,7 @@ func TestLearningSigma(t *testing.T) {
 
 	// 种子后首批会话仍处学习期（samples≤30）且 sfull_hist 不足 8 个：
 	// φᵀPφ 尚无意义、实测散布也不可用，σ 应为 0（由上层 ≤0→nil 降级隐藏 ±）
-	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
+	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("会话应被接受: %v", err)
 	}
@@ -321,11 +321,11 @@ func popRelStd(xs []float64) float64 {
 
 // correctedFromKV 从 kv 读回更新后的 θ，与 σ 计算时刻的 EMA（喂入前的 ema_ua）
 // 重算校正容量（mAh 域 σ 的换算基数；persist 后 kv[ema_ua] 已是混合输出 est，不可直接用）
-func correctedFromKV(t *testing.T, st *Store, sess Session, emaUA int64) float64 {
+func correctedFromKV(t *testing.T, st *Store, sess Session, emaUAh int64) float64 {
 	t.Helper()
 	var theta [4]float64
 	copy(theta[:], kvFloats(t, st, kvKeyRlsTheta, 4))
-	return float64(emaUA) * clipRatio(dot4(mlPhi(sess, 1), theta))
+	return float64(emaUAh) * clipRatio(dot4(mlPhi(sess, 1), theta))
 }
 
 func setKVJSON(t *testing.T, st *Store, key string, v any) {
@@ -345,7 +345,7 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 
 	// 学习期（samples≤30）内、hist 长度 1..7 不足 8：实测散布不可用，σ 恒为 0
 	for i := 0; i < 7; i++ {
-		upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUA: 6480000000, DesignUA: 4000000})
+		upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000})
 		if err != nil {
 			t.Fatalf("第 %d 条正常会话应被接受: %v", i+1, err)
 		}
@@ -357,8 +357,8 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 	// 第 8 条会话构造微散布（sFull/ema=1.02）：sfull_hist 恰满 8 个，学习期
 	// 出口应给出 σ = sfull_hist 实测相对散布 × est/1000（est 为移动后的基线）
 	sess := baseSession()
-	emaBefore := kvInt(st, kvKeyEmaUA)
-	sr := SettledSession{Session: sess, AccUA: 6609600000, DesignUA: 4000000}
+	emaBefore := kvInt(st, kvKeyEmaUAh)
+	sr := SettledSession{Session: sess, AccUAs: 6609600000, DesignUAh: 4000000}
 	upd, err := est.OnSession(sr)
 	if err != nil {
 		t.Fatalf("第 8 条会话应被接受: %v", err)
@@ -369,8 +369,8 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 	sfull := kvFloats(t, st, kvKeySFullHist, 8)
 	sFull := int64(6609600000) * 100 / (60 * 3600) // 3060000
 	estWant := (emaBefore*7 + sFull*3) / 10        // 学习期基线随会话移动
-	if upd.EstUA != estWant {
-		t.Fatalf("学习期 EstUA = %d, want %d", upd.EstUA, estWant)
+	if upd.EstUAh != estWant {
+		t.Fatalf("学习期 EstUAh = %d, want %d", upd.EstUAh, estWant)
 	}
 	want := popRelStd(sfull) * float64(estWant) / 1000
 	if math.Abs(upd.SigmaMah-want) > 1e-6 {
@@ -386,7 +386,7 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 	if err := st.KVSet(kvKeySamples, "50"); err != nil {
 		t.Fatalf("写 kv[samples]: %v", err)
 	}
-	if err := st.KVSet(kvKeyEmaUA, "3000000"); err != nil {
+	if err := st.KVSet(kvKeyEmaUAh, "3000000"); err != nil {
 		t.Fatalf("写 kv[ema_ua]: %v", err)
 	}
 	setKVJSON(t, st, kvKeyRlsPSym, []float64{1e4, 0, 0, 0, 1e4, 0, 0, 1e4, 0, 1e4})
@@ -394,8 +394,8 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 	setKVJSON(t, st, kvKeySFullHist, []float64{2880000, 2910000, 2940000, 2970000, 3000000, 3030000, 3060000, 3090000, 3120000, 3150000, 3180000, 3210000})
 
 	sess := baseSession()
-	emaBefore := kvInt(st, kvKeyEmaUA)
-	upd, err := est.OnSession(SettledSession{Session: sess, AccUA: 6480000000, DesignUA: 4000000})
+	emaBefore := kvInt(st, kvKeyEmaUAh)
+	upd, err := est.OnSession(SettledSession{Session: sess, AccUAs: 6480000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("会话应被接受: %v", err)
 	}
@@ -430,12 +430,12 @@ func TestLearningSigmaConvergesWithTighterP0(t *testing.T) {
 	var emaBefore int64
 	for i := 0; i < 60; i++ {
 		sess = baseSession()
-		emaBefore = kvInt(st, kvKeyEmaUA)
+		emaBefore = kvInt(st, kvKeyEmaUAh)
 		var err error
 		upd, err = est.OnSession(SettledSession{
-			Session:  sess,
-			AccUA:    int64(math.Round(pattern[i%len(pattern)] * float64(emaBefore) * 2160)),
-			DesignUA: 4000000,
+			Session:   sess,
+			AccUAs:    int64(math.Round(pattern[i%len(pattern)] * float64(emaBefore) * 2160)),
+			DesignUAh: 4000000,
 		})
 		if err != nil {
 			t.Fatalf("第 %d 次喂入应被接受: %v", i+1, err)

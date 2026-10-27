@@ -38,12 +38,12 @@ func TestRenderJSONGoldenPartialNulls(t *testing.T) {
 }
 
 func TestRenderJSONGoldenFull(t *testing.T) {
-	estUA := int64(4501234)
+	estUAh := int64(4501234)
 	rMoh := 0.85
 	tempC := 28.5
 	sigma := 12.3
 	d := Design{DesignMah: 5000, HasDesign: true, FullMah: 4600, HasFull: true, Cycles: 322, HasCycles: true, Pct: 92, HasPct: true}
-	snap := Snapshot{EstUA: &estUA, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC, SigmaMah: &sigma}
+	snap := Snapshot{EstUAh: &estUAh, Samples: 42, CycleEquiv: 12.5, RMoh: &rMoh, TempC: &tempC, SigmaMah: &sigma}
 	// estimates 表存 µAh，RenderJSON 负责 /1000 转 mAh
 	recent := []TsVal{{TS: 1778000000, V: 4501000}, {TS: 1777999940, V: 4498000}}
 	now := time.Date(2026, 8, 26, 9, 5, 1, 0, time.UTC)
@@ -205,7 +205,7 @@ func TestRenderJSONTrendStates(t *testing.T) {
 
 func TestConvSessionCarriesInvalidReason(t *testing.T) {
 	in := Session{StartTs: 100, EndTs: 200, StartCap: 30, EndCap: 35,
-		Ua: 1_800_000_000, Valid: false, InvalidReason: "temp_out_of_range"}
+		AccUAs: 1_800_000_000, Valid: false, InvalidReason: "temp_out_of_range"}
 	e := convSession(in)
 	if e.InvalidReason != "temp_out_of_range" {
 		t.Fatalf("convSession 应透传 invalid_reason, got %q", e.InvalidReason)
@@ -218,8 +218,8 @@ func TestConvSessionCarriesInvalidReason(t *testing.T) {
 func TestRenderJSONDischargeEntries(t *testing.T) {
 	implied := int64(5300)
 	disch := []dischargeEntry{
-		{TS: 500, Secs: 4800, UahMah: 2765, StartCap: 78, EndCap: 25, Implied: &implied},
-		{TS: 900, Secs: 600, UahMah: 300, StartCap: 85, EndCap: 80}, // 无隐含
+		{TS: 500, Secs: 4800, Mah: 2765, StartCap: 78, EndCap: 25, Implied: &implied},
+		{TS: 900, Secs: 600, Mah: 300, StartCap: 85, EndCap: 80}, // 无隐含
 	}
 	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, disch, 0, time.Unix(0, 0))
 	if err != nil {

@@ -20,14 +20,14 @@ import (
 )
 
 const (
-	kvDisActive   = "dis_active"
-	kvDisStartTs  = "dis_start_ts"
-	kvDisStartCap = "dis_start_cap"
-	kvDisAcc      = "dis_acc_uah"
-	kvDisLastCC   = "dis_last_cc"
-	kvDisLastCCTs = "dis_last_cc_ts"
-	// kvDisImpliedUA 最近一次通过校准门控的放电差分隐含容量（µAh），供通道互检
-	kvDisImpliedUA = "dis_implied_ua"
+	kvDisActive         = "dis_active"
+	kvDisStartTs        = "dis_start_ts"
+	kvDisStartCap       = "dis_start_cap"
+	kvDisAcc            = "dis_acc_uah"
+	kvDisLastCounterUAh = "dis_last_cc"
+	kvDisLastCounterTs  = "dis_last_cc_ts"
+	// kvDisImpliedUAh 最近一次通过校准门控的放电差分隐含容量（µAh），供通道互检
+	kvDisImpliedUAh = "dis_implied_ua"
 
 	disResyncUAh = 100_000 // 单次差分超 100mAh 判电量计回修，只重置基线
 	disMinRowCap = 5       // 显示掉幅 <5 个百分点不落行
@@ -50,12 +50,12 @@ const (
 // accUAh 逐拍累进「物理可信」的电量计增量（含负增量，跳过回修跳变）：与充电侧
 // 同口径，正负都记才能既不漏休眠长间隙、也不被电量计抖动高估。
 type disState struct {
-	active   int64
-	startTs  int64
-	startCap int64
-	accUAh   int64
-	lastCC   int64
-	lastCCTs int64
+	active         int64
+	startTs        int64
+	startCap       int64
+	accUAh         int64
+	lastCounterUAh int64
+	lastCounterTs  int64
 }
 
 // trackDischarge 每 Tick 首位调用：Discharging 差分累计，Charging 触发结算，
@@ -70,15 +70,15 @@ func (p *Pipeline) trackDischarge(status string) {
 	}
 	// charge_counter 缺失时一次性禁用：nodePath 对 miss 不做负缓存，
 	// 否则每拍都全树扫 /sys（AGENTS 已知局限的hot路径版）
-	if p.disCCOff {
+	if p.disCounterOff {
 		return
 	}
-	cc, err := p.readNode("charge_counter")
+	counterUAh, err := p.readNode("charge_counter")
 	if err != nil {
 		// 只有确认节点不存在才负缓存停用；瞬时读取失败（suspend 竞态等）下一拍
 		// 重试，否则一次抖动会把电量计口径永久关掉直到进程重启。
 		if errors.Is(err, ErrNodeNotFound) {
-			p.disCCOff = true
+			p.disCounterOff = true
 			p.log("[放电] charge_counter 节点缺失，放电记录停用")
 		}
 		return
@@ -91,42 +91,42 @@ func (p *Pipeline) trackDischarge(status string) {
 	// 放电样本按 disSampleGapSecs 降采样落库，供放电侧分窗分析
 	if now-p.lastDisSampleTs >= disSampleGapSecs {
 		p.lastDisSampleTs = now
-		p.sampleDischarge(now, capVal, cc)
+		p.sampleDischarge(now, capVal, counterUAh)
 	}
 	if p.dis.active != 1 {
-		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCC: cc, lastCCTs: now}
+		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCounterUAh: counterUAh, lastCounterTs: now}
 		p.persistDis()
 		p.log("[放电] 会话开始 cap=%d%%", capVal)
 		return
 	}
-	if p.dis.lastCC == 0 { // 重启后续记且无基线：首拍只重定基线，无从判这段 Δt
-		p.dis.lastCC = cc
-		p.dis.lastCCTs = now
+	if p.dis.lastCounterUAh == 0 { // 重启后续记且无基线：首拍只重定基线，无从判这段 Δt
+		p.dis.lastCounterUAh = counterUAh
+		p.dis.lastCounterTs = now
 		p.persistDis()
 		return
 	}
 	// 放出电量＝逐拍可信增量之和：零/负增量（电量计抖动）与休眠长间隙都照记，
 	// 只有 Δ/Δt 反推电流超界的跳变（回修/复位）才跳过。
-	if d := cc - p.dis.lastCC; plausibleDelta(d, now-p.dis.lastCCTs) {
+	if d := counterUAh - p.dis.lastCounterUAh; plausibleDelta(d, now-p.dis.lastCounterTs) {
 		p.dis.accUAh -= d // 放电时计数下降，故取负增量为放出电量
 	}
-	p.dis.lastCC = cc
-	p.dis.lastCCTs = now
+	p.dis.lastCounterUAh = counterUAh
+	p.dis.lastCounterTs = now
 	p.persistDis()
 }
 
 // sampleDischarge 落一条放电样本（带符号电流，放电为负），供放电侧分窗分析。
-// cc 为采样时刻的电量计读数（µAh，0=未采到）。
-func (p *Pipeline) sampleDischarge(now, capVal, cc int64) {
+// counterUAh 为采样时刻的电量计读数（µAh，0=未采到）。
+func (p *Pipeline) sampleDischarge(now, capVal, counterUAh int64) {
 	vUV, verr := p.readNode("voltage_now")
 	if verr != nil || vUV <= 0 {
 		return
 	}
 	dUA := int64(0)
 	if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
-		dUA = -absI64(NormCurrentUAWithFull(iRaw, p.fullUA))
+		dUA = -absI64(NormCurrentUAWithFull(iRaw, p.fullUAh))
 	}
-	if err := p.st.InsertSample(now, dUA, vUV, capVal, cc); err != nil {
+	if err := p.st.InsertSample(now, dUA, vUV, capVal, counterUAh); err != nil {
 		_ = p.st.InsertEvent("sample_fail", err.Error())
 	}
 }
@@ -146,7 +146,7 @@ func (p *Pipeline) settleDischarge() {
 	if drop < disMinRowCap || uah <= 0 {
 		return // 太短不落行，静默
 	}
-	row := DischargeRow{TS: p.now().Unix(), Secs: dur, Uah: uah,
+	row := DischargeRow{TS: p.now().Unix(), Secs: dur, UAh: uah,
 		StartCap: s.startCap, EndCap: endCap}
 	durTxt := (time.Duration(dur) * time.Second).Truncate(time.Second)
 	if drop >= disMinEstCap {
@@ -179,21 +179,21 @@ func (p *Pipeline) calibrateDischarge(row DischargeRow) {
 	if row.StartCap > disCalMaxStart || row.StartCap-row.EndCap < disCalMinCap {
 		return
 	}
-	if !capacityInWindow(implied, p.designUA) {
+	if !capacityInWindow(implied, p.designUAh) {
 		_ = p.st.InsertEvent("dis_cal_skip", fmt.Sprintf("implied=%d 超出设计容量窗口", implied))
 		return
 	}
-	ema := kvInt(p.st, kvKeyEmaUA)
+	ema := kvInt(p.st, kvKeyEmaUAh)
 	if ema <= 0 {
 		return // EMA 未初始化：等首个会话建立基线后再校准
 	}
 	blended := emaBlend(ema, implied, 0)
-	if err := p.st.KVSet(kvKeyEmaUA, strconv.FormatInt(blended, 10)); err != nil {
+	if err := p.st.KVSet(kvKeyEmaUAh, strconv.FormatInt(blended, 10)); err != nil {
 		_ = p.st.InsertEvent("dis_cal_fail", err.Error())
 		return
 	}
 	// 留给通道互检（checkQuality）作对照口径
-	_ = p.st.KVSet(kvDisImpliedUA, strconv.FormatInt(implied, 10))
+	_ = p.st.KVSet(kvDisImpliedUAh, strconv.FormatInt(implied, 10))
 	p.log("[校准] 放电差分(%d→%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
 		row.StartCap, row.EndCap, implied/1000, ema/1000, blended/1000)
 	_ = p.st.InsertEvent("dis_cal", fmt.Sprintf("implied=%d ema=%d→%d", implied, ema, blended))
@@ -208,12 +208,12 @@ func (p *Pipeline) restoreDischarge() {
 		return
 	}
 	p.dis = disState{
-		active:   1,
-		startTs:  kvInt(p.st, kvDisStartTs),
-		startCap: kvInt(p.st, kvDisStartCap),
-		accUAh:   kvInt(p.st, kvDisAcc),
-		lastCC:   kvInt(p.st, kvDisLastCC),
-		lastCCTs: kvInt(p.st, kvDisLastCCTs),
+		active:         1,
+		startTs:        kvInt(p.st, kvDisStartTs),
+		startCap:       kvInt(p.st, kvDisStartCap),
+		accUAh:         kvInt(p.st, kvDisAcc),
+		lastCounterUAh: kvInt(p.st, kvDisLastCounterUAh),
+		lastCounterTs:  kvInt(p.st, kvDisLastCounterTs),
 	}
 }
 
@@ -226,8 +226,8 @@ func (p *Pipeline) persistDis() {
 		{kvDisStartTs, p.dis.startTs},
 		{kvDisStartCap, p.dis.startCap},
 		{kvDisAcc, p.dis.accUAh},
-		{kvDisLastCC, p.dis.lastCC},
-		{kvDisLastCCTs, p.dis.lastCCTs},
+		{kvDisLastCounterUAh, p.dis.lastCounterUAh},
+		{kvDisLastCounterTs, p.dis.lastCounterTs},
 	} {
 		_ = p.st.KVSet(kv.k, strconv.FormatInt(kv.v, 10))
 	}
@@ -235,7 +235,7 @@ func (p *Pipeline) persistDis() {
 
 func (p *Pipeline) clearDis() {
 	p.dis = disState{}
-	for _, k := range []string{kvDisActive, kvDisStartTs, kvDisStartCap, kvDisAcc, kvDisLastCC, kvDisLastCCTs} {
+	for _, k := range []string{kvDisActive, kvDisStartTs, kvDisStartCap, kvDisAcc, kvDisLastCounterUAh, kvDisLastCounterTs} {
 		_ = p.st.KVSet(k, "0")
 	}
 }

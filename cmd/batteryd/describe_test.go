@@ -39,9 +39,9 @@ func TestBuildDescriptionTemperature(t *testing.T) {
 }
 
 func TestBuildDescriptionWithMeasured(t *testing.T) {
-	estUA := int64(3600000)
+	estUAh := int64(3600000)
 	d := fullDesign()
-	snap := Snapshot{EstUA: &estUA}
+	snap := Snapshot{EstUAh: &estUAh}
 	want := "内核健康 96%（3850 mAh）｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
@@ -67,9 +67,9 @@ func TestBuildDescriptionPartial(t *testing.T) {
 
 func TestBuildDescriptionEstimateWithoutDesign(t *testing.T) {
 	// 有实测但缺设计容量：无法折算百分比，只报实测容量；内核健康仍保留
-	estUA := int64(3_600_000)
+	estUAh := int64(3_600_000)
 	d := Design{FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
-	got, err := BuildDescription(d, Snapshot{EstUA: &estUA})
+	got, err := BuildDescription(d, Snapshot{EstUAh: &estUAh})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
@@ -83,10 +83,10 @@ func TestBuildDescriptionMLZeroSigmaWithEstimate(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA := int64(3_600_000)
+	estUAh := int64(3_600_000)
 	sigma := 0.0
 	d := fullDesign()
-	got, err := BuildDescription(d, Snapshot{EstUA: &estUA, SigmaMah: &sigma})
+	got, err := BuildDescription(d, Snapshot{EstUAh: &estUAh, SigmaMah: &sigma})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
@@ -121,9 +121,9 @@ func TestBuildDescriptionMLPrefix(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA := int64(3600000)
+	estUAh := int64(3600000)
 	d := fullDesign()
-	snap := Snapshot{EstUA: &estUA}
+	snap := Snapshot{EstUAh: &estUAh}
 	want := "[ML实验版]内核健康 96%（3850 mAh）｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
@@ -138,10 +138,10 @@ func TestBuildDescriptionMLSigmaSuffix(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA := int64(3600000)
+	estUAh := int64(3600000)
 	sigma := 15.6
 	d := fullDesign()
-	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
+	snap := Snapshot{EstUAh: &estUAh, SigmaMah: &sigma}
 	want := "[ML实验版]内核健康 96%（3850 mAh）｜实测健康 90%（3600±16 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {
@@ -156,10 +156,10 @@ func TestBuildDescriptionStableIgnoresSigma(t *testing.T) {
 	old := channel
 	channel = "stable"
 	defer func() { channel = old }()
-	estUA := int64(3600000)
+	estUAh := int64(3600000)
 	sigma := 15.6
 	d := fullDesign()
-	snap := Snapshot{EstUA: &estUA, SigmaMah: &sigma}
+	snap := Snapshot{EstUAh: &estUAh, SigmaMah: &sigma}
 	want := "内核健康 96%（3850 mAh）｜实测健康 90%（3600 mAh）｜循环 210次"
 	got, err := BuildDescription(d, snap)
 	if err != nil {

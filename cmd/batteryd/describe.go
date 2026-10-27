@@ -8,8 +8,10 @@ import (
 	"strings"
 )
 
+// ErrNoData 表示没有任何可用电池数据，无法组装描述。
 var ErrNoData = errors.New("无可用电池数据")
 
+// Design 为内核口径的电池静态信息（容量单位 mAh，Pct 为内核健康百分比）。
 type Design struct {
 	DesignMah int64
 	HasDesign bool
@@ -21,8 +23,9 @@ type Design struct {
 	HasPct    bool
 }
 
+// Snapshot 为估算出口快照：EstUAh 为实测满容量（µAh），其余为显示层派生量。
 type Snapshot struct {
-	EstUA      *int64
+	EstUAh     *int64
 	Samples    int64
 	CycleEquiv float64
 	RMoh       *float64
@@ -59,8 +62,8 @@ func BuildDescription(d Design, snap Snapshot) (string, error) {
 			parts = append(parts, fmt.Sprintf("%s %d%%", uiText("内核健康", "Kernel health"), d.Pct))
 		}
 	}
-	if snap.EstUA != nil {
-		estMah := *snap.EstUA / 1000
+	if snap.EstUAh != nil {
+		estMah := *snap.EstUAh / 1000
 		if d.HasDesign && d.DesignMah > 0 {
 			pct := int64(math.Round(float64(estMah) / float64(d.DesignMah) * 100))
 			body := fmt.Sprintf("%d mAh", estMah)
@@ -110,6 +113,7 @@ func BuildDescription(d Design, snap Snapshot) (string, error) {
 	return desc, nil
 }
 
+// WriteModuleProp 用临时文件 + rename 原子替换 module.prop 的 description 行。
 func WriteModuleProp(propPath, newDescription string) error {
 	data, err := os.ReadFile(propPath)
 	if err != nil {

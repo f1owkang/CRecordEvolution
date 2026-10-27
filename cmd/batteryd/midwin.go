@@ -27,22 +27,22 @@ const (
 	midMinBinPass       = 3     // 每个窗格的最少穿越次数，低于此判覆盖不足、不校准
 	midCalGapSecs       = 86400 // 校准最小间隔：至多每日一次，避免重复计入
 	kvMidCalTs          = "mid_cal_ts"
-	// kvMidImpliedUA 最近一次通过门控的中段隐含容量（µAh），供通道互检
-	kvMidImpliedUA = "mid_implied_ua"
+	// kvMidImpliedUAh 最近一次通过门控的中段隐含容量（µAh），供通道互检
+	kvMidImpliedUAh = "mid_implied_ua"
 )
 
-// MidImplied 聚合充电样本并返回 pass 归一的中段隐含满容量（与 EstUA 同单位，
+// MidImplied 聚合充电样本并返回 pass 归一的中段隐含满容量（与 EstUAh 同单位，
 // 即 µAh 量级数值）。判定口径：
 //   - 样本按时间连续（相邻间隔 ≤ midSegMaxDt）且电流为正切成一段；
 //   - 段内区间电量优先取电量计差分（charge_counter，µAh 直读，与放电侧/内核
-//     charge_full 同源，免疫 current_now 刻度偏差）；整批样本都没有 cc（设备
-//     无电量计）时才回退电流积分 Q=I·dt÷3600（µA·s→µAh）；
-//   - 有电量计读数（样本里出现过 cc>0）时，缺 cc 的旧区间直接跳过：电流积分
-//     相对电量计系统性偏低 10~13%（实测中段因此从 5747 被拉到 5381mAh），
+//     charge_full 同源，免疫 current_now 刻度偏差）；整批样本都没有电量计读数
+//     （设备无电量计）时才回退电流积分 Q=I·dt÷3600（µA·s→µAh）；
+//   - 有电量计读数（样本里出现过 CounterUAh>0）时，缺读数的旧区间直接跳过：电流
+//     积分相对电量计系统性偏低 10~13%（实测中段因此从 5747 被拉到 5381mAh），
 //     两种口径不能混用；覆盖不足时宁可不校准；
 //   - 区间电量均摊到跨越的 1% 窗格（c1>c0）；c1<c0（电量计回修）、dt≤0 与
 //     增量超限的区间无法归因，跳过；百分比停滞的区间归入当前窗格（若在窗内）；
-//     同一段内若有区间因缺 cc 被跳过，对应窗格 Q 与 pass 都不计——部分覆盖
+//     同一段内若有区间因缺电量计读数被跳过，对应窗格 Q 与 pass 都不计——部分覆盖
 //     若仍记一整次穿越，会把该窗格的均值拉低；
 //   - 窗口内任一窗格穿越次数 < midMinBinPass ⇒ 覆盖不足，ok=false（防止只用
 //     局部区间充电的习惯把窗口算偏）；
@@ -51,13 +51,13 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 	var binQ [100]float64
 	var binP [100]int
 
-	// 是否具备电量计读数：样本里出现过 cc>0 即说明本机有 charge_counter。
-	// 有则缺 cc 的区间一律跳过，不回退电流积分——积分口径系统性偏低 10~13%，
-	// 与 cc 混用会把中段校准整体拉低（实测 5747→5381mAh）。
-	hasCC := false
+	// 是否具备电量计读数：样本里出现过 CounterUAh>0 即说明本机有 charge_counter。
+	// 有则缺读数的区间一律跳过，不回退电流积分——积分口径系统性偏低 10~13%，
+	// 两种口径混用会把中段校准整体拉低（实测 5747→5381mAh）。
+	hasCounter := false
 	for _, r := range rows {
-		if r.CC > 0 {
-			hasCC = true
+		if r.CounterUAh > 0 {
+			hasCounter = true
 			break
 		}
 	}
@@ -74,7 +74,7 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 		}
 		if seg := rows[i:j]; len(seg) >= 2 {
 			segQ := map[int64]float64{}
-			// segBad 记录本段内「因缺 cc 无法归因」的窗格：该窗格只覆盖了一部分，
+			// segBad 记录本段内「因缺电量计读数无法归因」的窗格：该窗格只覆盖了一部分，
 			// Q 与 pass 都不能计，否则部分覆盖会把隐含值拉偏。
 			segBad := map[int64]bool{}
 			markBad := func(c0, c1 int64) {
@@ -95,8 +95,8 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 					continue
 				}
 				var q float64 // µAh
-				if cc0, cc1 := seg[k-1].CC, seg[k].CC; cc0 > 0 && cc1 > 0 {
-					d := cc1 - cc0
+				if counterFrom, counterTo := seg[k-1].CounterUAh, seg[k].CounterUAh; counterFrom > 0 && counterTo > 0 {
+					d := counterTo - counterFrom
 					if d <= 0 || d > midSegMaxUAh {
 						// 单区间零/负增量是电量计抖动/回修，跳过该区间即可；
 						// 该段的百分比穿越仍然成立，不因此扣掉整格 pass。
@@ -104,7 +104,7 @@ func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
 					}
 					q = float64(d)
 				} else {
-					if hasCC {
+					if hasCounter {
 						markBad(c0, c1)
 						continue // 有电量计却缺读数：该区间无法可信归因
 					}
@@ -154,7 +154,7 @@ func (p *Pipeline) calibrateMid(now int64) {
 	if now-kvInt(p.st, kvMidCalTs) < midCalGapSecs {
 		return
 	}
-	ema := kvInt(p.st, kvKeyEmaUA)
+	ema := kvInt(p.st, kvKeyEmaUAh)
 	if ema <= 0 {
 		return
 	}
@@ -167,22 +167,22 @@ func (p *Pipeline) calibrateMid(now int64) {
 	if !ok || mid <= 0 {
 		return
 	}
-	// 与会话通道同口径的合理性门控：中段隐含值来自电量计差分（无 cc 才回退
-	// 积分），同样会吃到量纲误判/脏样本（实测被 1000 倍误乘的样本推到 15592mAh，
+	// 与会话通道同口径的合理性门控：中段隐含值来自电量计差分（无电量计读数才
+	// 回退积分），同样会吃到量纲误判/脏样本（实测被 1000 倍误乘的样本推到 15592mAh，
 	// 比设计容量还高 1.5 倍），不设门则这条旁路能把无界垃圾灌进用户可见的实测值。
-	if !capacityInWindow(mid, p.designUA) {
+	if !capacityInWindow(mid, p.designUAh) {
 		p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh 超出设计容量窗口，不采信",
 			midWinLo, midWinHi, mid/1000)
 		_ = p.st.InsertEvent("mid_cal_skip", fmt.Sprintf("mid=%d 超出窗口", mid))
 		return
 	}
 	blended := emaBlend(ema, mid, 0)
-	if err := p.st.KVSet(kvKeyEmaUA, strconv.FormatInt(blended, 10)); err != nil {
+	if err := p.st.KVSet(kvKeyEmaUAh, strconv.FormatInt(blended, 10)); err != nil {
 		_ = p.st.InsertEvent("mid_cal_fail", err.Error())
 		return
 	}
 	// 留给通道互检（checkQuality）作对照口径
-	_ = p.st.KVSet(kvMidImpliedUA, strconv.FormatInt(mid, 10))
+	_ = p.st.KVSet(kvMidImpliedUAh, strconv.FormatInt(mid, 10))
 	_ = p.st.KVSet(kvMidCalTs, strconv.FormatInt(now, 10))
 	p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
 		midWinLo, midWinHi, mid/1000, ema/1000, blended/1000)

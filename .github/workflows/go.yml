@@ -1,0 +1,52 @@
+name: Go
+
+# Go 守护进程的 PR/push 守卫：在 webui.yml 之外补上 cmd/batteryd/ 的回归网。
+# 此前 Go 改动在 PR 阶段没有任何 CI（release.yml 也不跑测试），
+# 单测只在本地生效。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/go.yml'
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/go.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # go.mod 里 go 指令为 1.26.x，setup-go 按 go-version-file 取值
+      - name: gofmt check
+        run: |
+          unformatted="$(gofmt -l ./cmd)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1

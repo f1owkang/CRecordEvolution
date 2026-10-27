@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func putCC(t *testing.T, r *pipeRig, uah int64) {
+func putCounter(t *testing.T, r *pipeRig, uah int64) {
 	t.Helper()
 	writeFile(t, filepath.Join(r.fs.Base, "battery", "charge_counter"), fmtNode(uah))
 }
@@ -31,13 +31,13 @@ func TestDischargeCalibrationGates(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newPipeRig(t)
-			if err := r.st.KVSet(kvKeyEmaUA, "5000000"); err != nil {
+			if err := r.st.KVSet(kvKeyEmaUAh, "5000000"); err != nil {
 				t.Fatal(err)
 			}
 			cc := int64(5_000_000)
 			for i := int64(0); i < c.ticks; i++ {
 				cc -= c.perTick
-				putCC(t, r, cc)
+				putCounter(t, r, cc)
 				r.put(c.startCap-i, -500_000, 3_800_000)
 				r.step("Discharging")
 			}
@@ -46,12 +46,12 @@ func TestDischargeCalibrationGates(t *testing.T) {
 
 			// 首拍只重定基线，差分累计 (ticks-1) 次；掉幅 = ticks
 			implied := (c.ticks - 1) * c.perTick * 100 / c.ticks
-			got := kvInt(r.st, kvKeyEmaUA)
+			got := kvInt(r.st, kvKeyEmaUAh)
 			if !c.wantCal {
 				if got != base {
 					t.Fatalf("未采信不应改动 EMA, got %d", got)
 				}
-				if v, ok := r.st.KVGet(kvDisImpliedUA); ok {
+				if v, ok := r.st.KVGet(kvDisImpliedUAh); ok {
 					t.Fatalf("未采信不应写 dis_implied_ua, got %q", v)
 				}
 				return
@@ -60,7 +60,7 @@ func TestDischargeCalibrationGates(t *testing.T) {
 			if got != want {
 				t.Fatalf("EMA = %d, want %d（隐含 %d）", got, want, implied)
 			}
-			if v := kvInt(r.st, kvDisImpliedUA); v != implied {
+			if v := kvInt(r.st, kvDisImpliedUAh); v != implied {
 				t.Fatalf("dis_implied_ua = %d, want %d", v, implied)
 			}
 		})
@@ -92,15 +92,15 @@ func TestDischargeCalibrationReplayRealDeviceData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &Pipeline{st: st, designUA: 6_300_000, now: time.Now}
+	p := &Pipeline{st: st, designUAh: 6_300_000, now: time.Now}
 	// 实机「实测」基线量级：修复量纲回归后会话积分通道稳定在 5100mAh 上下
-	if err := st.KVSet(kvKeyEmaUA, "5100000"); err != nil {
+	if err := st.KVSet(kvKeyEmaUAh, "5100000"); err != nil {
 		t.Fatal(err)
 	}
 	for i := len(rows) - 1; i >= 0; i-- {
 		p.calibrateDischarge(rows[i])
 	}
-	ema := kvInt(st, kvKeyEmaUA)
+	ema := kvInt(st, kvKeyEmaUAh)
 	t.Logf("真机回放: %d 条放电会话 → EMA 5100 → %.0f mAh", len(rows), float64(ema)/1000)
 	// 应收敛到放电差分口径（门控样本均值 ~6000mAh）附近，而非停在会话积分基线。
 	// 下界放宽到 5400：库中含修复前的坏行（如 10-09 那条隐含 3306mAh 的部分覆盖
@@ -117,7 +117,7 @@ func TestDischargeSessionSettlesOnCharge(t *testing.T) {
 	// 15 拍放电：每拍 -8333µAh（≈0.5A×60s），cap 80→65
 	for i := 0; i < 15; i++ {
 		cc -= 8333
-		putCC(t, r, cc)
+		putCounter(t, r, cc)
 		r.put(80-int64(i), -500_000, 3_800_000)
 		r.step("Discharging")
 	}
@@ -135,8 +135,8 @@ func TestDischargeSessionSettlesOnCharge(t *testing.T) {
 	}
 	row := rows[0]
 	wantUah := int64(14 * 8333) // 首拍只定基线，其后 14 拍差分
-	if row.Uah != wantUah {
-		t.Fatalf("放出 = %d, want %d", row.Uah, wantUah)
+	if row.UAh != wantUah {
+		t.Fatalf("放出 = %d, want %d", row.UAh, wantUah)
 	}
 	if row.StartCap != 80 || row.EndCap != 65 {
 		t.Fatalf("cap 80→65, got %d→%d", row.StartCap, row.EndCap)
@@ -152,16 +152,16 @@ func TestDischargeSessionSettlesOnCharge(t *testing.T) {
 // 电量计回修：单跳超 100mAh 只重置基线，不计入放出量。
 func TestDischargeResyncSkipped(t *testing.T) {
 	r := newPipeRig(t)
-	putCC(t, r, 5_000_000)
+	putCounter(t, r, 5_000_000)
 	r.put(80, -500_000, 3_800_000)
-	r.step("Discharging")  // 定基线 5_000_000
-	putCC(t, r, 4_900_000) // 单跳 -100000，恰在界内会计入
+	r.step("Discharging")       // 定基线 5_000_000
+	putCounter(t, r, 4_900_000) // 单跳 -100000，恰在界内会计入
 	r.put(79, -500_000, 3_790_000)
 	r.step("Discharging")
-	putCC(t, r, 4_300_000) // 单跳 -600000 超界，判回修不计数
+	putCounter(t, r, 4_300_000) // 单跳 -600000 超界，判回修不计数
 	r.put(78, -500_000, 3_780_000)
 	r.step("Discharging")
-	putCC(t, r, 4_291_667) // 正常 -8333
+	putCounter(t, r, 4_291_667) // 正常 -8333
 	r.put(77, -500_000, 3_770_000)
 	r.step("Discharging")
 	r.put(65, 3_000_000, 3_700_000)
@@ -170,8 +170,8 @@ func TestDischargeResyncSkipped(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("应落一行, got %d", len(rows))
 	}
-	if want := int64(100_000 + 8333); rows[0].Uah != want {
-		t.Fatalf("回修跳变不应计入: uah=%d want=%d", rows[0].Uah, want)
+	if want := int64(100_000 + 8333); rows[0].UAh != want {
+		t.Fatalf("回修跳变不应计入: uah=%d want=%d", rows[0].UAh, want)
 	}
 }
 
@@ -179,19 +179,19 @@ func TestDischargeResyncSkipped(t *testing.T) {
 // （旧实现按单拍阈值筛会整段漏掉休眠间隙，实测使放电行隐含值塌到 3306mAh）。
 func TestDischargeCountsRealGapAcrossRestart(t *testing.T) {
 	r := newPipeRig(t)
-	putCC(t, r, 5_000_000)
+	putCounter(t, r, 5_000_000)
 	r.put(80, -500_000, 3_800_000)
 	r.step("Discharging")
-	putCC(t, r, 4_991_667)
+	putCounter(t, r, 4_991_667)
 	r.put(79, -500_000, 3_790_000)
 	r.step("Discharging")
 	// 模拟 daemon 死亡 2 小时期间又放了 400mAh（0.2A，物理可信），重启后 cc=4_591_667
 	r.cur = r.cur.Add(2 * time.Hour)
-	putCC(t, r, 4_591_667)
+	putCounter(t, r, 4_591_667)
 	r.put(70, -400_000, 3_700_000)
 	r.rebuildPipeline() // restoreDischarge: 增量与基线一起带回
 	r.step("Discharging")
-	putCC(t, r, 4_583_334) // 正常 -8333
+	putCounter(t, r, 4_583_334) // 正常 -8333
 	r.put(69, -400_000, 3_690_000)
 	r.step("Discharging")
 	r.put(65, 3_000_000, 3_600_000)
@@ -201,8 +201,8 @@ func TestDischargeCountsRealGapAcrossRestart(t *testing.T) {
 		t.Fatalf("应落一行, got %d", len(rows))
 	}
 	// 8333（间隙前）+ 400000（死亡间隙的真实放电）+ 8333（间隙后）
-	if want := int64(8333 + 400_000 + 8333); rows[0].Uah != want {
-		t.Fatalf("跨间隙的真实放电应计入: uah=%d want=%d", rows[0].Uah, want)
+	if want := int64(8333 + 400_000 + 8333); rows[0].UAh != want {
+		t.Fatalf("跨间隙的真实放电应计入: uah=%d want=%d", rows[0].UAh, want)
 	}
 	if rows[0].StartCap != 80 {
 		t.Fatalf("重启应延续原会话起点 80, got %d", rows[0].StartCap)
@@ -212,10 +212,10 @@ func TestDischargeCountsRealGapAcrossRestart(t *testing.T) {
 // 掉幅不足：<5 不落行；5~9 落行但不给隐含。
 func TestDischargeSmallDrops(t *testing.T) {
 	r := newPipeRig(t)
-	putCC(t, r, 5_000_000)
+	putCounter(t, r, 5_000_000)
 	r.put(80, -300_000, 3_800_000)
 	r.step("Discharging")
-	putCC(t, r, 4_900_000)
+	putCounter(t, r, 4_900_000)
 	r.put(77, -300_000, 3_770_000) // 掉幅 3
 	r.step("Discharging")
 	r.step("Discharging")
@@ -226,13 +226,13 @@ func TestDischargeSmallDrops(t *testing.T) {
 	}
 
 	// 掉幅 8：落行、无隐含
-	putCC(t, r, 4_900_000)
+	putCounter(t, r, 4_900_000)
 	r.put(77, -300_000, 3_770_000)
 	r.step("Charging") // 清掉旧会话（若有）
-	putCC(t, r, 4_890_000)
+	putCounter(t, r, 4_890_000)
 	r.put(77, -300_000, 3_770_000)
 	r.step("Discharging")
-	putCC(t, r, 4_800_000)
+	putCounter(t, r, 4_800_000)
 	r.put(69, -300_000, 3_690_000) // 掉幅 8
 	r.step("Discharging")
 	r.put(69, 3_000_000, 3_600_000)
@@ -264,13 +264,13 @@ func TestDischargeNodeAbsent(t *testing.T) {
 func TestDischargeSampleDownsampling(t *testing.T) {
 	r := newPipeRig(t)
 	cc := int64(5_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	r.put(80, -500_000, 3_800_000)
 	r.step("Discharging") // 首拍落一条（lastDisSampleTs 初值 0）
 	// 后续 20 拍，每拍 60s：应仅在满 5 分钟（第 5 拍）再落一条
 	for i := 0; i < 20; i++ {
 		cc -= 8333
-		putCC(t, r, cc)
+		putCounter(t, r, cc)
 		r.put(79, -500_000, 3_790_000)
 		r.step("Discharging")
 	}

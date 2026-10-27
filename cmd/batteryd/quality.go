@@ -1,6 +1,6 @@
 // 通道互检（数据质量哨兵）：把各路容量口径摆到一起互相印证。四路分别是
 //   - ema：会话电流积分经 EMA 融合后的「实测」基线；
-//   - mid：中段分窗隐含容量（电量计差分优先，无 cc 才回退电流积分）；
+//   - mid：中段分窗隐含容量（电量计差分优先，无电量计读数才回退电流积分）；
 //   - dis：放电差分隐含容量（charge_counter 芯片内积分 + 显示掉幅折算）；
 //   - full：内核 charge_full（电量计自学习值）。
 //
@@ -40,9 +40,9 @@ type Quality struct {
 
 // CapacityQuality 比较各路容量口径（单位 µAh）的相互偏差。可用路数 < 2 时
 // 返回 nil（无从互检）；各路 ≤0 视为缺失，不参与比较。
-func CapacityQuality(emaUA, midUA, disUA, fullUA int64) *Quality {
+func CapacityQuality(emaUAh, midUAh, disUAh, fullUAh int64) *Quality {
 	names := [...]string{"ema", "mid", "dis", "full"}
-	vals := [...]int64{emaUA, midUA, disUA, fullUA}
+	vals := [...]int64{emaUAh, midUAh, disUAh, fullUAh}
 	q := Quality{OK: true}
 	var slots [4]*int64
 	lo, hi := int64(0), int64(0)
@@ -76,10 +76,10 @@ func CapacityQuality(emaUA, midUA, disUA, fullUA int64) *Quality {
 // 只静默，绝不影响结算主链路。
 func (p *Pipeline) checkQuality() {
 	q := CapacityQuality(
-		kvInt(p.st, kvKeyEmaUA),
-		kvInt(p.st, kvMidImpliedUA),
-		kvInt(p.st, kvDisImpliedUA),
-		p.fullUA,
+		kvInt(p.st, kvKeyEmaUAh),
+		kvInt(p.st, kvMidImpliedUAh),
+		kvInt(p.st, kvDisImpliedUAh),
+		p.fullUAh,
 	)
 	if q == nil {
 		return

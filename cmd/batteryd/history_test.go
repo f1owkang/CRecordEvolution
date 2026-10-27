@@ -72,7 +72,7 @@ func TestBuildHistoryDocSummaryFilterAndTrends(t *testing.T) {
 		t.Helper()
 		if _, err := s.InsertSession(Session{
 			StartTs: end - 3600, EndTs: end, StartCap: 20, EndCap: 80,
-			Ua: 2_160_000_000, TempAvg: 30, CRate: 0.5, Valid: valid, InvalidReason: reason,
+			AccUAs: 2_160_000_000, TempAvg: 30, CRate: 0.5, Valid: valid, InvalidReason: reason,
 		}); err != nil {
 			t.Fatalf("InsertSession: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestBuildHistoryDocSummaryFilterAndTrends(t *testing.T) {
 	mustInsertSession(older, true, "") // 超出 30 天范围
 
 	if err := s.InsertDischarge(DischargeRow{
-		TS: inRange - 1800, Secs: 5400, Uah: 2_100_000,
+		TS: inRange - 1800, Secs: 5400, UAh: 2_100_000,
 		StartCap: 80, EndCap: 58,
 	}); err != nil {
 		t.Fatalf("InsertDischarge: %v", err)

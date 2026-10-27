@@ -124,7 +124,7 @@ func TestSigmaMahRejectsNonFinite(t *testing.T) {
 }
 
 func TestCycleEquivUsesHoursBase(t *testing.T) {
-	// charged_ua_total 单位 µA·s，除以 designUA(µAh) 前必须 ÷3600 折算小时：
+	// charged_ua_total 单位 µA·s，除以 designUAh(µAh) 前必须 ÷3600 折算小时：
 	// 设备实测值 109516965000 µA·s ÷ 8600000 µAh ≈ 3.54 循环，
 	// 旧实现漏 ÷3600 会显示 12734.53
 	got := cycleEquiv(109516965000, 8600000)
@@ -136,7 +136,7 @@ func TestCycleEquivUsesHoursBase(t *testing.T) {
 		t.Fatalf("cycleEquiv = %v, want 0.3", got)
 	}
 	if !math.IsInf(cycleEquiv(1000, 0), 1) {
-		t.Fatal("designUA=0 应返回 +Inf（出口按非有限值降级）")
+		t.Fatal("designUAh=0 应返回 +Inf（出口按非有限值降级）")
 	}
 }
 

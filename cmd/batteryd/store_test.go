@@ -71,7 +71,7 @@ func TestInsertSessionPersists(t *testing.T) {
 	in := Session{
 		StartTs: 1000, EndTs: 2000,
 		StartCap: 20, EndCap: 100,
-		Ua: 3000000, AvgI: 1500000,
+		AccUAs: 3000000, AvgI: 1500000,
 		CRate:   0.75,
 		TempMin: 25, TempMax: 33, TempAvg: 29,
 		VStart: 4200000, Duration: 1000,
@@ -90,7 +90,7 @@ func TestInsertSessionPersists(t *testing.T) {
 	err = s.db.QueryRow(
 		`SELECT start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,temp_min,temp_max,temp_avg,v_start,duration,valid
 		 FROM sessions WHERE id = ?`, id,
-	).Scan(&got.StartTs, &got.EndTs, &got.StartCap, &got.EndCap, &got.Ua, &got.AvgI,
+	).Scan(&got.StartTs, &got.EndTs, &got.StartCap, &got.EndCap, &got.AccUAs, &got.AvgI,
 		&got.CRate, &got.TempMin, &got.TempMax, &got.TempAvg, &got.VStart, &got.Duration, &valid)
 	if err != nil {
 		t.Fatalf("读回会话: %v", err)
@@ -174,8 +174,8 @@ func TestSamplesCounterColumnRoundtripAndMigration(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("SamplesRange 行数 = %d err=%v", len(rows), err)
 	}
-	if rows[0].CC != 1234567 {
-		t.Fatalf("cc 往返 = %d, want 1234567", rows[0].CC)
+	if rows[0].CounterUAh != 1234567 {
+		t.Fatalf("cc 往返 = %d, want 1234567", rows[0].CounterUAh)
 	}
 	// 模拟旧库：删列 → 重新 OpenStore 触发迁移
 	if _, err := st.db.Exec(`ALTER TABLE samples DROP COLUMN cc`); err != nil {
@@ -191,8 +191,8 @@ func TestSamplesCounterColumnRoundtripAndMigration(t *testing.T) {
 	if err != nil || len(rows2) != 1 {
 		t.Fatalf("迁移后 SamplesRange 行数 = %d err=%v", len(rows2), err)
 	}
-	if rows2[0].CC != 0 {
-		t.Fatalf("补列后历史行 cc 应为 0，got %d", rows2[0].CC)
+	if rows2[0].CounterUAh != 0 {
+		t.Fatalf("补列后历史行 cc 应为 0，got %d", rows2[0].CounterUAh)
 	}
 }
 
@@ -239,7 +239,7 @@ func TestRecentSessionsAndRestPoints(t *testing.T) {
 	}
 	defer st.Close()
 	_, err = st.InsertSession(Session{StartTs: 100, EndTs: 200, StartCap: 20, EndCap: 80,
-		Ua: 2_160_000_000, Valid: true})
+		AccUAs: 2_160_000_000, Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}

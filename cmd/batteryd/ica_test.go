@@ -288,7 +288,7 @@ func TestSettleRecordsICAWithinGatedRate(t *testing.T) {
 	for k := 2; k <= 37; k++ {
 		ua := icaTestBaseUA
 		if k > boostLoK && k <= boostHiK {
-			ua = icaTestBoostUA // 1_400_000 < designUA 4M，1C 门控通过
+			ua = icaTestBoostUA // 1_400_000 < designUAh 4M，1C 门控通过
 		}
 		capV := int64(76 + k/4)
 		if k == 37 {

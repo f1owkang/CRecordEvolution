@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const testDesignUA = 4000000
+const testDesignUAh = 4000000
 
 const tickBaseTs = int64(1700000000)
 
@@ -40,7 +40,7 @@ func newPipeRig(t *testing.T) *pipeRig {
 func (r *pipeRig) rebuildPipeline() {
 	r.t.Helper()
 	clock := func() time.Time { return r.cur }
-	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUA, 1, clock)
+	r.p = NewPipeline(r.fs, r.st, r.est, testDesignUAh, 1, clock)
 }
 
 func fmtNode(v int64) string { return strconv.FormatInt(v, 10) + "\n" }
@@ -70,7 +70,7 @@ func onlySession(t *testing.T, st *Store) Session {
 	var reason sql.NullString
 	err := st.db.QueryRow(`SELECT start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
 		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason FROM sessions ORDER BY id`).Scan(
-		&s.StartTs, &s.EndTs, &s.StartCap, &s.EndCap, &s.Ua, &s.AvgI, &s.CRate,
+		&s.StartTs, &s.EndTs, &s.StartCap, &s.EndCap, &s.AccUAs, &s.AvgI, &s.CRate,
 		&s.TempMin, &s.TempMax, &s.TempAvg, &s.VStart, &s.Duration, &s.Valid, &reason)
 	if err != nil {
 		t.Fatalf("读取会话行: %v", err)
@@ -148,9 +148,9 @@ func TestPipelineFullChargeSettlesAfterTailCurrent(t *testing.T) {
 		t.Fatalf("cap 区间 = [%d,%d], want [20,100]", sess.StartCap, sess.EndCap)
 	}
 	// 17 拍 6A + 2 拍尾段 2A（各 60s）；duration=墙钟差(+60→+1320)=1260
-	if sess.Ua != 6360000000 || sess.AvgI != 5047619 || sess.Duration != 1260 {
+	if sess.AccUAs != 6360000000 || sess.AvgI != 5047619 || sess.Duration != 1260 {
 		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (6360000000,5047619,1260)",
-			sess.Ua, sess.AvgI, sess.Duration)
+			sess.AccUAs, sess.AvgI, sess.Duration)
 	}
 	if math.Abs(sess.CRate-1.26190475) > 1e-6 {
 		t.Fatalf("c_rate = %v, want ≈1.2619048", sess.CRate)
@@ -249,9 +249,9 @@ func TestPipelineSettlesOnUnplugOnce(t *testing.T) {
 		t.Fatalf("cap 区间 = [%d,%d], want [39,99]", sess.StartCap, sess.EndCap)
 	}
 	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量只按充电拍累积
-	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
+	if sess.AccUAs != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
 		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want (4320000000,9000000,480)",
-			sess.Ua, sess.AvgI, sess.Duration)
+			sess.AccUAs, sess.AvgI, sess.Duration)
 	}
 	if math.Abs(sess.CRate-2.25) > 1e-9 {
 		t.Fatalf("c_rate = %v, want 2.25", sess.CRate)
@@ -320,8 +320,8 @@ func TestPipelineDebounceReturnsToCharging(t *testing.T) {
 	sess := onlySession(t, r.st)
 	// Charging 累积拍: cap10,22,34,46,58,70 共 6 拍 + 抖动 2 拍 0.5A（尾段
 	// 延续也计电量）；duration=墙钟差(+60→+660)=600，含抖动与拔出去抖期
-	if sess.Ua != 6*12000000*60+2*500000*60 || sess.Duration != 600 {
-		t.Fatalf("ua/duration = (%d,%d), want (4380000000,600)", sess.Ua, sess.Duration)
+	if sess.AccUAs != 6*12000000*60+2*500000*60 || sess.Duration != 600 {
+		t.Fatalf("ua/duration = (%d,%d), want (4380000000,600)", sess.AccUAs, sess.Duration)
 	}
 	if sess.StartCap != 10 || sess.EndCap != 70 {
 		t.Fatalf("cap 区间 = [%d,%d], want [10,70]", sess.StartCap, sess.EndCap)
@@ -368,9 +368,9 @@ func TestPipelineRestoresSessionAcrossRestart(t *testing.T) {
 		t.Fatalf("cap 区间 = [%d,%d], want [39,99]", sess.StartCap, sess.EndCap)
 	}
 	// 新语义：duration=墙钟差(+60→+540)=480（含去抖期），电量两段合计不变
-	if sess.Ua != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
+	if sess.AccUAs != 4320000000 || sess.AvgI != 9000000 || sess.Duration != 480 {
 		t.Fatalf("ua/avg_i/duration = (%d,%d,%d), want 两段合计 (4320000000,9000000,480)",
-			sess.Ua, sess.AvgI, sess.Duration)
+			sess.AccUAs, sess.AvgI, sess.Duration)
 	}
 	if !sess.Valid {
 		t.Fatal("恢复续算的会话应为有效")
@@ -764,28 +764,28 @@ func TestPipelineValidSessionHasNoInvalidReason(t *testing.T) {
 	}
 }
 
-func TestCrRateZeroDesignUA(t *testing.T) {
+func TestCrRateZeroDesignUAh(t *testing.T) {
 	if v := crRate(3000000, 0); v != 0 {
-		t.Fatalf("designUA=0 时 crRate 应为 0, got %v", v)
+		t.Fatalf("designUAh=0 时 crRate 应为 0, got %v", v)
 	}
 	if v := crRate(3000000, 5000000); math.IsInf(v, 0) || math.IsNaN(v) {
-		t.Fatalf("designUA>0 时 crRate 应为有限值, got %v", v)
+		t.Fatalf("designUAh>0 时 crRate 应为有限值, got %v", v)
 	}
 }
 
-func TestEvaluateStableAcceptsZeroDesignUA(t *testing.T) {
+func TestEvaluateStableAcceptsZeroDesignUAh(t *testing.T) {
 	sr := SettledSession{
 		Session: Session{
 			StartCap: 30, EndCap: 100,
 			TempMin: 20, TempMax: 30,
-			Ua: 3600 * 70 * 2000, // ~2000mA 平均电流，70% 涨幅
+			AccUAs: 3600 * 70 * 2000, // ~2000mA 平均电流，70% 涨幅
 		},
-		AccUA:    3600 * 70 * 2000,
-		DesignUA: 0,
+		AccUAs:    3600 * 70 * 2000,
+		DesignUAh: 0,
 	}
 	res := evaluateStable(sr)
 	if !res.Accepted {
-		t.Fatalf("DesignUA=0 时会话应被接受, got reason=%s", res.Reason)
+		t.Fatalf("DesignUAh=0 时会话应被接受, got reason=%s", res.Reason)
 	}
 }
 
@@ -831,18 +831,18 @@ func TestChargeSuppressedOnVoltageSag(t *testing.T) {
 // 落在窗内的场景——若仍用积分，会话会被 out_of_window 拒收。
 func TestSettleUsesCounterDeltaForEstimate(t *testing.T) {
 	r := newPipeRig(t)
-	r.st.KVSet(kvKeyEmaUA, "5000000")
+	r.st.KVSet(kvKeyEmaUAh, "5000000")
 	r.st.KVSet(kvKeySamples, "3")
 
 	cc := int64(6_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	// 61 拍 cap 40→100：电量计每拍 +40000µAh（合计 2400mAh ⇒ 隐含 4000mAh）；
 	// 电流恒 1A ⇒ 积分口径隐含仅 1694mAh，低于设计容量 0.5 倍窗，必被拒收。
 	for i := int64(0); i <= 60; i++ {
 		r.put(40+i, 1_000_000, 3_900_000)
 		if i > 0 {
 			cc += 40_000
-			putCC(t, r, cc)
+			putCounter(t, r, cc)
 		}
 		r.step("Charging")
 	}
@@ -856,7 +856,7 @@ func TestSettleUsesCounterDeltaForEstimate(t *testing.T) {
 		t.Fatalf("电量计口径应采信，实际被拒 reason=%s", sess.InvalidReason)
 	}
 	// EMA 融合：满充权重 3/10 ⇒ (5000000×7 + 4000000×3)/10 = 4700000
-	if got := kvInt(r.st, kvKeyEmaUA); got != 4_700_000 {
+	if got := kvInt(r.st, kvKeyEmaUAh); got != 4_700_000 {
 		t.Fatalf("EMA = %d, want 4700000（电量计隐含 4000mAh）", got)
 	}
 }
@@ -865,16 +865,16 @@ func TestSettleUsesCounterDeltaForEstimate(t *testing.T) {
 // plausibleDelta）——电量计是持久计数，间隙内的真实充入不会丢。
 func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 	r := newPipeRig(t)
-	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeyEmaUAh, "4000000")
 	r.st.KVSet(kvKeySamples, "3")
 
 	cc := int64(6_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	for i := int64(0); i <= 30; i++ {
 		r.put(40+i, 2_500_000, 4_100_000)
 		if i > 0 {
 			cc += 50_000
-			putCC(t, r, cc)
+			putCounter(t, r, cc)
 		}
 		r.step("Charging")
 	}
@@ -882,7 +882,7 @@ func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 	for i := int64(31); i <= 60; i++ {
 		r.put(40+i, 2_500_000, 4_100_000)
 		cc += 50_000
-		putCC(t, r, cc)
+		putCounter(t, r, cc)
 		r.step("Charging")
 	}
 	r.put(100, 20_000, 4_100_000)
@@ -893,7 +893,7 @@ func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 	}
 	// 电量计净增量 60 拍 × 50000 = 3000000µAh，涨幅 60 点 ⇒ 隐含 5000000
 	wantEma := (int64(4_000_000)*7 + int64(5_000_000)*3) / 10
-	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+	if got := kvInt(r.st, kvKeyEmaUAh); got != wantEma {
 		t.Fatalf("重启续记会话应继续采信电量计口径: EMA = %d, want %d", got, wantEma)
 	}
 }
@@ -902,11 +902,11 @@ func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 // 次），净增量口径必须正负都记——只累加正增量会高估约 21%，把「实测」顶高。
 func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
 	r := newPipeRig(t)
-	r.st.KVSet(kvKeyEmaUA, "5000000")
+	r.st.KVSet(kvKeyEmaUAh, "5000000")
 	r.st.KVSet(kvKeySamples, "3")
 
 	cc := int64(6_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	// 60 拍：40 拍 +50000、20 拍 −40000（抖动），净增量 1200000µAh
 	pos, neg := 0, 0
 	for i := int64(0); i <= 60; i++ {
@@ -919,7 +919,7 @@ func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
 				cc += 50_000
 				pos++
 			}
-			putCC(t, r, cc)
+			putCounter(t, r, cc)
 		}
 		r.step("Charging")
 	}
@@ -933,7 +933,7 @@ func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
 	// EMA = (5000000×7 + 2000000×3)/10 = 4100000；
 	// 若误用「只累加正增量」（2000000µAh）则隐含 3333333 ⇒ EMA 4500000，可区分。
 	wantEma := (int64(5_000_000)*7 + int64(2_000_000)*3) / 10
-	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+	if got := kvInt(r.st, kvKeyEmaUAh); got != wantEma {
 		t.Fatalf("电量计抖动应按净增量口径: EMA = %d, want %d（正增量求和会给出 4500000）", got, wantEma)
 	}
 	if n := pos + neg; n != 60 {
@@ -945,16 +945,16 @@ func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
 // 并留痕（防其它机型 charge_counter 单位不同把估算带偏量级）。
 func TestSettleFallsBackOnCounterScaleMismatch(t *testing.T) {
 	r := newPipeRig(t)
-	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeyEmaUAh, "4000000")
 	r.st.KVSet(kvKeySamples, "3")
 
 	cc := int64(6_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	for i := int64(0); i <= 60; i++ {
 		r.put(40+i, 1_000_000, 3_900_000)
 		if i > 0 {
 			cc += 500 // 比积分口径小两个量级 ⇒ 越界
-			putCC(t, r, cc)
+			putCounter(t, r, cc)
 		}
 		r.step("Charging")
 	}
@@ -981,16 +981,16 @@ func TestSettleFallsBackOnCounterScaleMismatch(t *testing.T) {
 // 充电器直供系统的假电流计数，无需电压门控替它过滤。
 func TestSuppressedTicksStillCountCounterDelta(t *testing.T) {
 	r := newPipeRig(t)
-	r.st.KVSet(kvKeyEmaUA, "4000000")
+	r.st.KVSet(kvKeyEmaUAh, "4000000")
 	r.st.KVSet(kvKeySamples, "3")
 
 	cc := int64(6_000_000)
-	putCC(t, r, cc)
+	putCounter(t, r, cc)
 	for i := int64(0); i <= 60; i++ {
 		r.put(40+i, 2_500_000, 4_100_000)
 		if i > 0 {
 			cc += 50_000
-			putCC(t, r, cc)
+			putCounter(t, r, cc)
 		}
 		r.step("Charging")
 	}
@@ -998,7 +998,7 @@ func TestSuppressedTicksStillCountCounterDelta(t *testing.T) {
 	for k := 0; k < 2; k++ {
 		r.put(100, 2_500_000, 4_000_000)
 		cc += 50_000
-		putCC(t, r, cc)
+		putCounter(t, r, cc)
 		r.step("Charging")
 	}
 	r.put(100, 20_000, 4_100_000)
@@ -1009,7 +1009,7 @@ func TestSuppressedTicksStillCountCounterDelta(t *testing.T) {
 	}
 	// 电量计共 62 拍 ×50000 = 3100000µAh，显示涨幅 60 点 ⇒ 隐含 5166666µAh
 	wantEma := (int64(4_000_000)*7 + int64(5_166_666)*3) / 10
-	if got := kvInt(r.st, kvKeyEmaUA); got != wantEma {
+	if got := kvInt(r.st, kvKeyEmaUAh); got != wantEma {
 		t.Fatalf("EMA = %d, want %d（停计期电量计增量应计入）", got, wantEma)
 	}
 }

@@ -9,44 +9,48 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// schemaDDL 是建表 DDL。DB 列名是历史遗留，不代表单位，每列实际单位见行尾注释；
+// 时间戳列一律为 Unix 秒。
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
-  start_cap INTEGER, end_cap INTEGER,
-  ua INTEGER, avg_i INTEGER, c_rate REAL,
-  temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER,
-  v_start INTEGER, duration INTEGER,
-  valid INTEGER NOT NULL,
+  start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL, -- 会话起止（Unix 秒）
+  start_cap INTEGER, end_cap INTEGER,                 -- 起止显示电量（%）
+  ua INTEGER, avg_i INTEGER, c_rate REAL,             -- ua=电流积分累计电量（µA·s，非电流）；avg_i=平均电流（µA）；c_rate=倍率
+  temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER, -- 温度（℃）
+  v_start INTEGER, duration INTEGER,                  -- v_start=起始电压（µV）；duration=时长（秒）
+  valid INTEGER NOT NULL,                             -- 0/1
   invalid_reason TEXT);
-CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT);
-CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL, cc INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS ica_peaks(session_end_ts INTEGER PRIMARY KEY, peak_uv INTEGER NOT NULL, peak_h_rel REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NULL); -- mah 为历史列名，实为 µAh
+CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);   -- 内阻（mΩ）
+CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL); -- uv=静置电压（µV）；cap=显示电量（%）
+CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT); -- ts=Unix 秒
+CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, ua INTEGER NOT NULL, uv INTEGER NOT NULL, cap INTEGER NOT NULL, cc INTEGER NOT NULL DEFAULT 0); -- ua=电流（µA，带符号）；uv=电压（µV）；cap=显示电量（%）；cc=charge_counter（µAh，0=未采到）
+CREATE TABLE IF NOT EXISTS ccct(ts INTEGER PRIMARY KEY, vw_lo INTEGER NOT NULL, vw_hi INTEGER NOT NULL, secs INTEGER NOT NULL); -- vw_lo/vw_hi=穿窗电压（µV）；secs=耗时（秒）
+CREATE TABLE IF NOT EXISTS ica_peaks(session_end_ts INTEGER PRIMARY KEY, peak_uv INTEGER NOT NULL, peak_h_rel REAL NOT NULL); -- peak_uv=主峰电压（µV）；peak_h_rel=相对峰高
 CREATE TABLE IF NOT EXISTS discharge(
-  end_ts INTEGER PRIMARY KEY,
-  secs INTEGER NOT NULL,
-  uah INTEGER NOT NULL,
-  start_cap INTEGER NOT NULL,
-  end_cap INTEGER NOT NULL,
-  implied INTEGER,
+  end_ts INTEGER PRIMARY KEY,   -- 结束时刻（Unix 秒）
+  secs INTEGER NOT NULL,        -- 持续时长（秒）
+  uah INTEGER NOT NULL,         -- 放出电量（µAh）
+  start_cap INTEGER NOT NULL,   -- 起始显示电量（%）
+  end_cap INTEGER NOT NULL,     -- 结束显示电量（%）
+  implied INTEGER,              -- 隐含满容量（µAh）
   invalid_reason TEXT);
 CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions(end_ts);
 `
 
-// DischargeRow 放电会话一行：uah 为 charge_counter 差分累计的放出电量（µAh），
-// implied 为按显示电量掉幅反推的隐含满容量（µAh，掉幅 < disMinEstCap 时为 NULL）。
+// DischargeRow 放电会话一行：UAh 为 charge_counter 差分累计的放出电量（µAh，
+// DB 列名 uah），Implied 为按显示电量掉幅反推的隐含满容量（µAh，掉幅
+// < disMinEstCap 时为 NULL）。
 type DischargeRow struct {
-	TS, Secs, Uah    int64
+	TS, Secs, UAh    int64
 	StartCap, EndCap int64
 	Implied          *int64
 	InvalidReason    string
 }
 
+// InsertDischarge 写入一条放电会话（end_ts 为主键，重复时覆盖）。
 func (s *Store) InsertDischarge(r DischargeRow) error {
 	var implied any
 	if r.Implied != nil {
@@ -55,7 +59,7 @@ func (s *Store) InsertDischarge(r DischargeRow) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO discharge
 		(end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason)
 		VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		r.TS, r.Secs, r.Uah, r.StartCap, r.EndCap, implied, reasonOrNull(r.InvalidReason))
+		r.TS, r.Secs, r.UAh, r.StartCap, r.EndCap, implied, reasonOrNull(r.InvalidReason))
 	return err
 }
 
@@ -72,7 +76,7 @@ func (s *Store) RecentDischarge(limit int) ([]DischargeRow, error) {
 		var r DischargeRow
 		var implied sql.NullInt64
 		var reason sql.NullString
-		if err := rows.Scan(&r.TS, &r.Secs, &r.Uah, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
+		if err := rows.Scan(&r.TS, &r.Secs, &r.UAh, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
 			return nil, err
 		}
 		if implied.Valid {
@@ -94,12 +98,14 @@ func reasonOrNull(s string) any {
 	return s
 }
 
+// Store 封装 SQLite 引擎：schema 初始化、幂等迁移与各表读写。
 type Store struct{ db *sql.DB }
 
+// Session 为充电会话的落库/查询结构：AccUAs 为累计电量（µA·s），AvgI 为平均电流（µA）。
 type Session struct {
 	StartTs, EndTs            int64
 	StartCap, EndCap          int64
-	Ua, AvgI                  int64
+	AccUAs, AvgI              int64
 	CRate                     float64
 	TempMin, TempMax, TempAvg int64
 	VStart, Duration          int64
@@ -107,11 +113,13 @@ type Session struct {
 	InvalidReason             string
 }
 
+// TsVal 为「时间戳 → 数值」二元组，供 estimates 等单值时间序列查询。
 type TsVal struct {
 	TS int64
 	V  int64
 }
 
+// OpenStore 打开（必要时创建）数据库，建表、执行幂等迁移并启用 WAL。
 func OpenStore(path string) (*Store, error) {
 	// wal_autocheckpoint(256)：默认 1000 页（≈4MB）才做检查点，低写入量下
 	// 最近数周数据几乎全躺在 -wal 里，任何「只复制 .db 主文件」的场景（用户
@@ -130,8 +138,8 @@ func OpenStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	// samples 表补 cc 列（电量计读数，旧行默认 0）
-	if err := migrateSamplesCC(db); err != nil {
+	// samples 表补 cc 列（DB 列名 cc，存电量计 charge_counter 读数，旧行默认 0）
+	if err := migrateSamplesCounter(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -188,10 +196,10 @@ func migrateSessionsReason(db *sql.DB) error {
 	return err
 }
 
-// migrateSamplesCC 检查 samples 表是否缺 cc 列（电量计 charge_counter 读数），
-// 缺则补列；已存在时不动，幂等。补列后历史行 cc=0；有电量计时消费方跳过该区间
-// （仅整批无 cc 才回退电流积分）。
-func migrateSamplesCC(db *sql.DB) error {
+// migrateSamplesCounter 检查 samples 表是否缺 cc 列（DB 列名 cc，存电量计
+// charge_counter 读数，µAh），缺则补列；已存在时不动，幂等。补列后历史行 cc=0；
+// 有电量计时消费方跳过该区间（仅整批无读数才回退电流积分）。
+func migrateSamplesCounter(db *sql.DB) error {
 	has, err := hasColumn(db, "samples", "cc")
 	if err != nil || has {
 		return err
@@ -222,10 +230,12 @@ func hasColumn(db *sql.DB, table, col string) (bool, error) {
 	return false, rows.Err()
 }
 
+// Close 关闭底层数据库连接。
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// KVGet 读取 kv 表字符串值；键不存在或出错时 ok=false。
 func (s *Store) KVGet(key string) (string, bool) {
 	var v string
 	if err := s.db.QueryRow(`SELECT v FROM kv WHERE k = ?`, key).Scan(&v); err != nil {
@@ -234,6 +244,7 @@ func (s *Store) KVGet(key string) (string, bool) {
 	return v, true
 }
 
+// KVSet 写入或覆盖 kv 表字符串值。
 func (s *Store) KVSet(key, val string) error {
 	_, err := s.db.Exec(`INSERT INTO kv(k, v) VALUES(?, ?)
 		ON CONFLICT(k) DO UPDATE SET v = excluded.v`, key, val)
@@ -247,12 +258,13 @@ func boolToInt(b bool) int64 {
 	return 0
 }
 
+// InsertSession 写入一条充电会话，返回自增 id。
 func (s *Store) InsertSession(sess Session) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO sessions(
 		start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
 		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.StartTs, sess.EndTs, sess.StartCap, sess.EndCap, sess.Ua, sess.AvgI, sess.CRate,
+		sess.StartTs, sess.EndTs, sess.StartCap, sess.EndCap, sess.AccUAs, sess.AvgI, sess.CRate,
 		sess.TempMin, sess.TempMax, sess.TempAvg, sess.VStart, sess.Duration, boolToInt(sess.Valid),
 		sql.NullString{String: sess.InvalidReason, Valid: sess.InvalidReason != ""})
 	if err != nil {
@@ -261,11 +273,13 @@ func (s *Store) InsertSession(sess Session) (int64, error) {
 	return res.LastInsertId()
 }
 
-func (s *Store) InsertEstimate(ts, mahUa int64) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, mahUa)
+// InsertEstimate 写入一条容量估算点（estUAh 单位 µAh，DB 列名历史遗留为 mah）。
+func (s *Store) InsertEstimate(ts, estUAh int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, estUAh)
 	return err
 }
 
+// RecentEstimates 取最近 limit 条容量估算（值单位 µAh，按 ts 倒序）。
 func (s *Store) RecentEstimates(limit int) ([]TsVal, error) {
 	rows, err := s.db.Query(`SELECT ts, mah FROM estimates ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
@@ -284,6 +298,7 @@ func (s *Store) RecentEstimates(limit int) ([]TsVal, error) {
 	return out, rows.Err()
 }
 
+// InsertResistance 写入一条内阻回归样本（mo 单位 mΩ）。
 func (s *Store) InsertResistance(ts int64, mo float64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO resistance(ts, mo) VALUES(?, ?)`, ts, mo)
 	return err
@@ -308,15 +323,18 @@ func (s *Store) RecentResistance(limit int) ([]float64, error) {
 	return out, rows.Err()
 }
 
+// InsertRestPoint 写入一个静置点（uv 单位 µV，cap 为显示电量 %）。
 func (s *Store) InsertRestPoint(ts, uv, cap int64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO rest_points(ts, uv, cap) VALUES(?, ?, ?)`, ts, uv, cap)
 	return err
 }
 
+// RestPoint 为静置点一行：UV 为静置电压（µV），Cap 为显示电量（%）。
 type RestPoint struct {
 	TS, UV, Cap int64
 }
 
+// RecentSessions 取最近 limit 条充电会话（按 end_ts 倒序）。
 func (s *Store) RecentSessions(limit int) ([]Session, error) {
 	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
 		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, limit)
@@ -330,7 +348,7 @@ func (s *Store) RecentSessions(limit int) ([]Session, error) {
 		var v int64
 		var reason sql.NullString
 		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-			&se.Ua, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
+			&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
 			return nil, err
 		}
 		se.Valid = v == 1
@@ -340,6 +358,7 @@ func (s *Store) RecentSessions(limit int) ([]Session, error) {
 	return out, rows.Err()
 }
 
+// RecentRestPoints 取最近 limit 个静置点（按 ts 倒序）。
 func (s *Store) RecentRestPoints(limit int) ([]RestPoint, error) {
 	rows, err := s.db.Query(`SELECT ts, uv, cap FROM rest_points ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
@@ -357,6 +376,7 @@ func (s *Store) RecentRestPoints(limit int) ([]RestPoint, error) {
 	return out, rows.Err()
 }
 
+// InsertEvent 写入一条内部事件（detail 为中文排障明细）。
 func (s *Store) InsertEvent(kind, detail string) error {
 	_, err := s.db.Exec(`INSERT INTO events(ts, kind, detail) VALUES(?, ?, ?)`,
 		time.Now().Unix(), kind, detail)
@@ -365,12 +385,15 @@ func (s *Store) InsertEvent(kind, detail string) error {
 
 // InsertSample 写入一条充电样本。ts 为秒级主键：60s tick 下同一秒只写一次、
 // 天然唯一；若未来缩短采样周期或出现多写路径，INSERT OR REPLACE 会静默覆盖
-// 同 ts 旧行（幂等而非追加），属已知约束。cc 为电量计读数（µAh，0=未采到）。
-func (s *Store) InsertSample(ts, ua, uv, cap, cc int64) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap, cc) VALUES(?, ?, ?, ?, ?)`, ts, ua, uv, cap, cc)
+// 同 ts 旧行（幂等而非追加），属已知约束。counterUAh 为电量计 charge_counter
+// 读数（µAh，0=未采到）。
+// InsertSample 写入一条充电样本；counterUAh 为电量计读数（µAh，0=未采到）。
+func (s *Store) InsertSample(ts, ua, uv, cap, counterUAh int64) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO samples(ts, ua, uv, cap, cc) VALUES(?, ?, ?, ?, ?)`, ts, ua, uv, cap, counterUAh)
 	return err
 }
 
+// CountSamples 统计 samples 表总行数。
 func (s *Store) CountSamples() (int64, error) {
 	var n int64
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM samples`).Scan(&n)
@@ -388,7 +411,7 @@ func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
 	out := []SampleRow{}
 	for rows.Next() {
 		var r SampleRow
-		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CC); err != nil {
+		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -401,12 +424,14 @@ type CcctRow struct {
 	TS, VwLo, VwHi, Secs int64
 }
 
+// InsertCCCT 写入一条 CCCT 特征（电压单位 µV，secs 为穿窗耗时）。
 func (s *Store) InsertCCCT(ts, vwLo, vwHi, secs int64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO ccct(ts, vw_lo, vw_hi, secs) VALUES(?, ?, ?, ?)`,
 		ts, vwLo, vwHi, secs)
 	return err
 }
 
+// RecentCCCT 取最近 limit 条 CCCT 记录（按 ts 倒序）。
 func (s *Store) RecentCCCT(limit int) ([]CcctRow, error) {
 	rows, err := s.db.Query(`SELECT ts, vw_lo, vw_hi, secs FROM ccct ORDER BY ts DESC LIMIT ?`, limit)
 	if err != nil {
@@ -430,12 +455,14 @@ type ICAPeakRow struct {
 	PeakHRel   float64
 }
 
+// InsertICAPeak 写入一条 ICA 主峰（peakUV 单位 µV）。
 func (s *Store) InsertICAPeak(ts, peakUV int64, peakHRel float64) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO ica_peaks(session_end_ts, peak_uv, peak_h_rel) VALUES(?, ?, ?)`,
 		ts, peakUV, peakHRel)
 	return err
 }
 
+// RecentICAPeaks 取最近 limit 条 ICA 主峰（按会话结束时刻倒序）。
 func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
 	rows, err := s.db.Query(`SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks ORDER BY session_end_ts DESC LIMIT ?`, limit)
 	if err != nil {
@@ -467,7 +494,7 @@ func (s *Store) SessionsSince(since int64) ([]Session, error) {
 		var v int64
 		var reason sql.NullString
 		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-			&se.Ua, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
+			&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
 			return nil, err
 		}
 		se.Valid = v == 1
@@ -490,7 +517,7 @@ func (s *Store) DischargeSince(since int64) ([]DischargeRow, error) {
 		var r DischargeRow
 		var implied sql.NullInt64
 		var reason sql.NullString
-		if err := rows.Scan(&r.TS, &r.Secs, &r.Uah, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
+		if err := rows.Scan(&r.TS, &r.Secs, &r.UAh, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
 			return nil, err
 		}
 		if implied.Valid {
@@ -588,6 +615,7 @@ func (s *Store) CountSamplesSince(since int64) (int64, error) {
 	return n, err
 }
 
+// PruneBefore 删除各表早于 cutoffTs 的行，实现 90 天保留窗口。
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name  string

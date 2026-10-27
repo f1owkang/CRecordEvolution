@@ -325,8 +325,8 @@ func TestUILangCachedOnce(t *testing.T) {
 func TestBuildDescriptionEnglish(t *testing.T) {
 	t.Run("有实测与设计容量", func(t *testing.T) {
 		withUILang(t, langEn)
-		estUA := int64(3_600_000)
-		got, err := BuildDescription(fullDesign(), Snapshot{EstUA: &estUA})
+		estUAh := int64(3_600_000)
+		got, err := BuildDescription(fullDesign(), Snapshot{EstUAh: &estUAh})
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
@@ -363,9 +363,9 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 
 	t.Run("缺设计容量只报实测", func(t *testing.T) {
 		withUILang(t, langEn)
-		estUA := int64(3_600_000)
+		estUAh := int64(3_600_000)
 		d := Design{FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
-		got, err := BuildDescription(d, Snapshot{EstUA: &estUA})
+		got, err := BuildDescription(d, Snapshot{EstUAh: &estUAh})
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
@@ -393,9 +393,9 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		old := channel
 		channel = "ml"
 		defer func() { channel = old }()
-		estUA := int64(3_600_000)
+		estUAh := int64(3_600_000)
 		sigma := 15.6
-		got, err := BuildDescription(fullDesign(), Snapshot{EstUA: &estUA, SigmaMah: &sigma})
+		got, err := BuildDescription(fullDesign(), Snapshot{EstUAh: &estUAh, SigmaMah: &sigma})
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
@@ -416,8 +416,8 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 // TestBuildDescriptionChineseDefault 锁定中文输出字节（英文支持不得改变默认行为）。
 func TestBuildDescriptionChineseDefault(t *testing.T) {
 	withUILang(t, langZh)
-	estUA := int64(3_600_000)
-	got, err := BuildDescription(fullDesign(), Snapshot{EstUA: &estUA})
+	estUAh := int64(3_600_000)
+	got, err := BuildDescription(fullDesign(), Snapshot{EstUAh: &estUAh})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
@@ -429,8 +429,8 @@ func TestBuildDescriptionChineseDefault(t *testing.T) {
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUA = int64(3_600_000)
-	got, err = BuildDescription(fullDesign(), Snapshot{EstUA: &estUA})
+	estUAh = int64(3_600_000)
+	got, err = BuildDescription(fullDesign(), Snapshot{EstUAh: &estUAh})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
@@ -442,21 +442,21 @@ func TestBuildDescriptionChineseDefault(t *testing.T) {
 
 // onceFixture 组装一份覆盖所有字段的 once 输出数据。
 func onceFixture() (Design, Snapshot, *DischargeRow) {
-	estUA := int64(3_600_000)
+	estUAh := int64(3_600_000)
 	sigma := 15.6
 	rMoh := 23.4
 	tempC := 32.5
 	implied := int64(4_500_000)
 	d := fullDesign()
 	snap := Snapshot{
-		EstUA:      &estUA,
+		EstUAh:     &estUAh,
 		Samples:    5,
 		CycleEquiv: 1.25,
 		RMoh:       &rMoh,
 		TempC:      &tempC,
 		SigmaMah:   &sigma,
 	}
-	dis := &DischargeRow{StartCap: 90, EndCap: 40, Uah: 2_400_000, Implied: &implied}
+	dis := &DischargeRow{StartCap: 90, EndCap: 40, UAh: 2_400_000, Implied: &implied}
 	return d, snap, dis
 }
 
@@ -496,8 +496,8 @@ func TestOnceTextEnglish(t *testing.T) {
 // "1 valid sessions"（首装后第一次采信即会遇到）。
 func TestOnceTextEnglishSingularSession(t *testing.T) {
 	withUILang(t, langEn)
-	estUA := int64(3_600_000)
-	got := onceText(Design{DesignMah: 4000, HasDesign: true}, Snapshot{EstUA: &estUA, Samples: 1, CycleEquiv: 1.25}, nil)
+	estUAh := int64(3_600_000)
+	got := onceText(Design{DesignMah: 4000, HasDesign: true}, Snapshot{EstUAh: &estUAh, Samples: 1, CycleEquiv: 1.25}, nil)
 	want := "Design capacity: 4000 mAh\n" +
 		"Measured estimate: 3600 mAh (1 valid session)\n" +
 		"Cycle equivalent: 1.25\n" +

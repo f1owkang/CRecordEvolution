@@ -157,18 +157,18 @@ func TestSysFSNormTempC(t *testing.T) {
 // 当幅值阈值，把 0.6A 以下的读数整批判成 mA 再 ×1000，采样库里因此每天多出
 // 200+ 条百安级电流，充电积分与中段校准全线失真。
 func TestNormCurrentUAWithFull(t *testing.T) {
-	const fullUA = 6_050_000 // 6050mAh 以 µAh 计 ⇒ 同驱动的 current_now 是 µA
-	const fullMah = 6_050    // 同容量以 mAh 计 ⇒ current_now 是 mA
+	const fullUAh = 6_050_000 // 6050mAh 以 µAh 计 ⇒ 同驱动的 current_now 是 µA
+	const fullMah = 6_050     // 同容量以 mAh 计 ⇒ current_now 是 mA
 	cases := []struct {
-		name   string
-		raw    int64
-		fullUA int64
-		want   int64
+		name    string
+		raw     int64
+		fullUAh int64
+		want    int64
 	}{
-		{"µA 小电流直通（实测 40mA）", 40_000, fullUA, 40_000},
-		{"µA 中等电流直通（实测 297mA）", 297_000, fullUA, 297_000},
-		{"µA 快充直通（2.6A）", 2_655_000, fullUA, 2_655_000},
-		{"µA 负值同口径", -40_000, fullUA, -40_000},
+		{"µA 小电流直通（实测 40mA）", 40_000, fullUAh, 40_000},
+		{"µA 中等电流直通（实测 297mA）", 297_000, fullUAh, 297_000},
+		{"µA 快充直通（2.6A）", 2_655_000, fullUAh, 2_655_000},
+		{"µA 负值同口径", -40_000, fullUAh, -40_000},
 		{"mA 设备读数×1000", 812, fullMah, 812_000},
 		{"mA 设备负值×1000", -812, fullMah, -812_000},
 		// 量纲判成 mA 但读数越界（40A 不可能）：回退原值，不产生 1000 倍污染
@@ -179,8 +179,8 @@ func TestNormCurrentUAWithFull(t *testing.T) {
 		{"无锚点涓流直通（实测静息 20mA）", 20_000, 0, 20_000},
 	}
 	for _, c := range cases {
-		if got := NormCurrentUAWithFull(c.raw, c.fullUA); got != c.want {
-			t.Errorf("%s: NormCurrentUAWithFull(%d, %d) = %d, want %d", c.name, c.raw, c.fullUA, got, c.want)
+		if got := NormCurrentUAWithFull(c.raw, c.fullUAh); got != c.want {
+			t.Errorf("%s: NormCurrentUAWithFull(%d, %d) = %d, want %d", c.name, c.raw, c.fullUAh, got, c.want)
 		}
 	}
 }
@@ -188,10 +188,10 @@ func TestNormCurrentUAWithFull(t *testing.T) {
 // 量纲锚点分界：charge_full ≥ 100000 只可能是 µAh（100Ah 电池不存在），
 // 以下只可能是 mAh；两侧各取一例钉住边界。
 func TestNormCurrentUAWithFullUnitAnchorBoundary(t *testing.T) {
-	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUA); got != 15_000 {
+	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUAh); got != 15_000 {
 		t.Fatalf("边界值及以上按 µAh 量纲直通, got %d", got)
 	}
-	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUA-1); got != 15_000_000 {
+	if got := NormCurrentUAWithFull(15_000, microUnitChargeMinUAh-1); got != 15_000_000 {
 		t.Fatalf("边界值以下按 mAh 量纲 ×1000, got %d", got)
 	}
 }

@@ -96,7 +96,7 @@ func TestAnalyzeCCCTInsufficientInput(t *testing.T) {
 	}
 }
 
-// designUA==0 时倍率无从判定，视为不采信：记一条 ccct_skip，不写 ccct 表。
+// designUAh==0 时倍率无从判定，视为不采信：记一条 ccct_skip，不写 ccct 表。
 func TestRecordCCCTSkipsWithoutDesignCapacity(t *testing.T) {
 	r := newPipeRig(t)
 	seed := int64(tickBaseTs)

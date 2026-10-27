@@ -19,6 +19,7 @@ const (
 	historyTrendLimit   = 120
 )
 
+// historyOptions 为 history 子命令的解析后参数（范围/分页/类型筛选）。
 type historyOptions struct {
 	Days   int
 	Limit  int
@@ -26,6 +27,7 @@ type historyOptions struct {
 	Type   string // all | charge | discharge
 }
 
+// historyEvent 为历史页时间轴的一行：充电或放电会话二选一。
 type historyEvent struct {
 	Kind      string          `json:"kind"`
 	TS        int64           `json:"ts"`
@@ -33,6 +35,7 @@ type historyEvent struct {
 	Discharge *dischargeEntry `json:"discharge,omitempty"`
 }
 
+// historySummary 为范围内摘要统计（会话数/有效会话数/放电数/样本数）。
 type historySummary struct {
 	Days          int   `json:"days"`
 	Since         int64 `json:"since"`
@@ -45,6 +48,7 @@ type historySummary struct {
 	NewestTs      int64 `json:"newest_ts,omitempty"`
 }
 
+// historyTrends 为历史页趋势视图的数据集（各表最多 historyTrendLimit 点）。
 type historyTrends struct {
 	Sessions   []sessionEntry   `json:"sessions"`
 	Discharge  []dischargeEntry `json:"discharge"`
@@ -54,6 +58,7 @@ type historyTrends struct {
 	Estimates  []recentEntry    `json:"estimates"`
 }
 
+// historyDoc 为 `batteryd history` 的 JSON 输出结构。
 type historyDoc struct {
 	Events     []historyEvent `json:"events"`
 	HasMore    bool           `json:"has_more"`
@@ -62,6 +67,7 @@ type historyDoc struct {
 	Trends     historyTrends  `json:"trends"`
 }
 
+// parseHistoryArgs 解析 history 子命令参数并校验取值范围。
 func parseHistoryArgs(args []string) (historyOptions, error) {
 	opt := historyOptions{Days: historyDefaultDays, Limit: historyDefaultLimit, Type: "all"}
 	for i := 0; i < len(args); i++ {
@@ -107,6 +113,7 @@ func parseHistoryArgs(args []string) (historyOptions, error) {
 	return opt, nil
 }
 
+// runHistory 执行 history 子命令：组装并输出历史页 JSON。
 func runHistory(args []string) error {
 	opt, err := parseHistoryArgs(args)
 	if err != nil {
@@ -130,6 +137,7 @@ func runHistory(args []string) error {
 	return nil
 }
 
+// buildHistoryDoc 合并充电/放电事件，按时间倒序分页并附带摘要与趋势点。
 func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc, error) {
 	since := now.AddDate(0, 0, -opt.Days).Unix()
 	until := now.Unix()
@@ -157,7 +165,7 @@ func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc,
 		}
 	}
 	for _, dr := range disRows {
-		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, UahMah: dr.Uah / 1000,
+		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
 			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
 			InvalidReason: dr.InvalidReason}
 		if de.Implied != nil {
@@ -209,6 +217,7 @@ func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc,
 	}, nil
 }
 
+// paginateHistory 按 --before 游标分页；同秒事件并入本页保证游标稳定。
 func paginateHistory(events []historyEvent, before int64, limit int) ([]historyEvent, bool, int64) {
 	if len(events) == 0 || limit < 1 {
 		return []historyEvent{}, false, 0
@@ -238,6 +247,7 @@ func paginateHistory(events []historyEvent, before int64, limit int) ([]historyE
 	return events[start:end], hasMore, next
 }
 
+// loadHistoryTrends 读取各类趋势点并统一为时间升序。
 func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 	tr := historyTrends{
 		Sessions:   []sessionEntry{},
@@ -268,7 +278,7 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 		if i >= historyTrendLimit {
 			break
 		}
-		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, UahMah: dr.Uah / 1000,
+		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
 			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
 			InvalidReason: dr.InvalidReason}
 		if de.Implied != nil {
@@ -320,13 +330,14 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 	return tr, nil
 }
 
-// 趋势数组统一为升序（旧→新），与 WebUI 现有图表 helper 一致。
+// reverseSessions 原地把会话数组反转为时间升序（旧→新），与 WebUI 图表 helper 一致。
 func reverseSessions(rows []sessionEntry) {
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]
 	}
 }
 
+// reverseDischarge 原地把放电数组反转为时间升序（旧→新），与 WebUI 图表 helper 一致。
 func reverseDischarge(rows []dischargeEntry) {
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]

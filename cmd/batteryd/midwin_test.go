@@ -131,12 +131,12 @@ func TestMidImpliedPrefersCounterDeltas(t *testing.T) {
 	for p := 0; p < 3; p++ {
 		for cap := 30; cap < 90; cap++ {
 			for k := 0; k < 3; k++ {
-				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CounterUAh: cc})
 				ts += 15
 				cc += 50_000 / 3
 			}
 		}
-		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CounterUAh: cc})
 		ts += midSegMaxDt + 60
 	}
 	got, ok := MidImplied(rows, midWinLo, midWinHi)
@@ -147,14 +147,14 @@ func TestMidImpliedPrefersCounterDeltas(t *testing.T) {
 		t.Fatalf("应采信电量计口径 ≈5000mAh，got %d", got)
 	}
 	for i := range rows {
-		rows[i].CC = 0
+		rows[i].CounterUAh = 0
 	}
-	gotUA, ok := MidImplied(rows, midWinLo, midWinHi)
+	gotUAh, ok := MidImplied(rows, midWinLo, midWinHi)
 	if !ok {
 		t.Fatal("回退积分口径后仍应可计算")
 	}
-	if d := gotUA - 7_500_000; d < -90_000 || d > 90_000 {
-		t.Fatalf("无 cc 时应回退积分口径 ≈7500mAh，got %d", gotUA)
+	if d := gotUAh - 7_500_000; d < -90_000 || d > 90_000 {
+		t.Fatalf("无 cc 时应回退积分口径 ≈7500mAh，got %d", gotUAh)
 	}
 }
 
@@ -168,12 +168,12 @@ func TestMidImpliedSkipsLegacyRowsWhenCounterAvailable(t *testing.T) {
 	for p := 0; p < 3; p++ {
 		for cap := 30; cap < 90; cap++ {
 			for k := 0; k < 3; k++ {
-				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CounterUAh: cc})
 				ts += 15
 				cc += 50_000 / 3
 			}
 		}
-		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CounterUAh: cc})
 		ts += midSegMaxDt + 60
 	}
 	rows = append(rows, mkMidPasses(ts, 3, 30, 90, 3000, 4_000_000, 27)...)
@@ -196,12 +196,12 @@ func TestMidImpliedCounterCoverageInsufficient(t *testing.T) {
 	for p := 0; p < 2; p++ { // 仅 2 次穿越，低于 midMinBinPass=3
 		for cap := 30; cap < 90; cap++ {
 			for k := 0; k < 3; k++ {
-				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CounterUAh: cc})
 				ts += 15
 				cc += 50_000 / 3
 			}
 		}
-		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CounterUAh: cc})
 		ts += midSegMaxDt + 60
 	}
 	rows = append(rows, mkMidPasses(ts, 3, 30, 90, 3000, 4_000_000, 27)...)
@@ -219,18 +219,18 @@ func TestMidImpliedDropsPartiallyCoveredBin(t *testing.T) {
 	for p := 0; p < 3; p++ { // 3 段完整 cc 穿越（5000mAh）
 		for cap := 30; cap < 90; cap++ {
 			for k := 0; k < 3; k++ {
-				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CC: cc})
+				rows = append(rows, SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: int64(cap), CounterUAh: cc})
 				ts += 15
 				cc += 50_000 / 3
 			}
 		}
-		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CC: cc})
+		rows = append(rows, SampleRow{TS: ts, UA: 0, UV: 3_900_000, Cap: 90, CounterUAh: cc})
 		ts += midSegMaxDt + 60
 	}
 	// 一段 30→31 的部分覆盖：跨 30→31 的那拍缺 cc，30 格只剩部分 Q
 	rows = append(rows,
-		SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: 30, CC: 1_000},
-		SampleRow{TS: ts + 15, UA: 6_000_000, UV: 3_900_000, Cap: 30, CC: 151_000},
+		SampleRow{TS: ts, UA: 6_000_000, UV: 3_900_000, Cap: 30, CounterUAh: 1_000},
+		SampleRow{TS: ts + 15, UA: 6_000_000, UV: 3_900_000, Cap: 30, CounterUAh: 151_000},
 		SampleRow{TS: ts + 30, UA: 6_000_000, UV: 3_900_000, Cap: 31},
 		SampleRow{TS: ts + 45, UA: 0, UV: 3_900_000, Cap: 31},
 	)
@@ -253,11 +253,11 @@ func TestCalibrateMidRejectsOutOfWindowImplied(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.st.KVSet(kvKeyEmaUA, "4000000"); err != nil {
+	if err := r.st.KVSet(kvKeyEmaUAh, "4000000"); err != nil {
 		t.Fatal(err)
 	}
 	r.p.calibrateMid(tickBaseTs)
-	if got := kvInt(r.st, kvKeyEmaUA); got != 4_000_000 {
+	if got := kvInt(r.st, kvKeyEmaUAh); got != 4_000_000 {
 		t.Fatalf("越界隐含值不应混入 EMA, ema = %d", got)
 	}
 	var n int
@@ -272,7 +272,7 @@ func TestCalibrateMidRejectsOutOfWindowImplied(t *testing.T) {
 func TestSettleAppliesMidCalibrationOncePerDay(t *testing.T) {
 	r := newPipeRig(t)
 	// 预置 EMA=5300 与 3 次诚实穿越（5000 mAh），埋在会话时间之前
-	r.st.KVSet(kvKeyEmaUA, "5300000")
+	r.st.KVSet(kvKeyEmaUAh, "5300000")
 	r.st.KVSet(kvKeySamples, "5")
 	for _, row := range mkMidPasses(tickBaseTs-20*86400, 3, 30, 90, 5000, 4_000_000, 15) {
 		if err := r.st.InsertSample(row.TS, row.UA, row.UV, row.Cap, 0); err != nil {
@@ -302,7 +302,7 @@ func TestSettleAppliesMidCalibrationOncePerDay(t *testing.T) {
 	if calTs == 0 {
 		t.Fatal("采信结算后应记录 mid_cal_ts")
 	}
-	ema := kvInt(r.st, kvKeyEmaUA)
+	ema := kvInt(r.st, kvKeyEmaUAh)
 	// 会话结算(5300→5270)后校准再拉向 5000：期望 ≈5243；留 ±2% 容差
 	if ema < 5_140_000 || ema > 5_340_000 || ema >= 5_270_000 {
 		t.Fatalf("校准后 EMA 应位于 (5270000 之下且趋向 5000000), got %d", ema)

@@ -59,10 +59,10 @@ func TestCheckQualityWarnsOncePerFlip(t *testing.T) {
 		}
 		return n
 	}
-	r.st.KVSet(kvKeyEmaUA, "7189122")
-	r.st.KVSet(kvMidImpliedUA, "15592000")
-	r.st.KVSet(kvDisImpliedUA, "6004000")
-	r.p.fullUA = 6_050_000
+	r.st.KVSet(kvKeyEmaUAh, "7189122")
+	r.st.KVSet(kvMidImpliedUAh, "15592000")
+	r.st.KVSet(kvDisImpliedUAh, "6004000")
+	r.p.fullUAh = 6_050_000
 
 	r.p.checkQuality()
 	if n := warnCount(); n != 1 {
@@ -73,7 +73,7 @@ func TestCheckQualityWarnsOncePerFlip(t *testing.T) {
 		t.Fatalf("结论未翻转不应重复留痕, got %d", n)
 	}
 	// 口径回正后结论翻转：恢复一致（只打日志不落事件）
-	r.st.KVSet(kvMidImpliedUA, "6004000")
+	r.st.KVSet(kvMidImpliedUAh, "6004000")
 	r.p.checkQuality()
 	if v, _ := r.st.KVGet(kvQualityOK); v != "1" {
 		t.Fatalf("回正后应记为一致, quality_ok=%q", v)

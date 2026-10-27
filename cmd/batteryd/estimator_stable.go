@@ -16,7 +16,7 @@ const (
 	fullSealCap = 99
 
 	kvKeySamples = "samples"
-	kvKeyEmaUA   = "ema_ua"
+	kvKeyEmaUAh  = "ema_ua"
 )
 
 // emaBlend 单会话向基线融合：满充会话权重 3/10，未满充会话降权至 1/10——
@@ -29,8 +29,10 @@ func emaBlend(old, est, endCap int64) int64 {
 	return (old*9 + est) / 10
 }
 
+// Stable 是默认估算器：隐含容量按 EMA 融合（满充 3/10、未满充 1/10 权重）。
 type Stable struct{ kv KVStore }
 
+// OnSession 结算一个充电会话：门控通过后把隐含容量按权重并入 EMA 基线。
 func (s *Stable) OnSession(sr SettledSession) (EstUpdate, error) {
 	res := evaluateStable(sr)
 	if !res.Accepted {
@@ -38,20 +40,20 @@ func (s *Stable) OnSession(sr SettledSession) (EstUpdate, error) {
 	}
 
 	samples := s.kvInt(kvKeySamples)
-	old := s.kvInt(kvKeyEmaUA)
-	ema := res.EstUA
+	old := s.kvInt(kvKeyEmaUAh)
+	ema := res.EstUAh
 	if samples > 0 {
-		ema = emaBlend(old, res.EstUA, sr.EndCap)
+		ema = emaBlend(old, res.EstUAh, sr.EndCap)
 	}
 	samples++
 
-	if err := s.kv.KVSet(kvKeyEmaUA, strconv.FormatInt(ema, 10)); err != nil {
+	if err := s.kv.KVSet(kvKeyEmaUAh, strconv.FormatInt(ema, 10)); err != nil {
 		return EstUpdate{}, err
 	}
 	if err := s.kv.KVSet(kvKeySamples, strconv.FormatInt(samples, 10)); err != nil {
 		return EstUpdate{}, err
 	}
-	return EstUpdate{EstUA: ema, Samples: samples, Changed: true}, nil
+	return EstUpdate{EstUAh: ema, Samples: samples, Changed: true}, nil
 }
 
 // tempOutOfRange 判断会话温度是否越界；temp 节点缺失时 TempMin=TempMax=0
@@ -64,14 +66,14 @@ func tempOutOfRange(sr SettledSession) bool {
 }
 
 // capacityInWindow 判隐含满容量是否落在设计容量 0.5~1.5 倍的合理窗口内。
-// designUA 为 0（charge_full_design 缺失）时无从判定，一律放行以启动学习。
+// designUAh 为 0（charge_full_design 缺失）时无从判定，一律放行以启动学习。
 // 会话通道与中段校准通道共用本口径：两条通道都会吃到量纲误判/脏样本，门控
 // 口径必须一致，否则校准通道会绕过会话通道的门。
-func capacityInWindow(uaFull, designUA int64) bool {
-	if designUA <= 0 {
+func capacityInWindow(fullUAh, designUAh int64) bool {
+	if designUAh <= 0 {
 		return true
 	}
-	return uaFull*2 >= designUA && uaFull*2 <= designUA*3
+	return fullUAh*2 >= designUAh && fullUAh*2 <= designUAh*3
 }
 
 func evaluateStable(sr SettledSession) SessionResult {
@@ -82,11 +84,11 @@ func evaluateStable(sr SettledSession) SessionResult {
 	if delta < minDeltaCap {
 		return SessionResult{Reason: "delta_lt_20"}
 	}
-	uaFull := fullCapacityUA(sr, delta)
-	if !capacityInWindow(uaFull, sr.DesignUA) {
+	fullUAh := fullCapacityUAh(sr, delta)
+	if !capacityInWindow(fullUAh, sr.DesignUAh) {
 		return SessionResult{Reason: "out_of_window"}
 	}
-	return SessionResult{Accepted: true, EstUA: uaFull}
+	return SessionResult{Accepted: true, EstUAh: fullUAh}
 }
 
 func (s *Stable) kvInt(key string) int64 {
