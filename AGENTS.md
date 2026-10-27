@@ -114,7 +114,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 组件统一用 JSX（`.jsx`）；不要再用 `h()` / `E()` 工厂，新代码优先拆小函数/组件，避免再长出几百行的 `Overview` / `History`。**不要引入 htm**（Apache-2.0 与本项目 GPL-2.0-only 不兼容）。
 - 静态图标放 `webui/src/assets/icons/*.svg`，由 `app.css` 的 `mask-image` 引用并通过 `currentColor` 着色；不要在组件里内联 `<svg>`。图表 SVG 是数据驱动的，仍由 `charts.js` 在运行时生成，不能预存成静态文件。
 - `webui/index.html` 只做入口壳；`webui/public/boot.js` 保持在 `<head>` 里同步加载（首屏主题/语言/底栏），`/internal/insets.css` 用占位符交给 `vite.config.js` 替换，不要改成 Vite 能解析的项目内资源。
-- 源码按职责分：`i18n`（字典）、`core`（宿主协议、格式化、存储/主题）、`charts`（数据驱动的 SVG 纯函数）、`ui/`（context / components / overview / settings / Stat.jsx）、`history/`（History / timeline / trends）、`assets/icons/`（静态图标）、`main.jsx`（状态与挂载）。模块之间用 import/export，不要再回退到全局变量。
+- 源码按职责分：`i18n`（字典）、`core`（宿主协议、格式化、存储/主题）、`charts`（数据驱动的 SVG 纯函数）、`ui/`（context / components / overview / overviewModel / settings / Stat.jsx）、`history/`（History / HistoryControls / HistorySummary / TimelineList / timeline / trends / useHistoryData）、`assets/icons/`（静态图标）、`useDocPolling` / `useUiPrefs`（取数轮询与偏好落盘）、`main.jsx`（组合 hooks 与挂载）。模块之间用 import/export，不要再回退到全局变量。
+- 可测的纯逻辑不要留在组件里：派生模型放同级 `*Model.js`（如 `ui/overviewModel.js` 的 `buildOverviewModel(doc, lang, t)`），取数与副作用放 `use*` hook，组件只做编排与渲染。`App` 只组合 hook，不在组件内直接写轮询/存储逻辑。
 - 产物必须满足两条硬约束：完全离线（CI 扫描 `fetch` / `XMLHttpRequest` / 远程 URL / 远程 import）和 50KB gzip 上限；`build.modulePreload.polyfill` 必须保持关闭（Vite 的预加载 polyfill 会注入 `fetch`）。
 - `webroot/` 是生成目录：不要手改、不要提交；改样式去 `webui/src/app.css`，改逻辑去 `webui/src/`。
 - 所有面向用户的文案放 `LANGS.zh` / `LANGS.en`，渲染时通过 `LangCtx` 的 `t()` / `plural()` 取；禁止在组件里硬编码中文。两份字典必须同时补 key。
@@ -143,7 +144,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | `service.sh` | 开机等待 `sys.boot_completed=1` 后启动 daemon |
 | `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
 | `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
-| `webui/` | WebUI 源码：`index.html`、`public/boot.js`、`src/main.jsx` / `i18n` / `core` / `charts` / `ui/` / `history/` / `assets/icons/` / `app.css` |
+| `webui/` | WebUI 源码：`index.html`、`public/boot.js`、`src/main.jsx` / `useDocPolling.js` / `useUiPrefs.js` / `i18n` / `core` / `charts` / `ui/` / `history/` / `assets/icons/` / `app.css` |
 | `webui/public/` | 构建时原样复制的静态文件：`boot.js` |
 | `webui/src/assets/icons/` | 静态 SVG 图标（导航、刷新），CSS mask 引用，构建时输出为独立文件 |
 | `THIRD_PARTY_NOTICES.txt` | 随模块分发的第三方许可证（Preact MIT），放在模块根目录，不混入 WebUI 产物 |
