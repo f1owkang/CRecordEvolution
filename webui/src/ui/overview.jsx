@@ -96,20 +96,20 @@ function Overview(props) {
         </div>
         <Cell
           label={t('label_qual')}
-          value={m.qText}
+          value={m.qualityText}
           style={{
             gridColumn: 'span 2',
           }}
-          pt={m.qOk}
-          title={m.qOk ? m.qDetailTxt : null}
+          pt={m.qualityOk}
+          title={m.qualityOk ? m.qualityDetailText : null}
           onClick={
-            m.qOk
+            m.qualityOk
               ? function () {
                   setQualOpen(!qualOpen);
                 }
               : null
           }
-          detail={m.qOk && qualOpen ? <div class="det">{m.qDetailTxt}</div> : null}
+          detail={m.qualityOk && qualOpen ? <div class="det">{m.qualityDetailText}</div> : null}
         />
       </section>
       <ChartCard

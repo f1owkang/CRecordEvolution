@@ -17,24 +17,24 @@ function overviewSubText(doc, hasEst, est, design, t) {
 // 英文把 ± 放到容量前面），没有估算值时回退到学习进度文案
 function overviewEstText(doc, lang, est, t) {
   if (est != null) {
-    const sg = Number(doc.est_mah_sigma);
-    const hasSigma = doc.channel === 'ml' && doc.est_mah_sigma != null && isFinite(sg);
-    if (lang === 'en' && hasSigma) return est + ' ±' + Math.round(sg) + ' mAh';
-    return est + ' mAh' + (hasSigma ? ' ±' + Math.round(sg) + ' mAh' : '');
+    const sigmaMah = Number(doc.est_mah_sigma);
+    const hasSigma = doc.channel === 'ml' && doc.est_mah_sigma != null && isFinite(sigmaMah);
+    if (lang === 'en' && hasSigma) return est + ' ±' + Math.round(sigmaMah) + ' mAh';
+    return est + ' mAh' + (hasSigma ? ' ±' + Math.round(sigmaMah) + ' mAh' : '');
   }
-  const nsamp = doc && doc.samples != null ? doc.samples : 0;
+  const sampleCount = doc && doc.samples != null ? doc.samples : 0;
   return plural(
     lang,
-    nsamp,
+    sampleCount,
     'est_learning_one',
     'est_learning_many',
-    { n: fmtInt(nsamp) },
+    { n: fmtInt(sampleCount) },
     'est_learning_zero'
   );
 }
 
 // 容量趋势格：stable / insufficient 优先，其次按周斜率走回升 / 衰减文案
-function overviewTrendText(doc, hasTw, tw, t) {
+function overviewTrendText(doc, hasTrendMahPerWeek, trendMahPerWeek, t) {
   if (doc && doc.trend_state === 'stable') return t('trend_stable');
   if (doc && doc.trend_state === 'insufficient') {
     return (
@@ -42,63 +42,74 @@ function overviewTrendText(doc, hasTw, tw, t) {
       (doc.trend_span_day != null ? t('trend_days', { n: fmtInt(doc.trend_span_day) }) : '')
     );
   }
-  if (!hasTw) return '—';
-  if (tw < 0) return t('trend_down', { n: fmtFix(Math.abs(tw), 1) });
-  return t('trend_up', { n: fmtFix(tw, 1) });
+  if (!hasTrendMahPerWeek) return '—';
+  if (trendMahPerWeek < 0) return t('trend_down', { n: fmtFix(Math.abs(trendMahPerWeek), 1) });
+  return t('trend_up', { n: fmtFix(trendMahPerWeek, 1) });
 }
 
 // 可信度详情：只列本机已有的容量口径，按固定顺序用「 / 」拼接
-function overviewQualDetail(q, t) {
-  return QUAL_CHANNELS.filter(function (k) {
-    return q[k + '_mah'] != null;
-  }).map(function (k) {
-    return t('ch_' + k) + ' ' + q[k + '_mah'] + ' mAh';
+function overviewQualDetail(quality, t) {
+  return QUAL_CHANNELS.filter(function (channelKey) {
+    return quality[channelKey + '_mah'] != null;
+  }).map(function (channelKey) {
+    return t('ch_' + channelKey) + ' ' + quality[channelKey + '_mah'] + ' mAh';
   });
 }
 
 // 概览页的派生模型：纯函数，只把 JSON 文档变成可渲染的字符串 / 布尔 / 点集，
 // 不调 hook、不碰 DOM，便于单测与逐字符比对。
 function buildOverviewModel(doc, lang, t) {
-  const d = doc;
-  const design = d ? d.design_mah : null;
-  const est = d ? d.est_mah : null;
+  const design = doc ? doc.design_mah : null;
+  const est = doc ? doc.est_mah : null;
   const hasEst = est != null && design != null && Number(design) > 0;
-  const pctText = d ? (hasEst ? String(Math.round((est / design) * 100)) : fmtInt(d.pct)) : '--';
+  const pctText = doc
+    ? hasEst
+      ? String(Math.round((est / design) * 100))
+      : fmtInt(doc.pct)
+    : '--';
   const badgeClass = 'badge ' + (hasEst ? 'meas' : 'kernel');
   const badgeText = hasEst ? t('badge_measured') : t('badge_kernel');
-  const subText = overviewSubText(d, hasEst, est, design, t);
-  const estText = overviewEstText(d, lang, est, t);
-  const tw = d ? Number(d.trend_mah_per_week) : NaN;
-  const hasTw = d && d.trend_mah_per_week != null && isFinite(tw);
-  const trendText = overviewTrendText(d, hasTw, tw, t);
-  const q = d ? d.quality : null;
-  const qOk = q != null && q.ok != null;
-  const qDetailTxt = qOk ? t('qual_detail', { list: overviewQualDetail(q, t).join(' / ') }) : '';
-  const qText = qOk
+  const subText = overviewSubText(doc, hasEst, est, design, t);
+  const estText = overviewEstText(doc, lang, est, t);
+  const trendMahPerWeek = doc ? Number(doc.trend_mah_per_week) : NaN;
+  const hasTrendMahPerWeek = doc && doc.trend_mah_per_week != null && isFinite(trendMahPerWeek);
+  const trendText = overviewTrendText(doc, hasTrendMahPerWeek, trendMahPerWeek, t);
+  const quality = doc ? doc.quality : null;
+  const qualityOk = quality != null && quality.ok != null;
+  const qualityDetailText = qualityOk
+    ? t('qual_detail', { list: overviewQualDetail(quality, t).join(' / ') })
+    : '';
+  const qualityText = qualityOk
     ? t('qual_summary', {
-        state: q.ok ? t('qual_ok') : t('qual_bad'),
-        n: q.spread_pct,
+        state: quality.ok ? t('qual_ok') : t('qual_bad'),
+        n: quality.spread_pct,
       })
     : t('qual_insufficient');
-  const recent = d && Array.isArray(d.recent) ? d.recent : [];
+  const recent = doc && Array.isArray(doc.recent) ? doc.recent : [];
   const recentAsc = ascByTs(recent);
   const designOK = design != null && Number(design) > 0;
   const showEst = designOK || recent.length > 0;
   const estPoints = pickPairs(recentAsc, 'ts', 'mah');
   const latest = recent.length ? recent[0] : null;
   const estSvg = estPoints.length
-    ? svgLine(recentAsc, CHART_W, CHART_H, 'var(--accent)', hasTw ? tw : null)
+    ? svgLine(
+        recentAsc,
+        CHART_W,
+        CHART_H,
+        'var(--accent)',
+        hasTrendMahPerWeek ? trendMahPerWeek : null
+      )
     : '';
   const capParts = [];
   if (latest != null) capParts.push(t('est_cap_latest', { mah: fmtInt(latest.mah) }));
-  if (d && d.samples_n != null)
+  if (doc && doc.samples_n != null)
     capParts.push(
       plural(
         lang,
-        d.samples_n,
+        doc.samples_n,
         'samples_one',
         'samples_many',
-        { n: fmtInt(d.samples_n) },
+        { n: fmtInt(doc.samples_n) },
         'samples_zero'
       )
     );
@@ -109,15 +120,15 @@ function buildOverviewModel(doc, lang, t) {
     pctText,
     subText,
     designText: fmtInt(design),
-    fullText: fmtInt(d ? d.full_mah : null),
-    cyclesText: fmtInt(d ? d.cycles : null),
+    fullText: fmtInt(doc ? doc.full_mah : null),
+    cyclesText: fmtInt(doc ? doc.cycles : null),
     estText,
-    cyceqText: fmtFix(d ? d.cycle_equiv : null, 2),
-    rmohText: d && d.r_moh != null ? fmtFix(d.r_moh, 1) + ' mΩ' : t('rmoh_collecting'),
+    cyceqText: fmtFix(doc ? doc.cycle_equiv : null, 2),
+    rmohText: doc && doc.r_moh != null ? fmtFix(doc.r_moh, 1) + ' mΩ' : t('rmoh_collecting'),
     trendText,
-    qOk,
-    qText,
-    qDetailTxt,
+    qualityOk,
+    qualityText,
+    qualityDetailText,
     showEst,
     estSvg,
     estPoints,
