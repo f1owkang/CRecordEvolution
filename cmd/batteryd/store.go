@@ -65,30 +65,8 @@ func (s *Store) InsertDischarge(r DischargeRow) error {
 
 // RecentDischarge 取最近 limit 条放电会话（按 end_ts 倒序）。
 func (s *Store) RecentDischarge(limit int) ([]DischargeRow, error) {
-	rows, err := s.db.Query(`SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
-		FROM discharge ORDER BY end_ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []DischargeRow{}
-	for rows.Next() {
-		var r DischargeRow
-		var implied sql.NullInt64
-		var reason sql.NullString
-		if err := rows.Scan(&r.TS, &r.Secs, &r.UAh, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
-			return nil, err
-		}
-		if implied.Valid {
-			v := implied.Int64
-			r.Implied = &v
-		}
-		if reason.Valid {
-			r.InvalidReason = reason.String
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
+		FROM discharge ORDER BY end_ts DESC LIMIT ?`, scanDischarge, limit)
 }
 
 func reasonOrNull(s string) any {
@@ -96,6 +74,58 @@ func reasonOrNull(s string) any {
 		return nil
 	}
 	return s
+}
+
+// queryAll 执行查询，把每行经 scan 映射成 T；调用方只写 SQL 与单行映射。
+// 返回的切片恒非 nil（空结果输出 []，与各查询原有契约一致）。
+func queryAll[T any](db *sql.DB, query string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []T{}
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// scanDischarge 把一行 discharge 记录映射为 DischargeRow：implied 为 NULL 时
+// 保持 nil（缺失即省略），invalid_reason 为 NULL 时留空。
+func scanDischarge(rows *sql.Rows) (DischargeRow, error) {
+	var r DischargeRow
+	var implied sql.NullInt64
+	var reason sql.NullString
+	if err := rows.Scan(&r.TS, &r.Secs, &r.UAh, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
+		return DischargeRow{}, err
+	}
+	if implied.Valid {
+		v := implied.Int64
+		r.Implied = &v
+	}
+	if reason.Valid {
+		r.InvalidReason = reason.String
+	}
+	return r, nil
+}
+
+// scanSession 把一行 sessions 记录映射为 Session（valid 列 0/1 → bool）。
+func scanSession(rows *sql.Rows) (Session, error) {
+	var se Session
+	var v int64
+	var reason sql.NullString
+	if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
+		&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
+		return Session{}, err
+	}
+	se.Valid = v == 1
+	se.InvalidReason = reason.String
+	return se, nil
 }
 
 // Store 封装 SQLite 引擎：schema 初始化、幂等迁移与各表读写。
@@ -281,21 +311,12 @@ func (s *Store) InsertEstimate(ts, estUAh int64) error {
 
 // RecentEstimates 取最近 limit 条容量估算（值单位 µAh，按 ts 倒序）。
 func (s *Store) RecentEstimates(limit int) ([]TsVal, error) {
-	rows, err := s.db.Query(`SELECT ts, mah FROM estimates ORDER BY ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]TsVal, 0, limit)
-	for rows.Next() {
-		var tv TsVal
-		if err := rows.Scan(&tv.TS, &tv.V); err != nil {
-			return nil, err
-		}
-		out = append(out, tv)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, mah FROM estimates ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (TsVal, error) {
+			var tv TsVal
+			err := rows.Scan(&tv.TS, &tv.V)
+			return tv, err
+		}, limit)
 }
 
 // InsertResistance 写入一条内阻回归样本（mo 单位 mΩ）。
@@ -307,20 +328,12 @@ func (s *Store) InsertResistance(ts int64, mo float64) error {
 // RecentResistance 返回最近 limit 条内阻样本值（按 ts 降序，即最新在前），
 // 供显示层做稳健统计（中位数），单条离群不影响口径。
 func (s *Store) RecentResistance(limit int) ([]float64, error) {
-	rows, err := s.db.Query(`SELECT mo FROM resistance ORDER BY ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []float64{}
-	for rows.Next() {
-		var mo float64
-		if err := rows.Scan(&mo); err != nil {
-			return nil, err
-		}
-		out = append(out, mo)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT mo FROM resistance ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (float64, error) {
+			var mo float64
+			err := rows.Scan(&mo)
+			return mo, err
+		}, limit)
 }
 
 // InsertRestPoint 写入一个静置点（uv 单位 µV，cap 为显示电量 %）。
@@ -336,44 +349,18 @@ type RestPoint struct {
 
 // RecentSessions 取最近 limit 条充电会话（按 end_ts 倒序）。
 func (s *Store) RecentSessions(limit int) ([]Session, error) {
-	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
-		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Session{}
-	for rows.Next() {
-		var se Session
-		var v int64
-		var reason sql.NullString
-		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-			&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
-			return nil, err
-		}
-		se.Valid = v == 1
-		se.InvalidReason = reason.String
-		out = append(out, se)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, scanSession, limit)
 }
 
 // RecentRestPoints 取最近 limit 个静置点（按 ts 倒序）。
 func (s *Store) RecentRestPoints(limit int) ([]RestPoint, error) {
-	rows, err := s.db.Query(`SELECT ts, uv, cap FROM rest_points ORDER BY ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []RestPoint{}
-	for rows.Next() {
-		var rp RestPoint
-		if err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap); err != nil {
-			return nil, err
-		}
-		out = append(out, rp)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, uv, cap FROM rest_points ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (RestPoint, error) {
+			var rp RestPoint
+			err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap)
+			return rp, err
+		}, limit)
 }
 
 // InsertEvent 写入一条内部事件（detail 为中文排障明细）。
@@ -402,21 +389,13 @@ func (s *Store) CountSamples() (int64, error) {
 
 // SamplesRange 返回 [from, to] 闭区间内的样本行，按 ts 升序。
 func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
-	rows, err := s.db.Query(`SELECT ts, ua, uv, cap, cc FROM samples
-		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`, from, to)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []SampleRow{}
-	for rows.Next() {
-		var r SampleRow
-		if err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, ua, uv, cap, cc FROM samples
+		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`,
+		func(rows *sql.Rows) (SampleRow, error) {
+			var r SampleRow
+			err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh)
+			return r, err
+		}, from, to)
 }
 
 // CcctRow 为 ccct 表一行：穿窗上沿时刻、窗下/上沿电压与穿窗耗时。
@@ -433,20 +412,12 @@ func (s *Store) InsertCCCT(ts, vwLo, vwHi, secs int64) error {
 
 // RecentCCCT 取最近 limit 条 CCCT 记录（按 ts 倒序）。
 func (s *Store) RecentCCCT(limit int) ([]CcctRow, error) {
-	rows, err := s.db.Query(`SELECT ts, vw_lo, vw_hi, secs FROM ccct ORDER BY ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CcctRow{}
-	for rows.Next() {
-		var c CcctRow
-		if err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, vw_lo, vw_hi, secs FROM ccct ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (CcctRow, error) {
+			var c CcctRow
+			err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs)
+			return c, err
+		}, limit)
 }
 
 // ICAPeakRow 为 ica_peaks 表一行：会话结束时刻、主峰位置（µV）与相对峰高。
@@ -464,148 +435,69 @@ func (s *Store) InsertICAPeak(ts, peakUV int64, peakHRel float64) error {
 
 // RecentICAPeaks 取最近 limit 条 ICA 主峰（按会话结束时刻倒序）。
 func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
-	rows, err := s.db.Query(`SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks ORDER BY session_end_ts DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []ICAPeakRow{}
-	for rows.Next() {
-		var r ICAPeakRow
-		if err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks ORDER BY session_end_ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (ICAPeakRow, error) {
+			var r ICAPeakRow
+			err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel)
+			return r, err
+		}, limit)
 }
 
 // SessionsSince 返回 end_ts >= since 的全部充电会话（新→旧）。
 func (s *Store) SessionsSince(since int64) ([]Session, error) {
-	rows, err := s.db.Query(`SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
-		temp_avg,valid,invalid_reason FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Session{}
-	for rows.Next() {
-		var se Session
-		var v int64
-		var reason sql.NullString
-		if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-			&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
-			return nil, err
-		}
-		se.Valid = v == 1
-		se.InvalidReason = reason.String
-		out = append(out, se)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+		temp_avg,valid,invalid_reason FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC`,
+		scanSession, since)
 }
 
 // DischargeSince 返回 end_ts >= since 的全部放电会话（新→旧）。
 func (s *Store) DischargeSince(since int64) ([]DischargeRow, error) {
-	rows, err := s.db.Query(`SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
-		FROM discharge WHERE end_ts >= ? ORDER BY end_ts DESC`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []DischargeRow{}
-	for rows.Next() {
-		var r DischargeRow
-		var implied sql.NullInt64
-		var reason sql.NullString
-		if err := rows.Scan(&r.TS, &r.Secs, &r.UAh, &r.StartCap, &r.EndCap, &implied, &reason); err != nil {
-			return nil, err
-		}
-		if implied.Valid {
-			v := implied.Int64
-			r.Implied = &v
-		}
-		if reason.Valid {
-			r.InvalidReason = reason.String
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
+		FROM discharge WHERE end_ts >= ? ORDER BY end_ts DESC`, scanDischarge, since)
 }
 
 // RestPointsSince 返回 ts >= since 的最近 limit 条静置点（新→旧）。
 func (s *Store) RestPointsSince(since int64, limit int) ([]RestPoint, error) {
-	rows, err := s.db.Query(`SELECT ts, uv, cap FROM rest_points
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []RestPoint{}
-	for rows.Next() {
-		var rp RestPoint
-		if err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap); err != nil {
-			return nil, err
-		}
-		out = append(out, rp)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, uv, cap FROM rest_points
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (RestPoint, error) {
+			var rp RestPoint
+			err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap)
+			return rp, err
+		}, since, limit)
 }
 
 // CCCTSince 返回 ts >= since 的最近 limit 条 CCCT 记录（新→旧）。
 func (s *Store) CCCTSince(since int64, limit int) ([]CcctRow, error) {
-	rows, err := s.db.Query(`SELECT ts, vw_lo, vw_hi, secs FROM ccct
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CcctRow{}
-	for rows.Next() {
-		var c CcctRow
-		if err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, vw_lo, vw_hi, secs FROM ccct
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (CcctRow, error) {
+			var c CcctRow
+			err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs)
+			return c, err
+		}, since, limit)
 }
 
 // ICAPeaksSince 返回 session_end_ts >= since 的最近 limit 条 ICA 主峰（新→旧）。
 func (s *Store) ICAPeaksSince(since int64, limit int) ([]ICAPeakRow, error) {
-	rows, err := s.db.Query(`SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks
-		WHERE session_end_ts >= ? ORDER BY session_end_ts DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []ICAPeakRow{}
-	for rows.Next() {
-		var r ICAPeakRow
-		if err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks
+		WHERE session_end_ts >= ? ORDER BY session_end_ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (ICAPeakRow, error) {
+			var r ICAPeakRow
+			err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel)
+			return r, err
+		}, since, limit)
 }
 
 // EstimatesSince 返回 ts >= since 的最近 limit 条容量估算（新→旧）。
 func (s *Store) EstimatesSince(since int64, limit int) ([]TsVal, error) {
-	rows, err := s.db.Query(`SELECT ts, mah FROM estimates
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []TsVal{}
-	for rows.Next() {
-		var tv TsVal
-		if err := rows.Scan(&tv.TS, &tv.V); err != nil {
-			return nil, err
-		}
-		out = append(out, tv)
-	}
-	return out, rows.Err()
+	return queryAll(s.db, `SELECT ts, mah FROM estimates
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+		func(rows *sql.Rows) (TsVal, error) {
+			var tv TsVal
+			err := rows.Scan(&tv.TS, &tv.V)
+			return tv, err
+		}, since, limit)
 }
 
 // CountSamplesSince 统计 ts >= since 的采样行数。

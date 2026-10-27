@@ -108,6 +108,13 @@ func finitePtr(f *float64) *float64 {
 
 func intPtr(v int64) *int64 { return &v }
 
+// reverseInPlace 原地反转切片：查询结果是新→旧，趋势图需要旧→新。
+func reverseInPlace[T any](rows []T) {
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+}
+
 func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
 		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid, InvalidReason: se.InvalidReason}
@@ -121,6 +128,19 @@ func convSession(se Session) sessionEntry {
 	}
 	if se.CRate > 0 {
 		e.CRate = finitePtr(&se.CRate)
+	}
+	return e
+}
+
+// convDischarge 把放电行转成 JSON 条目：UAh（µAh）与 Implied（µAh）折算为 mAh，
+// 隐含容量缺失时保持 nil（JSON 省略）。
+func convDischarge(r DischargeRow) dischargeEntry {
+	e := dischargeEntry{TS: r.TS, Secs: r.Secs, Mah: r.UAh / 1000,
+		StartCap: r.StartCap, EndCap: r.EndCap, Implied: r.Implied,
+		InvalidReason: r.InvalidReason}
+	if e.Implied != nil {
+		v := *e.Implied / 1000
+		e.Implied = &v
 	}
 	return e
 }

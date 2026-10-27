@@ -165,13 +165,7 @@ func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc,
 		}
 	}
 	for _, dr := range disRows {
-		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
-			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
-			InvalidReason: dr.InvalidReason}
-		if de.Implied != nil {
-			v := *de.Implied / 1000
-			de.Implied = &v
-		}
+		de := convDischarge(dr)
 		all = append(all, historyEvent{Kind: "discharge", TS: de.TS, Discharge: &de})
 	}
 	// 同一秒内按 kind 固定排序，保证分页游标稳定。
@@ -268,7 +262,7 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 		}
 		tr.Sessions = append(tr.Sessions, convSession(se))
 	}
-	reverseSessions(tr.Sessions)
+	reverseInPlace(tr.Sessions)
 
 	disRows, err := st.DischargeSince(since)
 	if err != nil {
@@ -278,23 +272,16 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 		if i >= historyTrendLimit {
 			break
 		}
-		de := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
-			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
-			InvalidReason: dr.InvalidReason}
-		if de.Implied != nil {
-			v := *de.Implied / 1000
-			de.Implied = &v
-		}
-		tr.Discharge = append(tr.Discharge, de)
+		tr.Discharge = append(tr.Discharge, convDischarge(dr))
 	}
-	reverseDischarge(tr.Discharge)
+	reverseInPlace(tr.Discharge)
 
 	restRows, err := st.RestPointsSince(since, historyTrendLimit)
 	if err != nil {
 		return tr, err
 	}
-	for i := len(restRows) - 1; i >= 0; i-- {
-		rp := restRows[i]
+	reverseInPlace(restRows)
+	for _, rp := range restRows {
 		tr.RestPoints = append(tr.RestPoints, restEntry{TS: rp.TS, UV: rp.UV, Cap: rp.Cap})
 	}
 
@@ -302,8 +289,8 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 	if err != nil {
 		return tr, err
 	}
-	for i := len(ccctRows) - 1; i >= 0; i-- {
-		c := ccctRows[i]
+	reverseInPlace(ccctRows)
+	for _, c := range ccctRows {
 		tr.Ccct = append(tr.Ccct, ccctEntry{TS: c.TS, Secs: c.Secs, VwLo: c.VwLo, VwHi: c.VwHi})
 	}
 
@@ -311,8 +298,8 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 	if err != nil {
 		return tr, err
 	}
-	for i := len(icaRows) - 1; i >= 0; i-- {
-		ip := icaRows[i]
+	reverseInPlace(icaRows)
+	for _, ip := range icaRows {
 		if h := finitePtr(&ip.PeakHRel); h != nil {
 			tr.IcaPeaks = append(tr.IcaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: h})
 		}
@@ -322,24 +309,10 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 	if err != nil {
 		return tr, err
 	}
-	for i := len(estRows) - 1; i >= 0; i-- {
-		tv := estRows[i]
+	reverseInPlace(estRows)
+	for _, tv := range estRows {
 		tr.Estimates = append(tr.Estimates, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
 	}
 
 	return tr, nil
-}
-
-// reverseSessions 原地把会话数组反转为时间升序（旧→新），与 WebUI 图表 helper 一致。
-func reverseSessions(rows []sessionEntry) {
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
-}
-
-// reverseDischarge 原地把放电数组反转为时间升序（旧→新），与 WebUI 图表 helper 一致。
-func reverseDischarge(rows []dischargeEntry) {
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
 }

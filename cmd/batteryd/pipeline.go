@@ -655,6 +655,8 @@ func (p *Pipeline) settle() error {
 	if duration > 0 {
 		avgI = s.accUAs / duration
 	}
+	// dur 供下方结算日志复用（只做格式化，不参与口径计算）。
+	dur := (time.Duration(duration) * time.Second).Truncate(time.Second)
 	row := Session{
 		StartTs:  s.startTs,
 		EndTs:    p.now().Unix(),
@@ -707,8 +709,7 @@ func (p *Pipeline) settle() error {
 		row.Valid = false
 		row.InvalidReason = re.Result.Reason
 		p.log("[结算] 拒绝 reason=%s cap=%d→%d dur=%s avgI=%dmA",
-			re.Result.Reason, row.StartCap, row.EndCap,
-			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000)
+			re.Result.Reason, row.StartCap, row.EndCap, dur, avgI/1000)
 		if _, insErr := p.st.InsertSession(row); insErr != nil {
 			return &SettleError{Err: insErr}
 		}
@@ -718,18 +719,14 @@ func (p *Pipeline) settle() error {
 		return nil
 	}
 	row.Valid = true
-	// σ 仅 ML 通道产出（stable 恒为 0）：≤0 时省略段，避免打印误导性的 σ=0.0
+	// σ 仅 ML 通道产出（stable 恒为 0）：≤0 时省略段，避免打印误导性的 σ=0.0；
+	// 采信日志只保留一处模板，σ 段按需拼接。
+	sigmaNote := ""
 	if upd.SigmaMah > 0 {
-		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh σ=%.1f",
-			row.StartCap, row.EndCap,
-			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
-			counterSrc, upd.EstUAh/1000, upd.SigmaMah)
-	} else {
-		p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh",
-			row.StartCap, row.EndCap,
-			(time.Duration(duration) * time.Second).Truncate(time.Second), avgI/1000,
-			counterSrc, upd.EstUAh/1000)
+		sigmaNote = fmt.Sprintf(" σ=%.1f", upd.SigmaMah)
 	}
+	p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh%s",
+		row.StartCap, row.EndCap, dur, avgI/1000, counterSrc, upd.EstUAh/1000, sigmaNote)
 	if _, insErr := p.st.InsertSession(row); insErr != nil {
 		return &SettleError{Err: insErr}
 	}

@@ -31,6 +31,142 @@ const (
 	kvMidImpliedUAh = "mid_implied_ua"
 )
 
+// midAccum 为中段校准的累计器：按显示百分点窗格累计电量（µAh）与穿越次数。
+type midAccum struct {
+	q    [100]float64
+	pass [100]int
+}
+
+// add 并入一段的窗格归因；bad 窗格 Q 与 pass 都不计（该窗格只覆盖了一部分，
+// 若仍记一整次穿越会把均值拉低）。
+func (a *midAccum) add(seg *midSegQ) {
+	for c, q := range seg.q {
+		if seg.bad[c] {
+			continue
+		}
+		a.q[c] += q
+		a.pass[c]++
+	}
+}
+
+// implied 校验窗格覆盖并按 pass 归一为隐含满容量：任一窗格穿越次数低于
+// midMinBinPass 即判覆盖不足。Q 已是 µAh，(µAh/窗格/次) × 100% 即 µAh 量级。
+func (a *midAccum) implied(lo, hi int) (int64, bool) {
+	var sumQ, sumP float64
+	for c := int64(lo); c < int64(hi); c++ {
+		if a.pass[c] < midMinBinPass {
+			return 0, false
+		}
+		sumQ += a.q[c]
+		sumP += float64(a.pass[c])
+	}
+	if sumP <= 0 {
+		return 0, false
+	}
+	return int64(sumQ / sumP * 100), true
+}
+
+// midSegQ 为一段连续样本的窗格归因：q 为窗格累计电量（µAh），bad 标记该段内
+// 只因缺电量计读数而覆盖不全的窗格。
+type midSegQ struct {
+	q   map[int64]float64
+	bad map[int64]bool
+}
+
+// attribute 把区间电量 q 均摊到跨越的 1% 窗格（c1>c0）；百分比停滞的区间整段
+// 归入当前窗格（若在窗内）。
+func (sg *midSegQ) attribute(c0, c1 int64, q float64, lo, hi int) {
+	if c1 > c0 {
+		share := q / float64(c1-c0)
+		for c := c0; c < c1 && c < int64(hi); c++ {
+			if c >= int64(lo) && c >= 0 && c < 100 {
+				sg.q[c] += share
+			}
+		}
+		return
+	}
+	if c0 >= int64(lo) && c0 < int64(hi) {
+		sg.q[c0] += q
+	}
+}
+
+// markBad 标记 [c0,c1) 内覆盖不全的窗格；百分比停滞（c1<=c0）时只标 c0。
+func (sg *midSegQ) markBad(c0, c1 int64, lo, hi int) {
+	if c1 > c0 {
+		for c := c0; c < c1 && c < int64(hi); c++ {
+			if c >= int64(lo) && c >= 0 && c < 100 {
+				sg.bad[c] = true
+			}
+		}
+		return
+	}
+	if c0 >= int64(lo) && c0 < int64(hi) {
+		sg.bad[c0] = true
+	}
+}
+
+// midIntervalQ 计算单个区间（from→to，间隔 dt 秒）的电量（µAh）。ok=false 表示
+// 该区间无法归因：要么数据本身无效（电量计零/负增量或超 midSegMaxUAh，跳过但
+// 不扣该窗格 pass），要么本机有电量计却缺读数（needMark=true，该窗格覆盖不全）。
+func midIntervalQ(from, to SampleRow, dt int64, hasCounter bool) (q float64, needMark, ok bool) {
+	if from.CounterUAh > 0 && to.CounterUAh > 0 {
+		d := to.CounterUAh - from.CounterUAh
+		if d <= 0 || d > midSegMaxUAh {
+			return 0, false, false
+		}
+		return float64(d), false, true
+	}
+	if hasCounter {
+		return 0, true, false
+	}
+	return float64(from.UA) * float64(dt) / 3600, false, true
+}
+
+// attributeSegment 把一段连续正电流样本逐区间归因到窗格上。
+func attributeSegment(seg []SampleRow, hasCounter bool, lo, hi int) *midSegQ {
+	sg := &midSegQ{q: map[int64]float64{}, bad: map[int64]bool{}}
+	for k := 1; k < len(seg); k++ {
+		from, to := seg[k-1], seg[k]
+		c0, c1 := from.Cap, to.Cap
+		dt := to.TS - from.TS
+		if dt <= 0 || c1 < c0 {
+			continue // 数据本身无效：跳过该区间，但不扣该窗格 pass
+		}
+		q, needMark, ok := midIntervalQ(from, to, dt, hasCounter)
+		switch {
+		case ok:
+			sg.attribute(c0, c1, q, lo, hi)
+		case needMark:
+			sg.markBad(c0, c1, lo, hi) // 有电量计却缺读数：该窗格 Q 与 pass 都不计
+		}
+	}
+	return sg
+}
+
+// midHasCounter 判断本机是否有电量计读数：样本里出现过 CounterUAh>0 即说明有
+// charge_counter，此时缺读数的区间不得回退电流积分（两种口径不能混用）。
+func midHasCounter(rows []SampleRow) bool {
+	for _, r := range rows {
+		if r.CounterUAh > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// midSegEnd 返回从 i 开始的正电流连续段结束下标（相邻间隔 ≤ midSegMaxDt 且电流
+// 为正）；rows[i] 非正电流时返回 i+1，即单点跳过。
+func midSegEnd(rows []SampleRow, i int) int {
+	if rows[i].UA <= 0 {
+		return i + 1
+	}
+	j := i + 1
+	for j < len(rows) && rows[j].TS-rows[j-1].TS <= midSegMaxDt && rows[j].UA > 0 {
+		j++
+	}
+	return j
+}
+
 // MidImplied 聚合充电样本并返回 pass 归一的中段隐含满容量（与 EstUAh 同单位，
 // 即 µAh 量级数值）。判定口径：
 //   - 样本按时间连续（相邻间隔 ≤ midSegMaxDt）且电流为正切成一段；
@@ -48,103 +184,16 @@ const (
 //     局部区间充电的习惯把窗口算偏）；
 //   - 隐含容量 = ΣQ/Σpass × 100% 折算（Q 已是 µAh，无需再除以 3600）。
 func MidImplied(rows []SampleRow, lo, hi int) (int64, bool) {
-	var binQ [100]float64
-	var binP [100]int
-
-	// 是否具备电量计读数：样本里出现过 CounterUAh>0 即说明本机有 charge_counter。
-	// 有则缺读数的区间一律跳过，不回退电流积分——积分口径系统性偏低 10~13%，
-	// 两种口径混用会把中段校准整体拉低（实测 5747→5381mAh）。
-	hasCounter := false
-	for _, r := range rows {
-		if r.CounterUAh > 0 {
-			hasCounter = true
-			break
-		}
-	}
-
-	n := len(rows)
-	for i := 0; i < n; {
-		if rows[i].UA <= 0 {
-			i++
-			continue
-		}
-		j := i + 1
-		for j < n && rows[j].TS-rows[j-1].TS <= midSegMaxDt && rows[j].UA > 0 {
-			j++
-		}
-		if seg := rows[i:j]; len(seg) >= 2 {
-			segQ := map[int64]float64{}
-			// segBad 记录本段内「因缺电量计读数无法归因」的窗格：该窗格只覆盖了一部分，
-			// Q 与 pass 都不能计，否则部分覆盖会把隐含值拉偏。
-			segBad := map[int64]bool{}
-			markBad := func(c0, c1 int64) {
-				if c1 > c0 {
-					for c := c0; c < c1 && c < int64(hi); c++ {
-						if c >= int64(lo) && c >= 0 && c < 100 {
-							segBad[c] = true
-						}
-					}
-				} else if c0 >= int64(lo) && c0 < int64(hi) {
-					segBad[c0] = true
-				}
-			}
-			for k := 1; k < len(seg); k++ {
-				dt := seg[k].TS - seg[k-1].TS
-				c0, c1 := seg[k-1].Cap, seg[k].Cap
-				if dt <= 0 || c1 < c0 {
-					continue
-				}
-				var q float64 // µAh
-				if counterFrom, counterTo := seg[k-1].CounterUAh, seg[k].CounterUAh; counterFrom > 0 && counterTo > 0 {
-					d := counterTo - counterFrom
-					if d <= 0 || d > midSegMaxUAh {
-						// 单区间零/负增量是电量计抖动/回修，跳过该区间即可；
-						// 该段的百分比穿越仍然成立，不因此扣掉整格 pass。
-						continue
-					}
-					q = float64(d)
-				} else {
-					if hasCounter {
-						markBad(c0, c1)
-						continue // 有电量计却缺读数：该区间无法可信归因
-					}
-					q = float64(seg[k-1].UA) * float64(dt) / 3600
-				}
-				if c1 > c0 {
-					for c := c0; c < c1 && c < int64(hi); c++ {
-						if c >= int64(lo) && c >= 0 && c < 100 {
-							segQ[c] += q / float64(c1-c0)
-						}
-					}
-				} else if c0 >= int64(lo) && c0 < int64(hi) {
-					segQ[c0] += q
-				}
-			}
-			for c, q := range segQ {
-				if segBad[c] {
-					continue // 本段该窗格只覆盖了一部分：Q 与 pass 都不计
-				}
-				binQ[c] += q
-				binP[c]++
-			}
+	hasCounter := midHasCounter(rows)
+	var acc midAccum
+	for i := 0; i < len(rows); {
+		j := midSegEnd(rows, i)
+		if j-i >= 2 {
+			acc.add(attributeSegment(rows[i:j], hasCounter, lo, hi))
 		}
 		i = j
 	}
-
-	var sumQ, sumP float64
-	for c := int64(lo); c < int64(hi); c++ {
-		if binP[c] < midMinBinPass {
-			return 0, false
-		}
-		sumQ += binQ[c]
-		sumP += float64(binP[c])
-	}
-	if sumP <= 0 {
-		return 0, false
-	}
-	// (µAh/窗格/次) × 100% = µAh 量级的隐含满容量
-	implied := sumQ / sumP * 100
-	return int64(implied), true
+	return acc.implied(lo, hi)
 }
 
 // calibrateMid 结算采信后的中段校准装配：至多每日一次；EMA 未初始化或覆盖

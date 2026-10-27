@@ -370,9 +370,7 @@ func (a *app) stats() (Design, Snapshot, error) {
 	// 趋势三态：insufficient（数据不足）/stable（无显著变化）/significant（显著变化），判定见 trend.go；
 	// 无任何估算点时整体省略，前端显示占位符
 	if recent, err := a.st.RecentEstimates(200); err == nil && len(recent) > 0 {
-		for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
-			recent[i], recent[j] = recent[j], recent[i]
-		}
+		reverseInPlace(recent)
 		tr, ok := FitTrend(recent)
 		snap.TrendState = string(tr.State)
 		if tr.State == TrendInsufficient {
@@ -484,15 +482,7 @@ func runDaemon() error {
 		raw, err := os.ReadFile(statusNode)
 		if err != nil {
 			// status 读取抖动属于瞬态故障，走连败计数而非直接退出
-			streak, dead := tickStrike(failStreak, err)
-			failStreak = streak
-			msg := "读取 status 失败：" + err.Error()
-			if dead {
-				fatalf(a, "%s，连续 %d 次", msg, failStreak)
-			}
-			_ = a.st.InsertEvent("tick_error", msg)
-			a.appendLog("%s", msg)
-			fmt.Fprintln(os.Stderr, msg)
+			failStreak = a.reportTickFailure(failStreak, "读取 status 失败："+err.Error(), err)
 			continue
 		}
 		status := strings.TrimSpace(string(raw))
@@ -516,15 +506,8 @@ func runDaemon() error {
 		}
 
 		if _, err := p.Tick(status); err != nil {
-			streak, dead := tickStrike(failStreak, err)
-			failStreak = streak
-			msg := fmt.Sprintf("Tick(status=%s) 失败：%v", status, err)
-			if dead {
-				fatalf(a, "%s，连续 %d 次", msg, failStreak)
-			}
-			_ = a.st.InsertEvent("tick_error", msg)
-			a.appendLog("%s", msg)
-			fmt.Fprintln(os.Stderr, msg)
+			failStreak = a.reportTickFailure(failStreak,
+				fmt.Sprintf("Tick(status=%s) 失败：%v", status, err), err)
 			continue
 		}
 		failStreak = 0
@@ -535,14 +518,33 @@ func runDaemon() error {
 		if changed || count >= refreshEveryTicks {
 			a.redetectCellCount(p)
 			if err := a.refreshPruned(); err != nil {
-				_ = a.st.InsertEvent("refresh_fail", err.Error())
-				a.appendLog("刷新描述失败：%s", err.Error())
-				fmt.Fprintln(os.Stderr, "刷新描述失败："+err.Error())
+				a.reportFailure("refresh_fail", "刷新描述失败："+err.Error(), err.Error())
 			}
 			count = 0
 		}
 	}
 	return nil
+}
+
+// reportFailure 把一次失败同时落 events、日志与 stderr：eventDetail 是 events
+// 表的排障明细，logMsg 是日志与 stderr 的完整文案。上报自身不返回错误——
+// 日志与 events 永远不影响主链路。
+func (a *app) reportFailure(kind, logMsg, eventDetail string) {
+	_ = a.st.InsertEvent(kind, eventDetail)
+	a.appendLog("%s", logMsg)
+	fmt.Fprintln(os.Stderr, logMsg)
+}
+
+// reportTickFailure 处理一次 tick 连败并返回新的连败数：tickStrike 判死（结算类
+// 错误或连败到 tickFailMax）时经 fatalf 落 tick_fatal 事件并退出（码 1）；否则
+// 落 tick_error 事件、日志与 stderr。
+func (a *app) reportTickFailure(prev int, msg string, err error) int {
+	streak, dead := tickStrike(prev, err)
+	if dead {
+		fatalf(a, "%s，连续 %d 次", msg, streak)
+	}
+	a.reportFailure("tick_error", msg, msg)
+	return streak
 }
 
 func tickStrike(prev int, err error) (int, bool) {
@@ -748,14 +750,7 @@ func runJson() error {
 	}
 	disch := make([]dischargeEntry, 0, len(disRows))
 	for _, dr := range disRows {
-		e := dischargeEntry{TS: dr.TS, Secs: dr.Secs, Mah: dr.UAh / 1000,
-			StartCap: dr.StartCap, EndCap: dr.EndCap, Implied: dr.Implied,
-			InvalidReason: dr.InvalidReason}
-		if e.Implied != nil {
-			v := *e.Implied / 1000
-			e.Implied = &v
-		}
-		disch = append(disch, e)
+		disch = append(disch, convDischarge(dr))
 	}
 	n, err := a.st.CountSamples()
 	if err != nil {
