@@ -188,16 +188,36 @@ html[data-bar='classic'] body {
   opacity: 0.5;
   cursor: default;
 }
-.iconbtn svg {
+.icon {
+  display: block;
   width: 19px;
   height: 19px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
 }
-.iconbtn.spinning svg {
+.icon-refresh {
+  -webkit-mask-image: url('./assets/icons/refresh.svg');
+  mask-image: url('./assets/icons/refresh.svg');
+}
+.icon-overview {
+  -webkit-mask-image: url('./assets/icons/overview.svg');
+  mask-image: url('./assets/icons/overview.svg');
+}
+.icon-history {
+  -webkit-mask-image: url('./assets/icons/history.svg');
+  mask-image: url('./assets/icons/history.svg');
+}
+.icon-settings {
+  -webkit-mask-image: url('./assets/icons/settings.svg');
+  mask-image: url('./assets/icons/settings.svg');
+}
+.iconbtn.spinning .icon {
   animation: spin 900ms linear infinite;
 }
 @keyframes spin {
@@ -928,14 +948,9 @@ html[data-theme='light'] .pill.warn {
   font-weight: 600;
   cursor: pointer;
 }
-.navitem svg {
+.navitem .icon {
   width: 22px;
   height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 .navitem.is-active {
   color: var(--accent);

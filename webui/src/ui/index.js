@@ -1,5 +1,5 @@
-export { E, LangCtx, useTr } from './context.js';
-export { ErrorBanner, TopBar, Dock, Seg, Gate } from './components.js';
-export { Overview } from './overview.js';
-export { Settings } from './settings.js';
+export { LangCtx, useTr } from './context.js';
+export { ErrorBanner, TopBar, Dock, Seg, Gate } from './components.jsx';
+export { Overview } from './overview.jsx';
+export { Settings } from './settings.jsx';
 export { HistStat } from './Stat.jsx';

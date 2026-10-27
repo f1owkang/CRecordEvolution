@@ -20,12 +20,10 @@ import {
   applyThemeDocument,
   initialLang,
 } from './core.js';
-import { E, LangCtx, TopBar, Overview, Settings, Dock, Gate, ErrorBanner } from './ui/index.js';
+import { LangCtx, TopBar, Overview, Settings, Dock, Gate, ErrorBanner } from './ui/index.js';
 import { History } from './history/index.js';
 import './app.css';
-
 const HAS_HOST = hasExec();
-
 function App() {
   const [lang, setLang] = useState(initialLang());
   const [themeMode, setThemeMode] = useState(storedThemeMode());
@@ -35,16 +33,15 @@ function App() {
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [histReload, setHistReload] = useState(0);
-
   const scrollPos = useRef([0, 0, 0]);
   const lastFP = useRef(null);
   const fetchInFlight = useRef(null);
-  const pollCtl = useRef({ reset: null });
-
+  const pollCtl = useRef({
+    reset: null,
+  });
   const tr = function (key, vars) {
     return translate(lang, key, vars);
   };
-
   useEffect(
     function () {
       document.documentElement.setAttribute('data-lang', lang);
@@ -57,7 +54,6 @@ function App() {
     },
     [lang, page]
   );
-
   useEffect(
     function () {
       applyThemeDocument(themeMode);
@@ -75,14 +71,12 @@ function App() {
     },
     [themeMode]
   );
-
   useEffect(
     function () {
       document.documentElement.setAttribute('data-bar', barMode);
     },
     [barMode]
   );
-
   useEffect(
     function () {
       try {
@@ -91,7 +85,6 @@ function App() {
     },
     [page]
   );
-
   const fetchDoc = useCallback(function (force) {
     if (document.hidden) return Promise.resolve(true);
     if (fetchInFlight.current) {
@@ -102,23 +95,34 @@ function App() {
     }
     const p = run(CMD_JSON).then(function (r) {
       if (r.errno !== 0) {
-        setErr({ key: 'err_run', vars: { detail: r.stderr || 'errno ' + r.errno } });
+        setErr({
+          key: 'err_run',
+          vars: {
+            detail: r.stderr || 'errno ' + r.errno,
+          },
+        });
         return false;
       }
       const stdout = String(r.stdout || '').trim();
       if (!stdout) {
-        setErr({ key: 'err_noout' });
+        setErr({
+          key: 'err_noout',
+        });
         return false;
       }
       let data;
       try {
         data = JSON.parse(stdout);
       } catch (e) {
-        setErr({ key: 'err_json' });
+        setErr({
+          key: 'err_json',
+        });
         return false;
       }
       if (!data || typeof data !== 'object') {
-        setErr({ key: 'err_struct' });
+        setErr({
+          key: 'err_struct',
+        });
         return false;
       }
       const fp = contentFP(data);
@@ -139,13 +143,17 @@ function App() {
       },
       function (e) {
         fetchInFlight.current = null;
-        setErr({ key: 'err_render', vars: { msg: String((e && e.message) || e) } });
+        setErr({
+          key: 'err_render',
+          vars: {
+            msg: String((e && e.message) || e),
+          },
+        });
         return false;
       }
     );
     return fetchInFlight.current;
   }, []);
-
   useEffect(
     function () {
       if (!HAS_HOST) return;
@@ -182,7 +190,6 @@ function App() {
     },
     [fetchDoc]
   );
-
   useEffect(function () {
     if (!HAS_HOST) return;
     run('cat ' + LANG_FILE).then(
@@ -204,11 +211,13 @@ function App() {
       function () {}
     );
   }, []);
-
   function goPage(i) {
     if (i === page) {
       try {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        window.scrollTo({
+          top: 0,
+          behavior: 'smooth',
+        });
       } catch (e) {
         window.scrollTo(0, 0);
       }
@@ -217,7 +226,6 @@ function App() {
     scrollPos.current[page] = window.scrollY || 0;
     setPage(i);
   }
-
   function changeLang(next) {
     if (next !== 'zh' && next !== 'en') return;
     if (next === lang) return;
@@ -227,7 +235,6 @@ function App() {
     } catch (e) {}
     syncModuleLang(next);
   }
-
   function changeTheme(next) {
     if (next !== 'auto' && next !== 'light' && next !== 'dark') return;
     setThemeMode(next);
@@ -235,7 +242,6 @@ function App() {
       localStorage.setItem(THEME_KEY, next);
     } catch (e) {}
   }
-
   function changeBar(next) {
     if (next !== 'floating' && next !== 'classic') return;
     setBarMode(next);
@@ -243,7 +249,6 @@ function App() {
       localStorage.setItem(BAR_KEY, next);
     } catch (e) {}
   }
-
   function refreshNow() {
     if (busy) return;
     setBusy(true);
@@ -259,47 +264,54 @@ function App() {
       }, 800);
     });
   }
-
   if (!HAS_HOST) {
-    return E(
-      LangCtx.Provider,
-      { value: { lang: lang, t: tr } },
-      E(TopBar, { page: 0, busy: false, gateMode: true, onRefresh: null }),
-      E('main', null, E('div', { class: 'pagewrap' }, E(Gate)))
+    return (
+      <LangCtx.Provider
+        value={{
+          lang: lang,
+          t: tr,
+        }}
+      >
+        <TopBar page={0} busy={false} gateMode onRefresh={null} />
+        <main>
+          <div class="pagewrap">
+            <Gate />
+          </div>
+        </main>
+      </LangCtx.Provider>
     );
   }
-
-  return E(
-    LangCtx.Provider,
-    { value: { lang: lang, t: tr } },
-    E(TopBar, { page: page, busy: busy, gateMode: false, onRefresh: refreshNow }),
-    E(
-      'main',
-      null,
-      E(
-        'div',
-        { class: 'pagewrap' },
-        E(ErrorBanner, { err: err }),
-        E(Overview, { doc: doc, active: page === 0 }),
-        E(History, { active: page === 1, reloadKey: histReload }),
-        E(Settings, {
-          doc: doc,
-          active: page === 2,
-          themeMode: themeMode,
-          barMode: barMode,
-          busy: busy,
-          onThemeChange: changeTheme,
-          onLangChange: changeLang,
-          onBarChange: changeBar,
-          onRefresh: refreshNow,
-        })
-      )
-    ),
-    E(Dock, { page: page, onNavigate: goPage })
+  return (
+    <LangCtx.Provider
+      value={{
+        lang: lang,
+        t: tr,
+      }}
+    >
+      <TopBar page={page} busy={busy} gateMode={false} onRefresh={refreshNow} />
+      <main>
+        <div class="pagewrap">
+          <ErrorBanner err={err} />
+          <Overview doc={doc} active={page === 0} />
+          <History active={page === 1} reloadKey={histReload} />
+          <Settings
+            doc={doc}
+            active={page === 2}
+            themeMode={themeMode}
+            barMode={barMode}
+            busy={busy}
+            onThemeChange={changeTheme}
+            onLangChange={changeLang}
+            onBarChange={changeBar}
+            onRefresh={refreshNow}
+          />
+        </div>
+      </main>
+      <Dock page={page} onNavigate={goPage} />
+    </LangCtx.Provider>
   );
 }
-
 requestEdgeToEdge();
 setTimeout(requestEdgeToEdge, 350);
 window.addEventListener('load', requestEdgeToEdge);
-render(E(App), document.getElementById('root'));
+render(<App />, document.getElementById('root'));

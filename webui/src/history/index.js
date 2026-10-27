@@ -1,1 +1,1 @@
-export { History } from './History.js';
+export { History } from './History.jsx';
