@@ -17,3 +17,8 @@ webui/** text eol=lf
 *.html text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+
+# Go 源码与文档统一 LF：Windows 检出若按 core.autocrlf 变成 CRLF，
+# gofmt -l 会把全仓文件误报为「未格式化」，掩盖真实的格式问题。
+*.go text eol=lf
+*.md text eol=lf

@@ -9,6 +9,8 @@ case "$pref" in
 zh*) T=zh ;;
 en*) T=en ;;
 *)
+	# 系统语言兜底探测：顺序须与 cmd/batteryd/i18n.go 的 localeProps 保持
+	# 一致；customize.sh 的安装器探测也有一份相同的顺序，改这里要同步那边。
 	for p in persist.sys.locale ro.product.locale persist.sys.language; do
 		v=`getprop "$p" 2>/dev/null`
 		if [ -n "$v" ]; then

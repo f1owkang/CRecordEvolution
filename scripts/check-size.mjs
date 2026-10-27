@@ -1,3 +1,8 @@
+/**
+ * 体积守卫：对 webroot/ 下所有 .js/.css 逐个做 gzip，总 gzip 必须 ≤ 50KB（51200 B）。
+ * 依赖：先运行 `pnpm run build` 生成 webroot/。
+ * 退出码：0 = 在预算内；1 = webroot/ 缺失或总体积超限。
+ */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -18,7 +23,15 @@ function walk(dir) {
   return files;
 }
 
-if (!(() => { try { return statSync(OUT).isDirectory(); } catch { return false; } })()) {
+if (
+  !(() => {
+    try {
+      return statSync(OUT).isDirectory();
+    } catch {
+      return false;
+    }
+  })()
+) {
   console.error('webroot/ 不存在，请先运行 pnpm build');
   process.exit(1);
 }
@@ -39,10 +52,14 @@ for (const p of walk(OUT)) {
 rows.sort((a, b) => b.gzip - a.gzip);
 console.log('WebUI 代码资源体积（gzip）:');
 for (const r of rows) {
-  console.log(`  ${r.file.padEnd(38)} ${String(r.raw).padStart(8)} B raw  ${String(r.gzip).padStart(7)} B gz`);
+  console.log(
+    `  ${r.file.padEnd(38)} ${String(r.raw).padStart(8)} B raw  ${String(r.gzip).padStart(7)} B gz`
+  );
 }
-console.log(`  ${'TOTAL'.padEnd(38)} ${String(totalRaw).padStart(8)} B raw  ${String(totalGzip).padStart(7)} B gz`);
-console.log(`上限 ${LIMIT} B gzip（${(totalGzip / LIMIT * 100).toFixed(1)}% 已用）`);
+console.log(
+  `  ${'TOTAL'.padEnd(38)} ${String(totalRaw).padStart(8)} B raw  ${String(totalGzip).padStart(7)} B gz`
+);
+console.log(`上限 ${LIMIT} B gzip（${((totalGzip / LIMIT) * 100).toFixed(1)}% 已用）`);
 
 if (totalGzip > LIMIT) {
   console.error(`::error::WebUI gzip ${totalGzip} B 超过上限 ${LIMIT} B`);

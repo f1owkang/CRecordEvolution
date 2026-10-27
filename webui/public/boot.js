@@ -7,41 +7,62 @@
     } else if (window.ksu && typeof window.ksu.enableInsets === 'function') {
       window.ksu.enableInsets(true);
     }
-  } catch (e) { /* 老宿主没有该接口 */ }
+  } catch (e) {
+    /* 老宿主没有该接口 */
+  }
 })();
 
 // 首屏前应用主题 / 语言 / 底栏样式，避免闪烁
 (function () {
-  var root = document.documentElement;
+  const root = document.documentElement;
 
-  var theme = null;
-  try { theme = localStorage.getItem('cre_theme'); } catch (e) {}
+  let theme = null;
+  try {
+    theme = localStorage.getItem('cre_theme');
+  } catch (e) {}
   if (theme !== 'light' && theme !== 'dark') {
-    theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+    theme =
+      window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark';
   }
   root.setAttribute('data-theme', theme);
 
-  var bar = null;
-  try { bar = localStorage.getItem('cre_barmode'); } catch (e) {}
+  let bar = null;
+  try {
+    bar = localStorage.getItem('cre_barmode');
+  } catch (e) {}
   root.setAttribute('data-bar', bar === 'classic' ? 'classic' : 'floating');
 
-  var lang = null;
-  try { lang = localStorage.getItem('cre_lang'); } catch (e) {}
+  let lang = null;
+  try {
+    lang = localStorage.getItem('cre_lang');
+  } catch (e) {}
   if (lang !== 'zh' && lang !== 'en') {
-    var list = [];
+    let list = [];
     try {
       if (navigator.languages && navigator.languages.length) {
         list = Array.prototype.slice.call(navigator.languages);
       }
       if (navigator.language) list.push(navigator.language);
     } catch (e) {}
-    var seen = false, i, v;
+    let seen = false,
+      i,
+      v;
     for (i = 0; i < list.length; i++) {
-      v = String(list[i] || '').toLowerCase().replace(/_/g, '-');
+      v = String(list[i] || '')
+        .toLowerCase()
+        .replace(/_/g, '-');
       if (!v) continue;
       seen = true;
-      if (v === 'zh' || v.indexOf('zh-') === 0) { lang = 'zh'; break; }
-      if (v === 'en' || v.indexOf('en-') === 0) { lang = 'en'; break; }
+      if (v === 'zh' || v.indexOf('zh-') === 0) {
+        lang = 'zh';
+        break;
+      }
+      if (v === 'en' || v.indexOf('en-') === 0) {
+        lang = 'en';
+        break;
+      }
     }
     if (lang !== 'zh' && lang !== 'en') lang = seen ? 'en' : 'zh';
   }

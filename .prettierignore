@@ -1,0 +1,14 @@
+# 生成目录与依赖不参与格式化
+webroot/
+node_modules/
+dist/
+artifacts/
+
+# 论文 PDF 与本地过程文档
+docs/
+
+# Markdown 保持人工排版（README 表格与中英对齐是刻意手排的）
+*.md
+
+# 锁文件由包管理器生成
+pnpm-lock.yaml

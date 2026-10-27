@@ -21,6 +21,9 @@ importers:
       playwright-core:
         specifier: 1.64.1
         version: 1.64.1
+      prettier:
+        specifier: 3.9.10
+        version: 3.9.10
       vite:
         specifier: 7.3.7
         version: 7.3.7
@@ -640,6 +643,11 @@ packages:
       preact-render-to-string:
         optional: true
 
+  prettier@3.9.10:
+    resolution: {integrity: sha512-skGHTH1Yb9QvaTC4hWnRTzEYtCpApF0UMBPz+t/0ZPzP8ihefo/btKd+QA7pUE0fEwA1SbS/NmhyEcstdXOIdA==}
+    engines: {node: '>=14'}
+    hasBin: true
+
   rollup@4.65.1:
     resolution: {integrity: sha512-HzD4IdphaPMvuAacnL/vtoq5B8FwqewKvxTtqYibWvP6VDyZ+UsTtlw5F8HIOIIpLQAkN2NOP/0sM3puo9xN/A==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
@@ -1233,6 +1241,8 @@ snapshots:
       source-map-js: 1.2.2
 
   preact@10.29.8: {}
+
+  prettier@3.9.10: {}
 
   rollup@4.65.1:
     dependencies:

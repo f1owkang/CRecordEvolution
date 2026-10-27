@@ -1,0 +1,25 @@
+# 统一编辑器行为，避免 Windows/macOS/Linux 检出差异。
+# 行尾纪律与 .gitattributes 一致：设备端脚本、WebUI、Go 源码一律 LF。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[*.{md,markdown}]
+# Markdown 行尾双空格表示硬换行，不能裁掉
+trim_trailing_whitespace = false
+
+[*.{sh,prop}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

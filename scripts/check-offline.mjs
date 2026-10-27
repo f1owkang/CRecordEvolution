@@ -1,3 +1,9 @@
+/**
+ * 产物离线守卫：扫描 webroot/ 构建产物，禁止 fetch / XMLHttpRequest / WebSocket /
+ * 远程 import 与外部 URL（唯一放行 SVG 的 xmlns 命名空间）。
+ * 依赖：先运行 `pnpm run build` 生成 webroot/。
+ * 退出码：0 = 通过；1 = webroot/ 缺失或发现违规内容。
+ */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
@@ -16,7 +22,7 @@ const RULES = [
   ['importScripts', /\bimportScripts\s*\(/g],
   ['remote import', /\b(?:import|from)\s*\(?\s*['"]https?:\/\//g],
   ['remote url', /https?:\/\/[^\s"'`<>)\\]+/g],
-  ['external html attr', /\b(?:src|href)\s*=\s*['"](?:https?:)?\/\//g]
+  ['external html attr', /\b(?:src|href)\s*=\s*['"](?:https?:)?\/\//g],
 ];
 
 function walk(dir) {
@@ -30,7 +36,15 @@ function walk(dir) {
   return files;
 }
 
-if (!(() => { try { return statSync(OUT).isDirectory(); } catch { return false; } })()) {
+if (
+  !(() => {
+    try {
+      return statSync(OUT).isDirectory();
+    } catch {
+      return false;
+    }
+  })()
+) {
   console.error('webroot/ 不存在，请先运行 pnpm build');
   process.exit(1);
 }

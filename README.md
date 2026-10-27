@@ -12,7 +12,7 @@
 
 [English](README_EN.md) | 简体中文
 
-[界面预览](#界面预览) ｜ [安装](#安装) ｜ [工作原理](#工作原理) ｜ [日志](#日志) ｜ [常见问题](#常见问题) ｜ [致谢](#致谢)
+[特性](#特性) ｜ [界面预览](#界面预览) ｜ [安装](#安装) ｜ [工作原理](#工作原理) ｜ [日志](#日志) ｜ [常见问题](#常见问题) ｜ [目录结构](#目录结构) ｜ [致谢](#致谢)
 
 </div>
 
@@ -29,6 +29,16 @@ WebUI 三页（概览 / 历史 / 设置）一览。截图中的电池数据为**
 | <a href=".github/images/overview-zh.png"><img src=".github/images/overview-zh.png" width="200" alt="概览页面"></a> | <a href=".github/images/history-zh.png"><img src=".github/images/history-zh.png" width="200" alt="历史记录"></a> | <a href=".github/images/trends-zh.png"><img src=".github/images/trends-zh.png" width="200" alt="历史趋势"></a> | <a href=".github/images/settings-zh.png"><img src=".github/images/settings-zh.png" width="200" alt="设置页面"></a> |
 
 </div>
+
+## 特性
+
+- **健康度与容量实时可见**：模块描述直接显示内核健康度、满充容量、设计容量与实测估算，不用打开任何 App。
+- **四路容量口径互检**：内核满充、中段校准、放电差分与有效会话结算各自算出结果，互差超过 40% 时写入 `quality_warn` 事件。
+- **三页 WebUI**：概览 / 历史 / 设置；历史页按 7/30/90 天与充电/放电筛选，记录可分页、趋势图可点按放大。
+- **完全离线**：没有网络权限、没有遥测、没有上传，数据只写入本机 `data/battery.db`。
+- **多管理器支持**：Magisk v20.4+ / KernelSU / APatch / MMRL，仅 arm64；刷入时自动保留旧的学习记录。
+- **保留 90 天历史**：每日自动清理；充电期 15s 采样、其余时间 60s。
+- **双语界面**：简体中文 / English，安装时可选，之后可在 WebUI 随时切换。
 
 ## 安装
 
@@ -141,7 +151,36 @@ pnpm run verify   # 构建 + 离线扫描 + 50KB gzip 上限
 pnpm run smoke    # 无头 Chrome/Edge 冒烟（可选）
 ```
 
-Go daemon 的构建与完整发版流程见 [`AGENTS.md`](AGENTS.md)。
+Go daemon 是纯 Go 实现（SQLite 用 `modernc.org/sqlite`，不需要 CGO）：
+
+```sh
+go test ./... -count=1
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
+```
+
+`bin/batteryd` 是模块自带的原生可执行文件，子命令：
+
+- `once` —— 刷新一次模块描述并打印当前读数（管理器 Action 按钮执行的就是它）；
+- `json` —— 输出概览页与设置页使用的 JSON 快照；
+- `history` —— 输出历史页使用的分页数据，参数为 `--days 1-90`、`--limit 1-50`、`--type all|charge|discharge`、`--before TS`。
+
+开机常驻由 `service.sh` 启动 `batteryd daemon`；完整发版流程（标签、CI、双变体打包）见 [`AGENTS.md`](AGENTS.md)。
+
+## 目录结构
+
+| 路径 | 用途 |
+| :-- | :-- |
+| `cmd/batteryd/` | Go 守护进程：采样、会话结算、容量估计、SQLite、模块描述与 CLI 子命令 |
+| `webui/` | WebUI 源码（Preact + Vite），构建产物输出到 `webroot/` |
+| `webroot/` | WebUI 构建产物，打包进模块 zip，不提交 |
+| `scripts/` | 构建守卫：离线扫描、gzip 体积上限、无头冒烟 |
+| `service.sh` | 开机等待 `sys.boot_completed=1` 后启动 daemon |
+| `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
+| `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
+| `module.prop` / `module.yaml` / `module.json` / `update.json` | 模块元数据、KernelSU 展示与更新信息 |
+| `META-INF/com/google/android/` | 标准 Magisk 刷入桩 |
+| `docs/` | 论文 PDF 库 |
+| `README.md` / `README_EN.md` / `AGENTS.md` | 中英用户文档与开发者约定 |
 
 ## 论文支撑
 
@@ -175,6 +214,13 @@ ChargingRecord Evolution 生态由以下贡献者共同打造（排名不分先�
 - 安装脚本：酷安@阿巴酱
 
 喜欢这个项目的话欢迎提 PR 或点个 Star ⭐
+
+## 免责声明
+
+- 健康度、容量与循环数据都是**估算值**，由内核读数与充电过程推算，不保证与出厂标称或专业检测设备一致。
+- 刷入本模块会修改系统的模块目录，**风险自负**；请先确认自己了解 Magisk / KernelSU / APatch 的刷入与回退方式。
+- 本模块不构成任何维修或安全建议；电池鼓包、异常发热等问题请以厂商检测为准。
+- 所有数据只保存在本机 `data/battery.db`，模块不发起网络请求，也不上传或收集任何信息。
 
 ## License
 

@@ -32,6 +32,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 发布前必须过测试：此前 release 流程只构建、从不跑 go test，
+      # 单测（171 个）实际上只在本机生效，回归会静默进入发布产物。
+      - name: Go vet and test
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
       - name: Build batteryd
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
 
@@ -61,7 +68,7 @@ jobs:
           # 资产名沿用 KernelSU module-release action 的规范：{id}-{versionCode}-{version}.zip
           echo "ASSET_NAME=CRecordEvolution-${VERSION_CODE}-${VERSION}.zip" >> "$GITHUB_ENV"
           echo "ML_ASSET_NAME=CRecordEvolution_ML-${VERSION_CODE}-${VERSION}.zip" >> "$GITHUB_ENV"
-          zip -r "CRecordEvolution-${VERSION_CODE}-${VERSION}.zip" module.prop customize.sh service.sh action.sh bin webroot META-INF
+          zip -r "CRecordEvolution-${VERSION_CODE}-${VERSION}.zip" module.prop customize.sh service.sh action.sh bin webroot META-INF THIRD_PARTY_NOTICES.txt
 
       - name: Build batteryd (ML)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.channel=ml" -o bin/batteryd.ml ./cmd/batteryd
@@ -69,7 +76,7 @@ jobs:
       - name: Pack ML zip
         run: |
           rm -rf mlstage && mkdir mlstage
-          cp -r module.prop customize.sh service.sh action.sh bin webroot META-INF mlstage/
+          cp -r module.prop customize.sh service.sh action.sh bin webroot META-INF THIRD_PARTY_NOTICES.txt mlstage/
           mv bin/batteryd.ml mlstage/bin/batteryd
           rm -f mlstage/bin/batteryd.ml
           sed -i 's/^name=.*/name=ChargingRecord Evolution ML/' mlstage/module.prop

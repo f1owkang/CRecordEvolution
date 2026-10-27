@@ -12,7 +12,7 @@
 
 English | [简体中文](README.md)
 
-[Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [Logs](#logs) | [FAQ](#faq) | [Acknowledgements](#acknowledgements)
+[Features](#features) | [Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [Logs](#logs) | [FAQ](#faq) | [Project layout](#project-layout) | [Acknowledgements](#acknowledgements)
 
 </div>
 
@@ -29,6 +29,16 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 | <a href=".github/images/overview-en.png"><img src=".github/images/overview-en.png" width="200" alt="Overview page"></a> | <a href=".github/images/history-en.png"><img src=".github/images/history-en.png" width="200" alt="History records"></a> | <a href=".github/images/trends-en.png"><img src=".github/images/trends-en.png" width="200" alt="History trends"></a> | <a href=".github/images/settings-en.png"><img src=".github/images/settings-en.png" width="200" alt="Settings page"></a> |
 
 </div>
+
+## Features
+
+- **Health and capacity at a glance**: the module description shows kernel health, full-charge and design capacities plus the measured estimate — no app needed.
+- **Four capacity paths cross-checked**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a spread above 40% is written as a `quality_warn` event.
+- **Three-page WebUI**: Overview / History / Settings; history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap.
+- **Fully offline**: no network permission, no telemetry, no upload; data is written only to the local `data/battery.db`.
+- **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; flashing keeps the previous learning history automatically.
+- **90 days of history**: pruned daily; sampling runs every 15 s while charging and every 60 s otherwise.
+- **Bilingual UI**: Simplified Chinese / English, selectable at install time and switchable any time in the WebUI.
 
 ## Installation
 
@@ -141,7 +151,36 @@ pnpm run verify   # build + offline scan + 50KB gzip ceiling
 pnpm run smoke    # headless Chrome/Edge smoke test (optional)
 ```
 
-See [`AGENTS.md`](AGENTS.md) for the Go daemon build and the full release flow.
+The Go daemon is pure Go (SQLite via `modernc.org/sqlite`, no CGO needed):
+
+```sh
+go test ./... -count=1
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
+```
+
+`bin/batteryd` is the native executable shipped in the module; its subcommands:
+
+- `once` — refresh the module description once and print the current readings (this is what the manager's Action button runs);
+- `json` — emit the JSON snapshot used by the Overview and Settings pages;
+- `history` — emit the paged data used by the History page; options are `--days 1-90`, `--limit 1-50`, `--type all|charge|discharge` and `--before TS`.
+
+On boot `service.sh` starts `batteryd daemon`; see [`AGENTS.md`](AGENTS.md) for the full release flow (tags, CI, both variant packages).
+
+## Project layout
+
+| Path | Purpose |
+| :-- | :-- |
+| `cmd/batteryd/` | Go daemon: sampling, session settlement, capacity estimation, SQLite, module description and the CLI subcommands |
+| `webui/` | WebUI source (Preact + Vite); the build output goes to `webroot/` |
+| `webroot/` | WebUI build output, packed into the module zip, not committed |
+| `scripts/` | Build guards: offline scan, gzip ceiling, headless smoke test |
+| `service.sh` | Waits for `sys.boot_completed=1`, then starts the daemon |
+| `action.sh` | Manager Action: runs `batteryd once` and passes its exit code through |
+| `customize.sh` | Flash interaction: language choice, install confirmation, keeping the old `data/`, binary permissions |
+| `module.prop` / `module.yaml` / `module.json` / `update.json` | Module metadata, KernelSU listing and update info |
+| `META-INF/com/google/android/` | Standard Magisk flash stub |
+| `docs/` | Paper PDF library |
+| `README.md` / `README_EN.md` / `AGENTS.md` | Chinese/English user docs and developer conventions |
 
 ## Research
 
@@ -175,6 +214,13 @@ ChargingRecord Evolution is built by the following contributors (in no particula
 - Install script: 酷安@阿巴酱
 
 If you like the project, PRs and stars are welcome ⭐
+
+## Disclaimer
+
+- Health, capacity and cycle figures are **estimates** derived from kernel readings and the charging process; they are not guaranteed to match factory ratings or professional test equipment.
+- Flashing this module modifies your system's module directory — **proceed at your own risk**, and only after you understand how to flash and roll back with Magisk / KernelSU / APatch.
+- Nothing here constitutes repair or safety advice; for swelling, abnormal heat or other battery faults, rely on the manufacturer's diagnostics.
+- All data stays in the local `data/battery.db`; the module makes no network requests and never uploads or collects anything.
 
 ## License
 

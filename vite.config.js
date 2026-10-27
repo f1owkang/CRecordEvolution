@@ -15,15 +15,17 @@ export default defineConfig({
       transformIndexHtml: {
         order: 'post',
         handler(html) {
-          return html
-            .replace('__INSETS_CSS__', '/internal/insets.css')
-            // 部分管理器的 WebView 对 custom scheme 下的 crossorigin 更敏感；
-            // 产物同源加载，去掉 Vite 默认的 crossorigin 属性更稳。
-            .replace(/\s+crossorigin(?:="")?/g, '');
-        }
-      }
+          return (
+            html
+              .replace('__INSETS_CSS__', '/internal/insets.css')
+              // 部分管理器的 WebView 对 custom scheme 下的 crossorigin 更敏感；
+              // 产物同源加载，去掉 Vite 默认的 crossorigin 属性更稳。
+              .replace(/\s+crossorigin(?:="")?/g, '')
+          );
+        },
+      },
     },
-    preact()
+    preact(),
   ],
   build: {
     outDir: '../webroot',
@@ -41,8 +43,8 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/app-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash][extname]'
-      }
-    }
-  }
+        assetFileNames: 'assets/[name]-[hash][extname]',
+      },
+    },
+  },
 });

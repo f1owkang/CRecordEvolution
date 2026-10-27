@@ -18,6 +18,8 @@ modauth=`grep '^author=' "$MODPATH/module.prop" | cut -d= -f2`
 # 安装器文案语言：与 batteryd 的探测口径一致（persist.sys.locale →
 # ro.product.locale → persist.sys.language），中文优先、非中文回落英文；
 # getprop 不可用或属性全空时按中文处理，避免英文误判。
+# 探测顺序须与 cmd/batteryd/i18n.go 的 localeProps 保持一致；
+# action.sh 里还有一份系统语言兜底探测，改这里要同步那边。
 T=zh
 for p in persist.sys.locale ro.product.locale persist.sys.language; do
 	v=`getprop "$p" 2>/dev/null`
@@ -41,19 +43,19 @@ L()
 }
 
 # 读取一次音量键：UP / DOWN / 空（超时或无按键事件）。
-# 每次 getevent 最多阻塞 3s，limit 次仍未读到音量键就返回空。
+# 每次 getevent 最多阻塞 3s，参数（默认 10）次仍未读到音量键就返回空。
+# 不用 local：POSIX sh 没有该关键字，改用 _rk_ 前缀变量避免污染全局。
 read_key()
 {
-	local limit=${1:-10}
-	local n=0
-	local key
-	while [ "$n" -lt "$limit" ]; do
-		key="$(timeout 3 getevent -qlc 1 2>/dev/null | awk '{ print $3 }')"
-		case "$key" in
+	_rk_limit=${1:-10}
+	_rk_n=0
+	while [ "$_rk_n" -lt "$_rk_limit" ]; do
+		_rk_key="$(timeout 3 getevent -qlc 1 2>/dev/null | awk '{ print $3 }')"
+		case "$_rk_key" in
 		KEY_VOLUMEUP)   echo UP; return 0 ;;
 		KEY_VOLUMEDOWN) echo DOWN; return 0 ;;
 		esac
-		n=$((n + 1))
+		_rk_n=$((_rk_n + 1))
 	done
 	echo ""
 }

@@ -1,23 +1,23 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0b0e14">
-<meta name="color-scheme" content="light dark">
-<title>ChargingRecord Evolution</title>
-<!--
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0e14" />
+    <meta name="color-scheme" content="light dark" />
+    <title>ChargingRecord Evolution</title>
+    <!--
   沉浸式（edge-to-edge）：请求宿主提供的 insets.css。
   KernelSU / APatch 的 SuFilePathHandler 拦截 /internal/insets.css 时会自动把
   WebView 铺到系统栏底下并下发 --window-inset-*；KSU 新版还会动态注入
   --safe-area-inset-*。根相对路径可以避免某些管理器只拦截当前 origin 下的 internal 资源。
-  这行不能被 Vite 当成项目内资源处理，见 vite.config.js 的 insetsCss 插件。
+  这行不能被 Vite 当成项目内资源处理，见 vite.config.js 的 cre-insets-css 插件。
 -->
-<link rel="stylesheet" type="text/css" href="__INSETS_CSS__">
-<script src="/boot.js"></script>
-<script type="module" src="./src/main.jsx"></script>
-</head>
-<body>
-<div id="root"></div>
-</body>
+    <link rel="stylesheet" type="text/css" href="__INSETS_CSS__" />
+    <script src="/boot.js"></script>
+    <script type="module" src="./src/main.jsx"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

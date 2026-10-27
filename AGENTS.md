@@ -33,6 +33,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 pnpm install --frozen-lockfile
 pnpm run verify   # build → 离线扫描 → 50KB gzip 上限
 pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate 截图
+pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:check 只检查不写
 ```
 
 - Go 版本以 `go.mod` 为准；SQLite 使用纯 Go 的 `modernc.org/sqlite`，不需要 CGO，Windows 本机可以直接跑测试。
@@ -83,6 +84,23 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 - 面向用户的字符串必须走 `uiText` / `uiKV`，内部日志、events 表、stderr 保持中文。
 - 新增数据字段时同步 `cmd/batteryd/jsonout.go` 与 WebUI，保持“缺失即省略、按可用字段降级”的纪律。
 
+### 计量单位与命名约定
+
+基准单位一律是微单位，换算只在展示层（`mV` / `mAh` / `mΩ`）做；采样、积分、kv、`Snapshot` 与 JSON 出口都传原值。
+
+| 后缀 | 实际单位 | 典型符号 |
+| :-- | :-- | :-- |
+| `*UV` | µV（电压） | `peakUV`、`VwLo` / `VwHi`、`vStartUV`、`icaSearchLoUV` |
+| `*UA` | µA（电流，带符号） | `iUA`、`MeanUA`、`maxCurrentUA`、`restQuietUA`、`samples.ua`、`avg_i`、`NormCurrentUAWithFull` |
+| `*UAh` | µAh（容量） | `DesignUAh`、`fullUAh`、`EstUAh`、`CounterUAh`、`DischargeRow.UAh`、`kvKeyEmaUAh`、`chargeFullUAh` |
+| `*UAs` | µA·s（电量积分，÷3600 得 µAh） | `Session.AccUAs`、`sessionState.accUAs`、`charged_ua_total`、`cycleEquiv(totalUAs, …)` |
+
+- **后缀即量纲**：容量一律 `*UAh`，电流一律 `*UA`，累计电量 `*UAs`。不再存在"看语境才知道是 µA 还是 µAh"的 `*UA`；新增字段必须带能判量纲的后缀。
+- DB 列名是历史遗留，**不代表单位**：`sessions.ua` 存会话累计电量 µA·s（不是电流），`estimates.mah` 存 µAh（不是 mAh），`samples.cc` 存 `charge_counter` 读数 µAh（0 = 未采到），`discharge.uah` 存 µAh。以 Go 字段名与 `schemaDDL` 的行尾单位注释为准。
+- `counter` 指电量计 `charge_counter`（`SampleRow.CounterUAh`、`sessionState.counterAccUAh`）；`CC` / `CCSeg` / `CCCT`（大写）专指恒流充电段。两套词汇不得混用。
+- kv 键名与 JSON tag 是设备端/前端契约：改名只改 Go 常量名，**字符串值必须原样保留**（如 `"ema_ua"`、`"sess_cc_acc"`、`"sess_cc_last"`、`"dis_last_cc"`），JSON tag（如 `uah_mah`、`peak_h_rel`）同理。
+- sysfs 节点名（`charge_counter`、`current_now`、`charge_full`、`charge_full_design`）沿用内核原名，不要另起别名。
+
 ### POSIX sh
 
 - shebang 固定 `#!/system/bin/sh`；不使用 bash 数组、`[[`、`local` 等非 POSIX 特性。
@@ -92,7 +110,7 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 
 ### WebUI
 
-- 使用 Preact 10.29.8 + hooks（npm 依赖，MIT），源码在 `webui/src/`；Vite + `@preact/preset-vite` 构建到 `webroot/`。**保持完全离线**：不加 CDN、远程脚本/字体或运行时网络请求；新增运行时依赖必须进 bundle 并更新 `webui/public/THIRD_PARTY_NOTICES.txt`。
+- 使用 Preact 10.29.8 + hooks（npm 依赖，MIT），源码在 `webui/src/`；Vite + `@preact/preset-vite` 构建到 `webroot/`。**保持完全离线**：不加 CDN、远程脚本/字体或运行时网络请求；新增运行时依赖必须进 bundle 并更新根目录 `THIRD_PARTY_NOTICES.txt`。
 - 组件可以用 JSX（`.jsx`）或 `h()`；新代码优先拆小函数/组件，避免再长出几百行的 `Overview` / `History`。**不要引入 htm**（Apache-2.0 与本项目 GPL-2.0-only 不兼容）。
 - `webui/index.html` 只做入口壳；`webui/public/boot.js` 保持在 `<head>` 里同步加载（首屏主题/语言/底栏），`/internal/insets.css` 用占位符交给 `vite.config.js` 替换，不要改成 Vite 能解析的项目内资源。
 - 源码按职责分：`i18n`（字典）、`core`（宿主协议、格式化、存储/主题）、`charts`（SVG 纯函数）、`ui/`（context / components / overview / settings / Stat.jsx）、`history/`（History / timeline / trends）、`main.jsx`（状态与挂载）。模块之间用 import/export，不要再回退到全局变量。
@@ -125,7 +143,8 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 | `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
 | `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
 | `webui/` | WebUI 源码：`index.html`、`public/boot.js`、`src/main.jsx` / `i18n` / `core` / `charts` / `ui/` / `history/` / `app.css` |
-| `webui/public/` | 构建时原样复制的静态文件：`boot.js`、第三方许可证 |
+| `webui/public/` | 构建时原样复制的静态文件：`boot.js` |
+| `THIRD_PARTY_NOTICES.txt` | 随模块分发的第三方许可证（Preact MIT），放在模块根目录，不混入 WebUI 产物 |
 | `webroot/` | `pnpm build` 生成的 WebUI 产物（模块 zip 使用），不提交 |
 | `scripts/` | WebUI 构建守卫：离线扫描、gzip 体积检查、无头冒烟 |
 | `package.json` / `pnpm-lock.yaml` / `vite.config.js` | WebUI 构建工具链与依赖锁定 |
@@ -134,6 +153,7 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 | `META-INF/com/google/android/` | 标准 Magisk 刷入桩，一般无需改动 |
 | `.github/workflows/release.yml` | CI 构建、WebUI 守卫、KernelSU 校验、双变体打包与发布 |
 | `.github/workflows/webui.yml` | PR/push 的 WebUI 构建、离线/体积守卫与无头冒烟 |
+| `.github/workflows/go.yml` | PR/push 的 Go 守卫：gofmt / go vet / go test |
 | `README.md` / `README_EN.md` | 中英用户文档，必须同步 |
 | `docs/` | 论文 PDF 库；过程文档不入库 |
 
@@ -180,7 +200,7 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 ### 容量估计、校准与趋势
 
 - 构建注入 `main.channel` 选择 stable/ml Estimator。
-- 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)` 窗口；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc` 的电量计差分；有 cc 时，缺 cc 的旧区间直接跳过，只有整批无 cc 才回退电流积分。隐含值必须过 `capacityInWindow` 门控，最近一次采信值存 kv `mid_implied_ua`。
+- 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)` 窗口；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc`（列名历史遗留，实为 charge_counter 读数 µAh）的电量计差分；样本里有 counter 读数时，缺 counter 的旧区间直接跳过，只有整批无 counter 才回退电流积分。隐含值必须过 `capacityInWindow` 门控，最近一次采信值存 kv `mid_implied_ua`。
 - 放电通道 `discharge`：读 `charge_counter` 差分累计，转入充电即结算；放电样本按 5 分钟降采样。结算门控为掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`，按 1/10 权重并入 EMA，采信值存 `dis_implied_ua`。该通道不经 `current_now`，是四路容量口径中最稳的一路。
 - 质量哨兵 `quality`：ema/mid/dis/full 四路互检，互差 >40% 判不一致；结论翻转才写 `quality_warn` 事件。可用路数 <2 时整体省略 `quality` 字段。
 - 趋势 `trend`：三态 `insufficient|stable|significant`，显著性用 Mann-Kendall 点对符号检验（双侧 5%）。R² 门控已废弃，单次估算噪声远大于真实周衰减。
@@ -203,7 +223,7 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 
 - 双电芯判定阈值是 **5V**，不是 4.5V：高压单电芯截止 4.45~4.53V，4.5V 会误判并让电压窗口翻倍、CCCT/ICA 全哑；双电芯串联最低约 6.8V。
 - 缩放函数 `initCCCTVoltage` / `initICAVoltage` 必须无条件赋值以支持复位，否则测试之间全局状态互相污染。
-- **不要对 `charge_full` 乘电芯数**：不同内核口径不同，若已是整包会翻倍；`healthPct(full*cc, design*cc)` 这类同乘是 no-op。
+- **不要对 `charge_full` 乘电芯数**：不同内核口径不同，若已是整包会翻倍；`healthPct(full*cellCount, design*cellCount)` 这类同乘是 no-op。
 - **不要拿 `current_now` 积分当绝对容量口径**：实机同 SOC 区间充电积分只有放电差分的 82~95%，放电差分与内核 `charge_full` 只差 0.8%。会话结算与中段校准首选 `charge_counter` 差分，积分只在 counter 不可用/刻度异常时兜底。
 
 ### 已知局限（有意取舍，勿当 bug）
@@ -216,7 +236,7 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 ## 安全注意事项
 
 - WebUI 的 `exec` 在 root 下执行，命令必须是固定字符串或固定模板；**绝不要**把用户输入、语言值、模块描述、数据库内容拼进 shell。
-- 不要引入远程脚本、CDN、遥测或上传；数据只留在本机。运行时依赖由 lockfile 固定版本并随产物附许可证（见 `webui/public/THIRD_PARTY_NOTICES.txt`）。
+- 不要引入远程脚本、CDN、遥测或上传；数据只留在本机。运行时依赖由 lockfile 固定版本并随产物附许可证（见根目录 `THIRD_PARTY_NOTICES.txt`）。
 - 不要给 `webroot` 加 chmod/set_perm；安装器只处理 `bin/batteryd`。
 - 不要提交 `bin/`、`dist/`、生成 zip、`data/`、`*.exe` 或任何密钥/签名文件。
 - 处理图表 SVG 时只使用内部生成的数据；不要把宿主/远端字符串注入 `dangerouslySetInnerHTML`。
@@ -227,9 +247,9 @@ pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate
 0. 仓库 Settings → Releases 必须已开启 **Enable release immutability**；未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废。
 1. 同步修改 `module.prop` 的 `version` 与 `versionCode`，必须严格递增，**不得复用历史值**。
 2. 提交到 main（只提交源码；`webroot/` 是生成目录，不入库）。
-3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → Go 构建 → `pnpm install --frozen-lockfile` + `pnpm run verify` 构建并守卫 WebUI → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
+3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → go vet + go test → Go 构建 → `pnpm install --frozen-lockfile` + `pnpm run verify` 构建并守卫 WebUI → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
 4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败。
-5. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。
+5. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。两个 zip 都包含根目录 `THIRD_PARTY_NOTICES.txt`。
 
 ## 提交前检查清单
 

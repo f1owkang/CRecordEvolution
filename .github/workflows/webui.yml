@@ -10,6 +10,9 @@ on:
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - 'vite.config.js'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.editorconfig'
       - '.github/workflows/webui.yml'
   pull_request:
     paths:
@@ -19,6 +22,9 @@ on:
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - 'vite.config.js'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.editorconfig'
       - '.github/workflows/webui.yml'
   workflow_dispatch:
 
@@ -45,6 +51,11 @@ jobs:
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      # 格式化守卫：prettier 版本由 pnpm-lock.yaml 固定（非 devDependency 漂移），
+      # 一旦有人提交未格式化代码即失败，避免风格再次漂移。
+      - name: Format check
+        run: pnpm run format:check
 
       # 构建到 webroot/，并按 50KB gzip 上限与“无远程请求/外部 URL”扫描产物
       - name: Build and guard
