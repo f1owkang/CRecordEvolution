@@ -61,6 +61,7 @@ const day = 86400;
 
 const jsonDoc = {
   channel: 'stable',
+  version: '1.3.6(35)',
   design_mah: 5000,
   full_mah: 4800,
   cycles: 210,
@@ -76,6 +77,14 @@ const jsonDoc = {
   quality: { ok: true, spread_pct: 4, ema_mah: 4500, mid_mah: 4600, dis_mah: 4480, full_mah: 4800 },
   updated: '2026-10-27 19:00',
   samples_n: 1420,
+  calib: {
+    current_node: '/sys/class/power_supply/battery/current_now',
+    counter_node: '/sys/class/power_supply/battery/charge_counter',
+    current_scale: 1000,
+    current_unit: 'ma',
+    raw_current: 3000,
+    current_ua: 3000000,
+  },
   recent: [
     { ts: now - day * 4, mah: 4620 },
     { ts: now - day * 3, mah: 4560 },
@@ -159,6 +168,13 @@ const events = [
 
 const SMOKE_DATA = {
   json: jsonDoc,
+  diag:
+    'CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）\n' +
+    'module=1.3.6(35) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
+    'device=OnePlus PJE110 (aston)\n' +
+    'calib=x1000 ma I_node=/sys/class/power_supply/battery/current_now\n' +
+    'est=5273mAh samples=12 cycleEq=1.42\n' +
+    'events7d=cur_cal=1 counter_scale=2 quality_warn=0 tick_error=0\n',
   events,
   summary: {
     days: 30,
@@ -205,6 +221,7 @@ window.ksu = {
     var out = '';
     var errno = 0;
     if (cmd.indexOf('batteryd json') >= 0) out = JSON.stringify(D.json);
+    else if (cmd.indexOf('batteryd diag') >= 0) out = D.diag;
     else if (cmd.indexOf('batteryd history') >= 0) out = JSON.stringify(crHistoryDoc(cmd));
     else if (cmd.indexOf('cat ') === 0) { errno = 1; }
     setTimeout(function () {
@@ -262,6 +279,17 @@ try {
     deviceScaleFactor: 2,
   });
   await context.addInitScript(HOST_STUB(SMOKE_DATA));
+  // 无头环境没有真实剪贴板权限：注入 writeText 桩，让“复制诊断”成功路径可断言。
+  await context.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: () => Promise.resolve() },
+      });
+    } catch (e) {
+      /* 老浏览器忽略，走 execCommand 回退 */
+    }
+  });
   const page = await context.newPage();
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
@@ -324,6 +352,49 @@ try {
   await page.click('#nav_settings');
   await page.waitForSelector('#page_settings.is-active');
   check((await page.locator('#theme_seg .seg-btn').count()) === 3, '设置：主题三档');
+  check(
+    (await page.locator('#page_settings [data-field="current_node"]').count()) === 1,
+    '设置：电流采样节点行'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="current_calib"]').count()) === 1,
+    '设置：电流刻度行'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="current_node"]').innerText()).includes(
+      'battery/current_now'
+    ),
+    '设置：电流采样节点值'
+  );
+  const calibText = await page.locator('#page_settings [data-field="current_calib"]').innerText();
+  check(calibText.includes('mA'), '设置：电流刻度单位');
+  check(calibText.includes('1000'), '设置：电流刻度数值');
+  check((await page.locator('#page_settings #diag').count()) === 1, '设置：诊断复制按钮');
+  await page.click('#page_settings #diag');
+  await page.waitForSelector('#page_settings #diag-status', { timeout: 5000 });
+  check(
+    (await page.locator('#page_settings #diag-status').innerText()).length > 0,
+    '设置：诊断复制结果提示'
+  );
+  check(
+    (await page.evaluate(
+      () => window.__crCommands.filter((c) => c.indexOf('batteryd diag') >= 0).length
+    )) === 1,
+    '设置：诊断命令已执行'
+  );
+  check(
+    (await page.locator('#page_settings #diag-text').count()) === 0,
+    '设置：复制成功无手动文本'
+  );
+  check((await page.locator('#page_settings .about-hero').count()) === 1, '设置：关于品牌卡');
+  check(
+    (await page.locator('#page_settings .about-chip').count()) === 2,
+    '设置：关于通道/版本胶囊'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="version"]').innerText()).includes('1.3.6'),
+    '设置：关于版本信息'
+  );
   await page.locator('#theme_seg .seg-btn').nth(1).click();
   await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light');
   check(true, '设置：切换浅色主题');

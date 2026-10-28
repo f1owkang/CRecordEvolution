@@ -1039,6 +1039,108 @@ button#refresh:disabled {
   cursor: default;
 }
 
+/* 设置页“诊断信息”：复制按钮 + 结果提示 + 复制失败时的只读文本框 */
+.diag-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+button#diag {
+  width: 100%;
+  background: var(--btn);
+  color: var(--btn-fg);
+  border: none;
+  border-radius: 12px;
+  padding: 13px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+button#diag:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+button#diag:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.diag-msg {
+  font-size: 12px;
+  color: var(--mute);
+  line-height: 1.5;
+}
+.diag-msg.is-err {
+  color: var(--err-fg);
+}
+.diag-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 132px;
+  max-height: 240px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* 设置页“关于”：品牌卡（图标/名称/说明/胶囊）+ 下方版本与许可信息行 */
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 7px;
+  padding: 22px 18px 18px;
+  background: radial-gradient(120% 130% at 50% 0%, var(--accent-soft-bg), transparent 62%);
+}
+.about-mark {
+  width: 46px;
+  height: 46px;
+  background-color: var(--accent);
+  -webkit-mask: url('./assets/icons/logo.svg') center / contain no-repeat;
+  mask: url('./assets/icons/logo.svg') center / contain no-repeat;
+}
+.about-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--fg);
+}
+.about-tagline {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--mute);
+}
+.about-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 3px;
+}
+.about-chip {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--mute);
+  font-size: 11px;
+  font-weight: 600;
+}
+.about-chip.is-accent {
+  border-color: var(--accent-soft-bd);
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+}
+
 /* 不做系统栏对比带：inset 区域直接由页面背景铺满，避免主题与宿主夜间模式
    判断不一致时出现上下黑/白条。MMRL 若提供 setLightStatusBars() 再单独同
    步图标明暗；KSU/APatch 由宿主决定图标颜色。 */

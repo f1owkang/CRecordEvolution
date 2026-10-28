@@ -3,6 +3,7 @@ import { translate } from './i18n.js';
 const CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
 const CMD_HISTORY = '/data/adb/modules/CRecordEvolution/bin/batteryd history';
 const CMD_ONCE = '/data/adb/modules/CRecordEvolution/bin/batteryd once';
+const CMD_DIAG = '/data/adb/modules/CRecordEvolution/bin/batteryd diag';
 const LANG_FILE = '/data/adb/modules/CRecordEvolution/data/lang';
 const THEME_KEY = 'cre_theme';
 const LANG_KEY = 'cre_lang';
@@ -416,10 +417,47 @@ function initialLang() {
   return document.documentElement.getAttribute('data-lang') === 'en' ? 'en' : 'zh';
 }
 
+// 复制到剪贴板：优先 Clipboard API，失败回退隐藏 textarea + execCommand。
+// 两者都失败时返回 false，由调用方给出“长按手动复制”的降级 UI。
+function copyText(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(
+      function () {
+        return true;
+      },
+      function () {
+        return legacyCopy(text);
+      }
+    );
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
 export {
   CMD_JSON,
   CMD_HISTORY,
   CMD_ONCE,
+  CMD_DIAG,
   LANG_FILE,
   THEME_KEY,
   LANG_KEY,
@@ -451,5 +489,6 @@ export {
   hasExec,
   requestEdgeToEdge,
   run,
+  copyText,
   syncModuleLang,
 };
