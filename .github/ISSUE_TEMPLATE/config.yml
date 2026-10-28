@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安装与使用文档 / Documentation
+    url: https://github.com/f1owkang/CRecordEvolution#readme
+    about: 安装流程、WebUI 支持、常见问题与已知局限
+  - name: 最新版本 / Latest release
+    url: https://github.com/f1owkang/CRecordEvolution/releases
+    about: 下载 stable / ML 测试包，确认问题是否已在最新版修复

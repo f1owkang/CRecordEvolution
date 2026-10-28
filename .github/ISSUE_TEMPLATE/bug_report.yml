@@ -1,0 +1,96 @@
+name: Bug report / 问题反馈
+description: 电池估算、WebUI、安装或诊断异常时，用脱敏诊断快速定位
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先确认已使用最新 [Release](https://github.com/f1owkang/CRecordEvolution/releases) 并重启设备。
+
+        **诊断信息**来自「设置 → 数据 → 复制诊断」，或 root 终端执行
+        `/data/adb/modules/CRecordEvolution/bin/batteryd diag`。
+        诊断已脱敏（不含序列号 / IMEI / MAC / 账号），请直接粘贴文本，不要只发截图。
+  - type: input
+    id: version
+    attributes:
+      label: 模块版本 / Module version
+      description: 见「关于」页或管理器模块页，例如 1.3.6(35)
+      placeholder: 1.3.6(35)
+    validations:
+      required: true
+  - type: dropdown
+    id: root
+    attributes:
+      label: Root 管理器 / Root manager
+      options:
+        - Magisk
+        - KernelSU
+        - APatch
+        - MMRL
+        - 其他 / Other
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: 通道 / Channel
+      options:
+        - stable
+        - ML 实验版 / ML experimental
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 机型与系统 / Device & Android
+      description: 机型代号 + Android 版本 + ROM（如 HyperOS / ColorOS）
+      placeholder: Xiaomi 25098PN5AC / Android 17 / HyperOS 3
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述 / What happened
+      description: 哪个页面或功能异常？例如历史页估算 2mAh、复制诊断失败、安装按键无响应
+      placeholder: 简要描述现象与出现频率（每次 / 偶发）
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 打开 ...
+        2. 充电到 ...
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际 / Expected vs actual
+      placeholder: 期望 ...；实际 ...
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息 / Diagnostics
+      description: 粘贴完整的「复制诊断」文本，不要只发截图；涉及充电问题时请在会话结算完成后再复制。
+      placeholder: CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 截图或补充 / Screenshots or extra logs
+      description: 可选；可直接拖拽图片，或粘贴相关日志、事件
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认 / Checklist
+      options:
+        - label: 已使用最新 Release，并重启过设备
+          required: true
+        - label: 诊断文本已完整粘贴，且确认不含序列号 / IMEI / MAC / 账号
+          required: true
+        - label: 已搜索现有 issue，并尝试重装一次
+          required: true
