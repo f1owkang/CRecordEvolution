@@ -854,11 +854,18 @@ func (p *Pipeline) applySettlement(row *Session, sr SettledSession, dur time.Dur
 // µA/原始单位并落盘（kv cur_scale），供之后所有采样/积分/倍率门控使用。
 // 只在结算已采信电量计口径后调用：电量计是否可信、比值是否贴近 10 的整数次幂
 // 都已由 resolveCounterSource 与 learnCurrentScale 把关，因此允许覆盖旧刻度，
-// current_now 单位变化后由后续会话自动纠正。
-// 任何失败只留痕，绝不影响结算主链路。
+// current_now 单位变化后由后续会话自动纠正。学不出刻度时落 cur_cal_fail 事件
+// 并带上原始比值，供诊断定位。任何失败只留痕，绝不影响结算主链路。
 func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) {
-	scale, ok := learnCurrentScale(rawUAs, counterUAh)
+	scale, ratio, ok := learnCurrentScale(rawUAs, counterUAh)
 	if !ok {
+		// 已采信电量计却学不出刻度：落带原始比值的 cur_cal_fail 事件，
+		// 便于区分「电源节点单位反常」与「采样缺口/电量计口径错」。
+		if ratio > 0 {
+			_ = p.st.InsertEvent("cur_cal_fail", fmt.Sprintf(
+				"比值=%.2f×（电量计/原始积分）rawUAs=%d 电量计=%dµAh，偏离 10 的整数次幂超过 %.1f decade",
+				ratio, rawUAs, counterUAh, curScaleSnapTol))
+		}
 		return
 	}
 	old := p.curScale
@@ -870,8 +877,8 @@ func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) {
 		_ = p.st.InsertEvent("cur_cal_fail", err.Error())
 		return
 	}
-	_ = p.st.InsertEvent("cur_cal", fmt.Sprintf("scale=%g 旧=%g rawUAs=%d 电量计=%dµAh",
-		scale, old, rawUAs, counterUAh))
+	_ = p.st.InsertEvent("cur_cal", fmt.Sprintf("scale=%g 旧=%g 比值=%.2f rawUAs=%d 电量计=%dµAh",
+		scale, old, ratio, rawUAs, counterUAh))
 	// 只在单位口径真正变化时打日志：正常设备 ×1 属预期，无需刷日志
 	if old > 0 || scale != anchorScaleUA(p.fullUAh) {
 		p.log("[校准] 电流刻度 %g→%g µA/原始单位（电量计差分与原始读数积分比值）", old, scale)

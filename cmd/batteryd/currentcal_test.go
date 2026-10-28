@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,8 +25,11 @@ func TestLearnCurrentScale(t *testing.T) {
 		{"uA 偏低 15%", rawUAs, 5_750_000, 1, true},
 		// issue #6：原始读数是 mA（5000 表示 5A），电量计差分是 µAh
 		{"mA 原始读数", 5000 * 3600, 5_000_000, 1000, true},
-		// 比值异常 2.5 倍：不是 10 的整数次幂，判异常不校准
-		{"比值异常 2.5x", rawUAs, 12_500_000, 0, false},
+		// 电量计差分远大于原始积分（比值约 1.93×10³）：双电芯等效容量口径下
+		// 积分只有电量计的一半，仍需吸附到 ×1000
+		{"比值 1.93e3", 2_001_720, 1_074_000, 1000, true},
+		// 比值 3.5 倍：落在相邻 10 的幂吸附区之间的拒绝带，仍不校准
+		{"比值异常 3.5x", rawUAs, 17_500_000, 0, false},
 		// 电量计缺口让比值偏小 10 倍：数量级合法，纯函数层按幂次采信；调用方
 		// （结算口径裁决）会先剔除不可信电量计
 		{"电量计缺口 10x", rawUAs, 500_000, 0.1, true},
@@ -33,12 +38,47 @@ func TestLearnCurrentScale(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := learnCurrentScale(c.rawUAs, c.counter)
+			got, ratio, ok := learnCurrentScale(c.rawUAs, c.counter)
 			if ok != c.wantOK || got != c.want {
-				t.Fatalf("learnCurrentScale(%d, %d) = (%v, %v), want (%v, %v)",
-					c.rawUAs, c.counter, got, ok, c.want, c.wantOK)
+				t.Fatalf("learnCurrentScale(%d, %d) = (%v, ratio=%v, %v), want (%v, ratio>0, %v)",
+					c.rawUAs, c.counter, got, ratio, ok, c.want, c.wantOK)
+			}
+			// 比值同时返回给调用方写 cur_cal_fail：合法输入时必须为正数
+			if c.rawUAs > 0 && c.counter > 0 && ratio <= 0 {
+				t.Fatalf("合法输入应返回正比值, got %v", ratio)
 			}
 		})
+	}
+}
+
+// 结算自校准的落库行为：比值落在吸附区内时学到对应刻度并落 cur_cal 事件；
+// 学不出刻度时落 cur_cal_fail 事件并带原始比值，且不覆盖已有刻度。
+func TestLearnCurrentScaleFromSessionEvents(t *testing.T) {
+	r := newPipeRig(t)
+	// 原始积分 2,001,720µA·s、电量计 1,074,000µAh（比值约 1.93×10³）
+	r.p.learnCurrentScaleFromSession(2_001_720, 1_074_000)
+	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
+		t.Fatalf("kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
+	}
+	var n int
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='cur_cal'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("cur_cal = %d, want 1", n)
+	}
+
+	// 比值 3.5 倍：不覆盖已学刻度，只落 cur_cal_fail 留痕
+	r.p.learnCurrentScaleFromSession(5_000_000*3600, 17_500_000)
+	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
+		t.Fatalf("学不出刻度时 kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
+	}
+	var detail sql.NullString
+	if err := r.st.db.QueryRow(`SELECT detail FROM events WHERE kind='cur_cal_fail' ORDER BY rowid DESC LIMIT 1`).Scan(&detail); err != nil {
+		t.Fatalf("应落 cur_cal_fail 事件: %v", err)
+	}
+	if !strings.Contains(detail.String, "3.50") {
+		t.Fatalf("cur_cal_fail detail 应带原始比值 3.50, got %q", detail.String)
 	}
 }
 

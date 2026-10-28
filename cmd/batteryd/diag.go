@@ -377,8 +377,9 @@ func diagSessionLine(s Session, loc *time.Location) string {
 		src = "cc"
 	}
 	if !s.Valid {
-		return fmt.Sprintf("session=%s cap=%d→%d%% Δ%d valid=0 reason=%s avgI=%dmA src=%s",
-			when, s.StartCap, s.EndCap, delta, orDash(s.InvalidReason), s.AvgI/1000, src)
+		// 被拒会话行也带 ua 与 cc：据此判断问题是量纲/采样，还是掉幅/区间门控。
+		return fmt.Sprintf("session=%s cap=%d→%d%% Δ%d valid=0 reason=%s avgI=%dmA ua=%dµA·s cc=%s src=%s",
+			when, s.StartCap, s.EndCap, delta, orDash(s.InvalidReason), s.AvgI/1000, s.AccUAs, cc, src)
 	}
 	return fmt.Sprintf("session=%s cap=%d→%d%% Δ%d valid=1 avgI=%dmA ua=%dµA·s cc=%s src=%s est=%dmAh",
 		when, s.StartCap, s.EndCap, delta, s.AvgI/1000, s.AccUAs, cc, src, sessionEstMah(s))
@@ -394,7 +395,7 @@ func diagDischargeLine(d DischargeRow, loc *time.Location) string {
 }
 
 func diagEventsLine(counts map[string]int64) string {
-	keys := []string{"cur_cal", "counter_scale", "quality_warn", "tick_error", "sample_fail"}
+	keys := []string{"cur_cal", "cur_cal_fail", "counter_scale", "quality_warn", "tick_error", "sample_fail"}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))

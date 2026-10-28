@@ -31,11 +31,12 @@ const (
 	// kvCurrentScale 学习到的电流刻度（µA/原始单位，如 "1"、"1000"）。
 	// 缺失或非法 ⇒ 未校准，退回 NormCurrentUAWithFull 的 charge_full 锚点逻辑。
 	kvCurrentScale = "cur_scale"
-	// curScaleSnapTol 比值吸附容差（log10）：0.15 decade ≈ −29%/+41%。本仓库
-	// 实机采样经验里正常设备电流积分相对电量计偏低 5~15%，必须落进 ×1 的吸附
-	// 区；容差只用于单位/数量级吸附，不精校传感器增益。mA 与 µA 差 3 个数量级，
-	// 两侧不会混淆。
-	curScaleSnapTol = 0.15
+	// curScaleSnapTol 比值吸附容差（log10）：0.4 decade，对应 ×0.40~×2.51。
+	// 容差只用于单位/数量级吸附，不精校传感器增益：正常设备电流积分相对电量计
+	// 偏低 5~15%，落进 ×1 的吸附区；mA 节点落进 ×1000。积分与电量计的比值还会
+	// 因双电芯等效容量口径、采样缺口等再偏 2 倍左右，容差需覆盖该范围；<0.5
+	// 保证相邻 10 的幂的吸附区互不重叠，不会把 ×1 判成 ×10。
+	curScaleSnapTol = 0.4
 	// curScaleMinExp/curScaleMaxExp 可采信刻度的数量级上下界：只接受 10 的
 	// 整数次幂（0.001~1000），更离谱的比值判为异常不采信。
 	curScaleMinExp = -3
@@ -88,31 +89,31 @@ func currentUnitLabel(chargeFullUAh int64, learnedScale float64) string {
 }
 
 // learnCurrentScale 由一次会话的电量计差分（µAh）与「原始读数×dt」积分
-// （原始单位·秒）反推 µA/原始单位。必须用原始读数积分而不是归一后的 accUAs：
-// accUAs 已被当前生效刻度（或锚点）缩放，拿它反推会在「已学 ×1000」的下一会话
-// 把比值算成 1、把刻度覆盖回 ×1，随后在 1000↔1 之间来回震荡（回归断言见
-// TestIssue6MilliampCurrentCalibration 的第二个完整会话段）；原始读数积分不依赖
-// 当前刻度，OTA 改单位后也能一次纠正。返回 ok=false 时不修改任何状态。
-func learnCurrentScale(rawUAs, counterUAh int64) (float64, bool) {
+// （原始单位·秒）反推 µA/原始单位，并同时返回原始比值供调用方记录。
+// 必须用原始读数积分而不是归一后的 accUAs：accUAs 已被当前生效刻度（或锚点）
+// 缩放，拿它反推会把已学刻度算回 ×1，导致刻度在 1000↔1 之间来回震荡；原始
+// 读数积分不依赖当前刻度，单位变化后也能一次纠正。返回 ok=false 时不修改
+// 任何状态。
+func learnCurrentScale(rawUAs, counterUAh int64) (scale, ratio float64, ok bool) {
 	if rawUAs <= 0 || counterUAh <= 0 {
-		return 0, false
+		return 0, 0, false
 	}
 	// 真实电量（µA·s）÷ 原始读数·秒 = µA/原始单位
-	ratio := float64(counterUAh) * 3600 / float64(rawUAs)
+	ratio = float64(counterUAh) * 3600 / float64(rawUAs)
 	if !(ratio > 0) || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return 0, false
+		return 0, 0, false
 	}
 	lg := math.Log10(ratio)
 	snap := math.Round(lg)
 	if snap < curScaleMinExp || snap > curScaleMaxExp {
-		return 0, false
+		return 0, ratio, false
 	}
-	// 异常比值（例如电量计缺口让比值偏 2 倍、或电量计与积分本就不同量纲）
+	// 异常比值（例如电量计缺口让比值偏 3 倍、或电量计与积分本就不同量纲）
 	// 一律不采信：宁可继续用旧刻度，也不把刻度改坏。
 	if math.Abs(lg-snap) > curScaleSnapTol {
-		return 0, false
+		return 0, ratio, false
 	}
-	return math.Pow(10, snap), true
+	return math.Pow(10, snap), ratio, true
 }
 
 // counterResolution 是电量计差分与电流积分相差 3 倍以上时的裁决结果。
