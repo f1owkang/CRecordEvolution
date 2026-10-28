@@ -12,7 +12,7 @@
 
 English | [简体中文](README.md)
 
-[Features](#features) | [Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [Logs](#logs) | [FAQ](#faq) | [Project layout](#project-layout) | [Acknowledgements](#acknowledgements)
+[Features](#features) | [Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [FAQ](#faq) | [Build from source](#build-from-source) | [Acknowledgements](#acknowledgements)
 
 </div>
 
@@ -33,11 +33,10 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 ## Features
 
 - **Health and capacity at a glance**: the module description shows kernel health, full-charge and design capacities plus the measured estimate — no app needed.
-- **Four capacity paths cross-checked**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a spread above 40% is written as a `quality_warn` event.
 - **Three-page WebUI**: Overview / History / Settings; history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap.
-- **Fully offline**: no network permission, no telemetry, no upload; data is written only to the local `data/battery.db`.
-- **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; flashing keeps the previous learning history automatically.
-- **90 days of history**: pruned daily; sampling runs every 15 s while charging and every 60 s otherwise.
+- **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
+- **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.
+- **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
 - **Bilingual UI**: Simplified Chinese / English, selectable at install time and switchable any time in the WebUI.
 
 ## Installation
@@ -51,7 +50,7 @@ Requires Magisk v20.4+, KernelSU, or APatch (arm64 only). Download from [Release
 
 ### Flashing
 
-Pick the zip in your manager and answer two short prompts (the same in-app and in Magisk recovery): language (Volume Up = Chinese, Volume Down = English, 12 s timeout = follow system), then confirm (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel), then reboot. The install log is moderate (about 8–10 lines): title and one-line summary, device, the two prompts, the result and one usage tip. No more flooding, and it will not be cancelled by mistake if the key tools are unavailable.
+Pick the zip in your manager and answer two short prompts (the same in-app and in Magisk recovery): language (Volume Up = Chinese, Volume Down = English, 12 s timeout = follow system), then confirm (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel), then reboot.
 
 ### Notes
 
@@ -59,13 +58,8 @@ Pick the zip in your manager and answer two short prompts (the same in-app and i
 - Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
 - Older Magisk versions have no Action button; wait for a reboot;
 - Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
-- KernelSU / APatch / MMRL can open the bundled WebUI (Overview / History / Settings): the bottom bar toggles between a floating pill and the classic edge-to-edge style, and chart points can be tapped for exact values.
-
-## Languages
-
-The module UI supports Simplified Chinese and English, chosen by this priority: an explicit install-time choice (stored in `data/lang`) → a switch on the WebUI Settings page (also stored in `data/lang`) → automatic system-language detection. With no explicit choice the installer keeps the old preference or follows the system language.
-
-The installer, module description, `batteryd once` output, Action messages and the WebUI share this setting; switching refreshes the module description immediately, with no reboot; with no stored choice it follows the system language (after a system language change the description refreshes only after the daemon restarts).
+- The language is chosen at install time and can be switched later in the WebUI; the module description refreshes immediately. With no explicit choice it follows the system language;
+- KernelSU / APatch / MMRL can open the bundled WebUI: the bottom bar toggles between a floating pill and the classic edge-to-edge style, and chart points can be tapped for exact values.
 
 ## How it works
 
@@ -83,10 +77,8 @@ The numbers in the description come from two independent paths: one reads the ke
 ### Why it works this way
 
 - **No indefinite integration**: a coulomb counter would keep accumulating error; re-deriving the capacity on every charge is like re-syncing a clock.
-- **Partial sessions are unreliable**: their derived capacity tends to run high — by up to 10% in measured data.
-- **The mid stretch gets its own calibration**: the top few percentage points tend to report full early (above 95% each step holds only about 60% of a normal step), so percentages in the middle are more trustworthy.
-- **Both variants agree early on**: they behave identically for the first 30 valid sessions; after that ML pulls ahead, and its ± is a relative-uncertainty indicator rather than a strict confidence interval.
-- **The discharge differential is the steadiest path**: it never goes through `current_now`; integration happens inside the chip and is immune to load transients, making it the least scattered of the paths.
+- **Partial sessions are unreliable**: their derived capacity tends to run high (up to 10% in measured data), so only large-swing sessions are accepted.
+- **The mid stretch is more trustworthy, and the discharge differential is the steadiest**: the top few percentage points often report full early, while percentages in the middle hold up better; the discharge differential never goes through `current_now` and integrates inside the chip.
 
 ### Capacity trend
 
@@ -94,34 +86,16 @@ Three states: progress until 21 days of data; "no significant change" when no cl
 
 ### Extra observations
 
-These are observations only and never affect health: resting voltage (converging after about 10 minutes of screen-off rest), constant-current time (the time spent crossing the 0.1 V window between 4.2 V and 4.3 V; it shortens with age, and a full LFP battery only reaches 3.65 V, so it keeps showing as collecting — not a fault), and the incremental-capacity main peak (computed only on accepted sessions at ≤1C; a higher rate makes the peak less sharp).
+Observations only, never affecting health: resting voltage, constant-current charge time and the incremental-capacity main peak; they show as collecting when data is insufficient — not a fault.
 
-### Current units and auto-calibration
+### Current units and calibration
 
-`current_now` is not consistent in practice: Linux `power_supply`/Android define it in µA and `charge_*` in µAh, but some kernels comply only partially — OnePlus Ace 3 and other Oppo-family devices were reported in issue #6 to report mA from `current_now` while `charge_counter` and `charge_full` on the same node stay in µAh. Getting the dimension wrong scales the charge input by 1000×, so the module guards against it in two layers:
-
-- **Normalise by dimension first**: as an ABI-based initial guess, infer the current unit from the dimension of `charge_full` — a µAh dimension means the current should be in µA, an mAh dimension means ×1000 — and convert everything to µA before sampling and integration. Vendors may comply only partially, hence the second layer;
-- **Calibrate against the fuel gauge**: at every charge-session settlement the module compares the fuel-gauge differential against the session's integral of raw current readings (not the already-scaled integral) and back-derives the current scale. A ratio is accepted only when it sits near an integer power of ten (±0.15 decade); the accepted scale is persisted to the database and applied to all later `current_now` readings, surviving reboots. When the ratio is not accepted the existing scale is kept; a failed write is recorded as an event and never affects settlement.
-
-All of this is automatic — no manual setup. Devices without a `charge_counter` node have no reference and cannot self-calibrate, so they keep the dimension-based initial guess. To check the calibration state, open the WebUI Settings page and look at the "Data" section, which shows the sampling nodes and the current scale; with a root terminal, the top-level `calib` object in `batteryd json` exposes `current_scale`, `current_unit`, `raw_current` (the raw reading) and `current_ua` (the normalised value). For new sessions (`cc>0`, i.e. a fuel-gauge readout was trusted) the history estimate is derived from the fuel-gauge increment first; older rows or rows without a gauge readout fall back to current integration and may keep the old scale error.
-
-> [!NOTE]
-> Current-scale auto-calibration has not yet been verified on a real OnePlus Ace 3; it currently rests on code-level reasoning and the existing sampling database. On Oppo-family devices (ColorOS / realme UI), one full charge after upgrading followed by a report of the "Current scaling" value on the Settings page or the `calib` object in `batteryd json` is enough to help confirm it.
+`current_now` is not consistent in practice: some kernels report mA while `charge_*` stays in µAh, and a wrong dimension scales the charge input by 1000×. The module first normalises by the dimension of `charge_full`, then at every charge-session settlement back-derives the current scale from "fuel-gauge differential vs the integral of raw current readings" and persists it; all later readings are converted with that scale, surviving reboots. Everything is automatic — the Settings → "Data" section shows the active scale. Devices without a `charge_counter` node have no reference and keep the dimension-based initial guess.
 
 > [!WARNING]
 > Known inaccuracies:
 > - Using the phone while charging can count load current as charge input, so readings run high; screen-off charging is the most accurate (prolonged high-load use after reaching full is detected and stopped);
-> - Current nodes on some vendors' devices are in mA rather than µA; the module first infers the unit from the scale of `charge_full` and then calibrates against the fuel gauge at charge-session settlement (see the previous section). Devices without a `charge_counter` node rely on the initial guess alone, so extreme cases (trickle below 10 mA) can still be misjudged;
-> - Devices without a `cycle_count` node omit that field without affecting anything else; devices without `charge_full_design` (e.g. VIVO/iQOO) read the design capacity from the device tree; only if that fails is the field omitted, leaving the measured estimate at "Learning period".
-
-## Logs
-
-Runtime data lives in `data/battery.db` (SQLite) under the module directory, kept for the last 90 days and pruned automatically every day. With a root terminal you can query the history directly:
-
-```sh
-sqlite3 /data/adb/modules/CRecordEvolution/data/battery.db \
-  'SELECT datetime(ts, "unixepoch", "localtime"), mah FROM estimates ORDER BY ts DESC LIMIT 10;'
-```
+> - Devices without `cycle_count` / `charge_full_design` have the corresponding fields omitted or read the design capacity from the device tree; nothing else is affected.
 
 ## FAQ
 
@@ -155,45 +129,17 @@ No. The flash script copies the old version's `data/` directory (including `batt
 
 ## Build from source
 
-The WebUI source lives in `webui/` (Preact + Vite) and builds into `webroot/` (generated, not committed):
+The WebUI source lives in `webui/` (Preact + Vite) and builds into `webroot/` (generated, not committed); the Go daemon is pure Go (SQLite via `modernc.org/sqlite`, no CGO needed):
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm run verify   # build + offline scan + 50KB gzip ceiling
-pnpm run smoke    # headless Chrome/Edge smoke test (optional)
-```
 
-The Go daemon is pure Go (SQLite via `modernc.org/sqlite`, no CGO needed):
-
-```sh
 go test ./... -count=1
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/batteryd ./cmd/batteryd
 ```
 
-`bin/batteryd` is the native executable shipped in the module; its subcommands:
-
-- `once` — refresh the module description once and print the current readings (this is what the manager's Action button runs);
-- `json` — emit the JSON snapshot used by the Overview and Settings pages;
-- `history` — emit the paged data used by the History page; options are `--days 1-90`, `--limit 1-50`, `--type all|charge|discharge` and `--before TS`;
-- `diag` — emit a redacted environment/calibration/recent-session diagnostics summary (including the latest calibration or source decision and the last sample time, ≤1800 chars, no serial/IMEI/MAC/account); the Settings → "Copy diagnostics" button runs it and copies the result to the clipboard.
-
-On boot `service.sh` starts `batteryd daemon`; see [`AGENTS.md`](AGENTS.md) for the full release flow (tags, CI, both variant packages).
-
-## Project layout
-
-| Path | Purpose |
-| :-- | :-- |
-| `cmd/batteryd/` | Go daemon: sampling, session settlement, capacity estimation, SQLite, module description and the CLI subcommands |
-| `webui/` | WebUI source (Preact + Vite); the build output goes to `webroot/` |
-| `webroot/` | WebUI build output, packed into the module zip, not committed |
-| `scripts/` | Build guards: offline scan, gzip ceiling, headless smoke test |
-| `service.sh` | Waits for `sys.boot_completed=1`, then starts the daemon |
-| `action.sh` | Manager Action: runs `batteryd once` and passes its exit code through |
-| `customize.sh` | Flash interaction: language choice, install confirmation, keeping the old `data/`, binary permissions |
-| `module.prop` / `module.yaml` / `module.json` / `update.json` | Module metadata, KernelSU listing and update info |
-| `META-INF/com/google/android/` | Standard Magisk flash stub |
-| `docs/` | Paper PDF library |
-| `README.md` / `README_EN.md` / `AGENTS.md` | Chinese/English user docs and developer conventions |
+`bin/batteryd` is the native executable shipped in the module: `once` refreshes the description and prints the current readings (what the manager's Action button runs), `json` emits the Overview/Settings snapshot, `history` emits the paged History data, and `diag` emits a redacted diagnostics summary (Settings → "Copy diagnostics"). On boot `service.sh` starts `batteryd daemon`; see [`AGENTS.md`](AGENTS.md) for the full release flow.
 
 ## Research
 

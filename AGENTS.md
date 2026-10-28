@@ -105,7 +105,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - shebang 固定 `#!/system/bin/sh`；不使用 bash 数组、`[[`、`local` 等非 POSIX 特性。
 - 变量加引号，路径优先使用 `$MODPATH` / `$MODDIR`；不要写死 `/data/adb/modules/...` 以外的路径。
-- 安装器控制台输出走 `ui_print`（管理器未提供时回退 `echo`），取消用 `abort`（无 `abort` 才 `exit 1`）；安装器总输出控制在约 8~10 行（标题/说明、设备、两条按键提示、结果、一条提示），详细说明放 README/WebUI。
+- 安装器控制台输出走 `ui_print`（管理器未提供时回退 `echo`），取消用 `abort`（无 `abort` 才 `exit 1`）；安装器总输出控制在约 8~11 行（标题/说明、设备、语言选择两行、确认提示、结果、一条提示），详细说明放 README/WebUI。
+- 语言选择步固定输出中英双语（「选择语言 / Choose language」+ 音量键中英对照 + 超时说明）：此步语言偏好尚未确定，双语并列可同时覆盖两种语言的用户；选定语言后其余步骤用选定语言渲染。读键工具缺失走自动安装时也要说明语言跟随系统。
 - 应用内安装与 Magisk 恢复模式都使用同一套两步按键（选语言 → 确认安装）；**不要按 BOOTMODE/管理器类型跳过按键**——LSPosed、Zygisk 系模块在 App 内安装也能读到音量键（2026-10 实机确认）。只有读不到 `getevent`/`timeout` 工具时才自动安装，绝不能因此误取消。
 - `read_key` 只采纳 `DOWN`（按下）事件，忽略 `UP`/`SYN`；否则第一次按键的抬起会被第二步确认当成第二次按键（实机曾出现“按一次就安装”）。回归模拟：只按一次应取消，按两次才安装。
 - `SKIPUNZIP=0` 时安装器已解压到 `MODPATH`，不要再重复 `unzip`；仅在缺 `module.prop` 的异常环境兜底一次。
@@ -218,7 +219,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - `NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位：≥100000 只可能是 µAh，同驱动 `current_now` 已是 µA 直通；以 mAh 计则 ×1000；无锚点退化为幅值启发式；最后用 25A 物理上界兜底。
 - **不要拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，污染采样、积分和校准。
 - `current_now` 的量纲可能随内核/厂商不同：一加 Ace 3 等欧加系机型报 mA，而同一节点的 `charge_counter` / `charge_full` 报 µAh。旁证：公开的 OnePlusOSS SM8550/Ace 3 分支 `oplus_charger.c` 对 `CHARGE_FULL`（mAh→µAh）、`VOLTAGE_NOW`（mV→µV）都做了 ×1000 换算，`CURRENT_NOW` 却直接透传 gauge 的 mA 读数；同类 gauge 驱动的量程常量（如 `CURR_MAX 25000`）也按 mA 语义。生产路径一律走 `Pipeline.currentUA`（内部 `normalizeCurrentUA`：已学习刻度优先，未校准时退回 `NormCurrentUAWithFull` 锚点），**禁止把原始读数当 µA 直接积分**，也禁止只凭 `charge_full` 的量纲就断言电流单位。
-- 运行时自校准：充电会话结算时用「电量计差分电量 vs 会话期原始电流读数积分（rawUAs）」反推 µA / 原始单位；**不能用已被当前刻度/锚点缩放过的 `accUAs` 反推**，否则已学 ×1000 会在下一会话被算成 ×1、与真实刻度来回震荡（回归断言见 `TestIssue6MilliampCurrentCalibration` 的第二会话段）。比值须落在 10 的整数次幂（10⁻³~10³）±0.15 decade 内才采信（且仅在结算已采信电量计口径后学习）。采信值写 kv `cur_scale`，之后所有 `current_now` 读数按该刻度归一；事件 `cur_cal` 记录刻度落盘/变化，`cur_cal_fail` 记录写库失败，`counter_scale` 仍记录结算时的口径裁决。允许覆盖旧刻度：系统 OTA 改变 `current_now` 单位后，下一个采信会话会自动纠正，不会永久卡住。
+- 运行时自校准：充电会话结算时用「电量计差分电量 vs 会话期原始电流读数积分（rawUAs）」反推 µA / 原始单位；**不能用已被当前刻度/锚点缩放过的 `accUAs` 反推**，否则已学 ×1000 会在下一会话被算成 ×1、与真实刻度来回震荡（回归断言见 `TestIssue6MilliampCurrentCalibration` 的第二会话段）。比值须落在 10 的整数次幂（10⁻³~10³）±0.4 decade（最多 2.5 倍偏差）内才采信（且仅在结算已采信电量计口径后学习）；容差 <0.5 保证相邻 10 的幂吸附区不重叠，×1 与 ×1000 不可能混判。容差放到 0.4 是 2026-10 一加 13 实机反馈倒逼的：双电芯等效容量口径下电流积分只有电量计的 52%（电量计 1074mAh vs 原始积分 556mAh，比值 1.93×10³），0.15 decade 会把这类设备永久拒在校准之外，avgI/实时电流恒为 0。采信值写 kv `cur_scale`，之后所有 `current_now` 读数按该刻度归一；事件 `cur_cal` 记录刻度落盘/变化（含原始比值），`cur_cal_fail` 记录写库失败或比值不达吸附条件（带原始比值，供诊断定位），`counter_scale` 仍记录结算时的口径裁决。允许覆盖旧刻度：系统 OTA 改变 `current_now` 单位后，下一个采信会话会自动纠正，不会永久卡住。
 - `sessions.cc` 是会话期电量计差分电量（µAh，新增列）：存结算时口径裁决采信的电量计增量——即使该会话随后因温度/涨幅等门控被拒也照存（历史页据此展示真实量级的估算），`0` 表示无电量计或裁决未采信（回退积分）。历史页「估算」优先由它折算，缺 `cc` 时才回退电流积分。`sessions.ua` 仍是积分口径（µA·s），两者不要混用。
 - `NormTempC` 截断 `[-40, 80]°C`；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`，绝对路径优先。
 - `current_now` 带符号读取（放电为负），其余节点严格非负。
