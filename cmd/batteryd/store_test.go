@@ -395,6 +395,9 @@ func TestSessionCounterRoundtrip(t *testing.T) {
 			t.Fatalf("%s 回读 cc/avg_i = %+v, want CounterUAh=2500000 AvgI=2000000", name, got)
 		}
 	}
+	if n, err := s.CountSessions(); err != nil || n != 1 {
+		t.Fatalf("CountSessions = (%d,%v), want (1,nil)", n, err)
+	}
 }
 
 // 缺 cc 列的库：OpenStore 需幂等补列，历史行默认 0（cc=0 时展示回退电流积分口径）。

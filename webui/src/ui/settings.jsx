@@ -154,7 +154,15 @@ function dataItems(doc, channel, t) {
       key: 'sessions',
       kind: 'row',
       label: t('settings_sessions'),
-      value: fmtInt(Array.isArray(doc.sessions) ? doc.sessions.length : null),
+      // sessions 数组只是最近 10 条，数量必须用后端 sessions_n；旧 daemon 没有
+      // 该字段时才回退数组长度。
+      value: fmtInt(
+        doc.sessions_n != null
+          ? doc.sessions_n
+          : Array.isArray(doc.sessions)
+            ? doc.sessions.length
+            : null
+      ),
       field: 'sessions',
     },
     {

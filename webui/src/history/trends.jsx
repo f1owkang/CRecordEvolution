@@ -105,6 +105,7 @@ function TrendsView({ trends, openTile, onToggleTile }) {
     svg: model.sesBig,
     empty: t('hist_empty_records'),
     caption: model.sesCap,
+    extra: model.sesNote,
   };
   return (
     <div class="trend-wrap">

@@ -831,6 +831,11 @@ func runJson() error {
 	if err != nil {
 		return err
 	}
+	sessN, err := a.st.CountSessions()
+	if err != nil {
+		return err
+	}
+	snap.SessionsN = sessN
 	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, disch, n, localNow())
 	if err != nil {
 		return err

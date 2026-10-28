@@ -458,6 +458,14 @@ func (s *Store) CountSamples() (int64, error) {
 	return n, err
 }
 
+// CountSessions 统计 sessions 表总行数；设置页「会话数」用它，不能用
+// RecentSessions(limit) 的切片长度（否则恒等于 limit）。
+func (s *Store) CountSessions() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n)
+	return n, err
+}
+
 // SamplesRange 返回 [from, to] 闭区间内的样本行，按 ts 升序。
 func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
 	return queryAll(s.db, `SELECT ts, ua, uv, cap, cc FROM samples

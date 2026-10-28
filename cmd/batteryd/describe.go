@@ -42,6 +42,8 @@ type Snapshot struct {
 	Quality *Quality
 	// Calib 电流刻度校准诊断（设置页展示），节点全缺失时为 nil
 	Calib *CalibInfo
+	// SessionsN 为 sessions 表总会话数，供 WebUI 设置页展示；0 表示未知/无会话。
+	SessionsN int64
 }
 
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。

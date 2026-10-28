@@ -77,6 +77,7 @@ const jsonDoc = {
   quality: { ok: true, spread_pct: 4, ema_mah: 4500, mid_mah: 4600, dis_mah: 4480, full_mah: 4800 },
   updated: '2026-10-27 19:00',
   samples_n: 1420,
+  sessions_n: 37,
   calib: {
     current_node: '/sys/class/power_supply/battery/current_now',
     counter_node: '/sys/class/power_supply/battery/charge_counter',
@@ -102,6 +103,8 @@ const sessions = [
   {
     start_ts: now - day * 2 - 3600,
     end_ts: now - day * 2,
+    start_cap: 30,
+    end_cap: 68,
     delta_pct: 38,
     est_mah: 4480,
     valid: true,
@@ -111,6 +114,8 @@ const sessions = [
   {
     start_ts: now - day - 2800,
     end_ts: now - day,
+    start_cap: 30,
+    end_cap: 76,
     delta_pct: 46,
     est_mah: 4510,
     valid: true,
@@ -120,6 +125,8 @@ const sessions = [
   {
     start_ts: now - 3600,
     end_ts: now,
+    start_cap: 44,
+    end_cap: 96,
     delta_pct: 52,
     est_mah: 4530,
     valid: true,
@@ -369,6 +376,10 @@ try {
   const calibText = await page.locator('#page_settings [data-field="current_calib"]').innerText();
   check(calibText.includes('mA'), '设置：电流刻度单位');
   check(calibText.includes('1000'), '设置：电流刻度数值');
+  check(
+    (await page.locator('#page_settings [data-field="sessions"]').innerText()).includes('37'),
+    '设置：会话数使用 sessions_n 总数'
+  );
   check((await page.locator('#page_settings #diag').count()) === 1, '设置：诊断复制按钮');
   await page.click('#page_settings #diag');
   await page.waitForSelector('#page_settings #diag-status', { timeout: 5000 });

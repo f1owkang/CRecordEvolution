@@ -60,8 +60,15 @@ function buildTrendModel(trends, t, lang) {
       )
     : '—';
   const latestSession = sessions.length ? sessions[sessions.length - 1] : null;
-  if (latestSession && latestSession.delta_pct != null) {
-    sesVal = t('hist_session_gain', { n: fmtInt(latestSession.delta_pct) });
+  if (latestSession) {
+    if (latestSession.start_cap != null && latestSession.end_cap != null) {
+      sesVal = t('hist_session_soc', {
+        a: fmtInt(latestSession.start_cap),
+        b: fmtInt(latestSession.end_cap),
+      });
+    } else if (latestSession.delta_pct != null) {
+      sesVal = t('hist_session_gain', { n: fmtInt(latestSession.delta_pct) });
+    }
   }
   const sesCap = pointsCaption(
     lang,
@@ -162,6 +169,7 @@ function buildTrendModel(trends, t, lang) {
     sesBig,
     sesVal,
     sesCap,
+    sesNote: sessions.length ? t('hist_sessions_note') : null,
     tiles,
     hasAnyData,
   };

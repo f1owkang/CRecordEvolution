@@ -13,7 +13,7 @@ func TestRenderJSONGoldenWithNulls(t *testing.T) {
 	d := Design{DesignMah: 4000, HasDesign: true, FullMah: 3850, HasFull: true, Cycles: 210, HasCycles: true, Pct: 96, HasPct: true}
 	snap := Snapshot{}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
-	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
+	want := `{"channel":"stable","design_mah":4000,"full_mah":3850,"cycles":210,"pct":96,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0,"sessions_n":0}`
 	got, err := RenderJSON("stable", d, snap, []TsVal{}, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -27,7 +27,7 @@ func TestRenderJSONGoldenPartialNulls(t *testing.T) {
 	// 缺设计容量与循环次数 → 对应字段渲染为 null
 	d := Design{FullMah: 3850, HasFull: true}
 	now := time.Date(2026, 8, 26, 14, 30, 5, 0, time.UTC)
-	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
+	want := `{"channel":"stable","design_mah":null,"full_mah":3850,"cycles":null,"pct":null,"est_mah":null,"est_mah_sigma":null,"samples":0,"cycle_equiv":0,"r_moh":null,"temp_c":null,"trend_mah_per_week":null,"updated":"2026-08-26 14:30:05","recent":[],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0,"sessions_n":0}`
 	got, err := RenderJSON("stable", d, Snapshot{}, []TsVal{}, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -47,7 +47,7 @@ func TestRenderJSONGoldenFull(t *testing.T) {
 	// estimates 表存 µAh，RenderJSON 负责 /1000 转 mAh
 	recent := []TsVal{{TS: 1778000000, V: 4501000}, {TS: 1777999940, V: 4498000}}
 	now := time.Date(2026, 8, 26, 9, 5, 1, 0, time.UTC)
-	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"est_mah_sigma":12.3,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"trend_mah_per_week":null,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0}`
+	want := `{"channel":"ml","design_mah":5000,"full_mah":4600,"cycles":322,"pct":92,"est_mah":4501,"est_mah_sigma":12.3,"samples":42,"cycle_equiv":12.5,"r_moh":0.85,"temp_c":28.5,"trend_mah_per_week":null,"updated":"2026-08-26 09:05:01","recent":[{"ts":1778000000,"mah":4501},{"ts":1777999940,"mah":4498}],"sessions":null,"rest_points":null,"ccct":null,"ica_peaks":null,"samples_n":0,"sessions_n":0}`
 	got, err := RenderJSON("ml", d, snap, recent, nil, nil, nil, nil, nil, 0, now)
 	if err != nil {
 		t.Fatalf("RenderJSON: %v", err)
@@ -104,14 +104,16 @@ func TestRenderJSONNewFields(t *testing.T) {
 	d := Design{HasDesign: true, DesignMah: 4500, HasFull: true, FullMah: 4450, HasCycles: true, Cycles: 123}
 	snap := Snapshot{}
 	recent := []TsVal{{TS: 1, V: 4_400_000}}
-	sess := []sessionEntry{{StartTs: 100, EndTs: 200, DeltaPct: 60, EstMah: intPtr(4500), Valid: true}}
+	sess := []sessionEntry{{StartTs: 100, EndTs: 200, StartCap: 20, EndCap: 80,
+		DeltaPct: 60, EstMah: intPtr(4500), Valid: true}}
 	rests := []restEntry{{TS: 300, UV: 3_900_000, Cap: 60}}
 	b, err := RenderJSON("stable", d, snap, recent, sess, rests, nil, nil, nil, 42, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, want := range []string{`"samples_n":42`, `"valid":true`, `"est_mah":4500`, `"uv":3900000`, `"delta_pct":60`} {
+	for _, want := range []string{`"samples_n":42`, `"valid":true`, `"est_mah":4500`, `"uv":3900000`, `"delta_pct":60`,
+		`"start_cap":20`, `"end_cap":80`} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("缺字段 %s: %s", want, s)
 		}

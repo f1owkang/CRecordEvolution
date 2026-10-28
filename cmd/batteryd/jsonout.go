@@ -16,6 +16,8 @@ type recentEntry struct {
 type sessionEntry struct {
 	StartTs  int64    `json:"start_ts"`
 	EndTs    int64    `json:"end_ts"`
+	StartCap int64    `json:"start_cap"`
+	EndCap   int64    `json:"end_cap"`
 	DeltaPct int64    `json:"delta_pct"`
 	EstMah   *int64   `json:"est_mah"`
 	Valid    bool     `json:"valid"`
@@ -103,6 +105,9 @@ type jsonDoc struct {
 	// 忽略未知字段，缺失即省略纪律不破坏
 	DischargeRecent []dischargeEntry `json:"discharge_recent,omitempty"`
 	SamplesN        int64            `json:"samples_n"`
+	// SessionsN 为 sessions 表总行数；sessions 数组只是最近 10 条，不能拿长度
+	// 冒充会话总数。
+	SessionsN int64 `json:"sessions_n"`
 }
 
 // dischargeEntry 为放电会话 JSON 条目：Mah 为放出电量（mAh），Implied 为按显示
@@ -137,6 +142,7 @@ func reverseInPlace[T any](rows []T) {
 
 func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
+		StartCap: se.StartCap, EndCap: se.EndCap,
 		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid, InvalidReason: se.InvalidReason}
 	if e.DeltaPct > 0 {
 		// 估算优先按会话期电量计差分折算（与结算采信口径一致）；cc=0（无电量计或
@@ -187,6 +193,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		Updated:         now.Format("2006-01-02 15:04:05"),
 		Recent:          make([]recentEntry, 0, len(recent)),
 		SamplesN:        samplesN,
+		SessionsN:       snap.SessionsN,
 	}
 	if d.HasDesign {
 		doc.DesignMah = intPtr(d.DesignMah)

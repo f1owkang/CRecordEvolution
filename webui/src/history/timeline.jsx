@@ -20,9 +20,14 @@ function toTimelineRow(event, t, lang) {
   if (charge) {
     title = t('panel_ses');
     primary =
-      charge.delta_pct != null
-        ? t('hist_session_gain', { n: fmtInt(charge.delta_pct) })
-        : t('panel_ses');
+      charge.start_cap != null && charge.end_cap != null
+        ? t('hist_session_soc', {
+            a: fmtInt(charge.start_cap),
+            b: fmtInt(charge.end_cap),
+          })
+        : charge.delta_pct != null
+          ? t('hist_session_gain', { n: fmtInt(charge.delta_pct) })
+          : t('panel_ses');
     invalid = charge.valid === false;
     if (invalid) {
       status =

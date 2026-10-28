@@ -54,7 +54,9 @@ const LANGS = {
     hist_detail_released: '放出电量',
     // 历史页：记录详情与趋势卡片副标题
     hist_est_delta: '较上次 {n} mAh',
-    hist_session_gain: '涨幅 {n}%',
+    hist_session_gain: '电量 +{n}%',
+    hist_session_soc: '电量 {a}% → {b}%',
+    hist_sessions_note: '柱高为本次充电提升的电量百分点，不是容量增长',
     hist_session_est: '估算 {n} mAh',
     hist_session_temp: '温度 {n}℃',
     hist_duration: '历时 {n} 分钟',
@@ -169,7 +171,7 @@ const LANGS = {
     session_counted: '参与估算',
     session_not_counted: '未参与估算',
     reason_temp: '温度出界',
-    reason_delta: '涨幅不足 20%',
+    reason_delta: '电量提升不足 20%',
     reason_window: '估算超界',
     reason_outlier: '离群丢弃',
 
@@ -246,7 +248,9 @@ const LANGS = {
     hist_detail_released: 'Released',
     // 历史页：记录详情与趋势卡片副标题
     hist_est_delta: '{n} mAh vs previous',
-    hist_session_gain: 'Gain {n}%',
+    hist_session_gain: 'SOC +{n}%',
+    hist_session_soc: 'SOC {a}% → {b}%',
+    hist_sessions_note: 'Bar height is the SOC gain in percentage points, not capacity growth',
     hist_session_est: 'Estimate {n} mAh',
     hist_session_temp: 'Temp {n}°C',
     hist_duration: '{n} min',
@@ -362,7 +366,7 @@ const LANGS = {
     session_counted: 'Counted',
     session_not_counted: 'Not counted',
     reason_temp: 'Temp out of range',
-    reason_delta: 'Gain under 20%',
+    reason_delta: 'SOC gain under 20%',
     reason_window: 'Estimate out of range',
     reason_outlier: 'Outlier discarded',
 
