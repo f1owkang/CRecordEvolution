@@ -51,7 +51,7 @@ Requires Magisk v20.4+, KernelSU, or APatch (arm64 only). Download from [Release
 
 ### Flashing
 
-Pick the zip in your manager, choose the prompt language (Volume Up = Chinese, Volume Down = English, timeout = follow system), confirm with Volume Up (Volume Down cancels), reboot. The installer prints the device codename, Android version and ABI; the chosen language is stored in the module and can be changed later in the WebUI. After the reboot the module description becomes your battery health data and refreshes after each charge session.
+Pick the zip in your manager and answer two short prompts (the same in-app and in Magisk recovery): language (Volume Up = Chinese, Volume Down = English, 12 s timeout = follow system), then confirm (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel), then reboot. The install log is moderate (about 8–10 lines): title and one-line summary, device, the two prompts, the result and one usage tip. No more flooding, and it will not be cancelled by mistake if the key tools are unavailable.
 
 ### Notes
 
@@ -63,7 +63,7 @@ Pick the zip in your manager, choose the prompt language (Volume Up = Chinese, V
 
 ## Languages
 
-The module UI supports Simplified Chinese and English, chosen by this priority: an explicit install-time choice (stored in `data/lang`) → a switch on the WebUI Settings page (also stored in `data/lang`) → automatic system-language detection.
+The module UI supports Simplified Chinese and English, chosen by this priority: an explicit install-time choice (stored in `data/lang`) → a switch on the WebUI Settings page (also stored in `data/lang`) → automatic system-language detection. With no explicit choice the installer keeps the old preference or follows the system language.
 
 The installer, module description, `batteryd once` output, Action messages and the WebUI share this setting; switching refreshes the module description immediately, with no reboot; with no stored choice it follows the system language (after a system language change the description refreshes only after the daemon restarts).
 
@@ -96,10 +96,22 @@ Three states: progress until 21 days of data; "no significant change" when no cl
 
 These are observations only and never affect health: resting voltage (converging after about 10 minutes of screen-off rest), constant-current time (the time spent crossing the 0.1 V window between 4.2 V and 4.3 V; it shortens with age, and a full LFP battery only reaches 3.65 V, so it keeps showing as collecting — not a fault), and the incremental-capacity main peak (computed only on accepted sessions at ≤1C; a higher rate makes the peak less sharp).
 
+### Current units and auto-calibration
+
+`current_now` is not consistent in practice: Linux `power_supply`/Android define it in µA and `charge_*` in µAh, but some kernels comply only partially — OnePlus Ace 3 and other Oppo-family devices were reported in issue #6 to report mA from `current_now` while `charge_counter` and `charge_full` on the same node stay in µAh. Getting the dimension wrong scales the charge input by 1000×, so the module guards against it in two layers:
+
+- **Normalise by dimension first**: as an ABI-based initial guess, infer the current unit from the dimension of `charge_full` — a µAh dimension means the current should be in µA, an mAh dimension means ×1000 — and convert everything to µA before sampling and integration. Vendors may comply only partially, hence the second layer;
+- **Calibrate against the fuel gauge**: at every charge-session settlement the module compares the fuel-gauge differential against the session's integral of raw current readings (not the already-scaled integral) and back-derives the current scale. A ratio is accepted only when it sits near an integer power of ten (±0.15 decade); the accepted scale is persisted to the database and applied to all later `current_now` readings, surviving reboots. When the ratio is not accepted the existing scale is kept; a failed write is recorded as an event and never affects settlement.
+
+All of this is automatic — no manual setup. Devices without a `charge_counter` node have no reference and cannot self-calibrate, so they keep the dimension-based initial guess. To check the calibration state, open the WebUI Settings page and look at the "Data" section, which shows the sampling nodes and the current scale; with a root terminal, the top-level `calib` object in `batteryd json` exposes `current_scale`, `current_unit`, `raw_current` (the raw reading) and `current_ua` (the normalised value). For new sessions (`cc>0`, i.e. a fuel-gauge readout was trusted) the history estimate is derived from the fuel-gauge increment first; older rows or rows without a gauge readout fall back to current integration and may keep the old scale error.
+
+> [!NOTE]
+> Current-scale auto-calibration has not yet been verified on a real OnePlus Ace 3; it currently rests on code-level reasoning and the existing sampling database. On Oppo-family devices (ColorOS / realme UI), one full charge after upgrading followed by a report of the "Current scaling" value on the Settings page or the `calib` object in `batteryd json` is enough to help confirm it.
+
 > [!WARNING]
 > Known inaccuracies:
 > - Using the phone while charging can count load current as charge input, so readings run high; screen-off charging is the most accurate (prolonged high-load use after reaching full is detected and stopped);
-> - Current nodes on some vendors' devices are in mA rather than µA; the module infers the unit mainly from the scale of `charge_full` and falls back to magnitude-based inference only when that node is missing, so extreme cases (trickle below 10 mA) can still be misjudged;
+> - Current nodes on some vendors' devices are in mA rather than µA; the module first infers the unit from the scale of `charge_full` and then calibrates against the fuel gauge at charge-session settlement (see the previous section). Devices without a `charge_counter` node rely on the initial guess alone, so extreme cases (trickle below 10 mA) can still be misjudged;
 > - Devices without a `cycle_count` node omit that field without affecting anything else; devices without `charge_full_design` (e.g. VIVO/iQOO) read the design capacity from the device tree; only if that fails is the field omitted, leaving the measured estimate at "Learning period".
 
 ## Logs
@@ -162,7 +174,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 - `once` — refresh the module description once and print the current readings (this is what the manager's Action button runs);
 - `json` — emit the JSON snapshot used by the Overview and Settings pages;
-- `history` — emit the paged data used by the History page; options are `--days 1-90`, `--limit 1-50`, `--type all|charge|discharge` and `--before TS`.
+- `history` — emit the paged data used by the History page; options are `--days 1-90`, `--limit 1-50`, `--type all|charge|discharge` and `--before TS`;
+- `diag` — emit a redacted environment/calibration/recent-session diagnostics summary (including the latest calibration or source decision and the last sample time, ≤1800 chars, no serial/IMEI/MAC/account); the Settings → "Copy diagnostics" button runs it and copies the result to the clipboard.
 
 On boot `service.sh` starts `batteryd daemon`; see [`AGENTS.md`](AGENTS.md) for the full release flow (tags, CI, both variant packages).
 

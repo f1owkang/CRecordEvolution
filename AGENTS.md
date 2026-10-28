@@ -70,7 +70,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 测试要求
 
 - 改 Go 逻辑必须补/改测试，并保证 `go test ./...` 全绿、`go vet ./...` 通过。
-- 改 shell 至少运行 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义“修正”POSIX sh，也不要在 Windows 上执行安装流程。
+- 改 shell 至少运行 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义“修正”POSIX sh，也不要在 Windows 上执行安装流程。改安装器要推演「应用内安装与恢复模式同样可读音量键」的两步按键路径，以及读不到 `getevent`/`timeout` 时自动安装、不能误取消；本地无法真机验证时须说明。
 - 改 `module.yaml` / `module.json` 后用 YAML/JSON 解析器校验。
 - 改 README 任一侧必须同步另一侧，并检查标题锚点。
 - 打包本地测试 zip 时确认所有 `.sh`、`module.prop`、`META-INF` 文本文件是 LF；CRLF 会让设备端 mksh 报 `: not found` / `syntax error`。
@@ -96,15 +96,20 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | `*UAs` | µA·s（电量积分，÷3600 得 µAh） | `Session.AccUAs`、`sessionState.accUAs`、`charged_ua_total`、`cycleEquiv(totalUAs, …)` |
 
 - **后缀即量纲**：容量一律 `*UAh`，电流一律 `*UA`，累计电量 `*UAs`。不再存在"看语境才知道是 µA 还是 µAh"的 `*UA`；新增字段必须带能判量纲的后缀。
-- DB 列名是历史遗留，**不代表单位**：`sessions.ua` 存会话累计电量 µA·s（不是电流），`estimates.mah` 存 µAh（不是 mAh），`samples.cc` 存 `charge_counter` 读数 µAh（0 = 未采到），`discharge.uah` 存 µAh。以 Go 字段名与 `schemaDDL` 的行尾单位注释为准。
+- DB 列名是历史遗留，**不代表单位**：`sessions.ua` 存会话累计电量 µA·s（不是电流），`sessions.cc` 存会话期采信的电量计差分 µAh（0 = 无电量计/未采信），`estimates.mah` 存 µAh（不是 mAh），`samples.cc` 存 `charge_counter` 读数 µAh（0 = 未采到），`discharge.uah` 存 µAh。以 Go 字段名与 `schemaDDL` 的行尾单位注释为准。
 - `counter` 指电量计 `charge_counter`（`SampleRow.CounterUAh`、`sessionState.counterAccUAh`）；`CC` / `CCSeg` / `CCCT`（大写）专指恒流充电段。两套词汇不得混用。
-- kv 键名与 JSON tag 是设备端/前端契约：改名只改 Go 常量名，**字符串值必须原样保留**（如 `"ema_ua"`、`"sess_cc_acc"`、`"sess_cc_last"`、`"dis_last_cc"`），JSON tag（如 `uah_mah`、`peak_h_rel`）同理。
+- kv 键名与 JSON tag 是设备端/前端契约：改名只改 Go 常量名，**字符串值必须原样保留**（如 `"ema_ua"`、`"sess_cc_acc"`、`"sess_cc_last"`、`"dis_last_cc"`、`"cur_scale"`），JSON tag（如 `uah_mah`、`peak_h_rel`、`current_scale`）同理。
 - sysfs 节点名（`charge_counter`、`current_now`、`charge_full`、`charge_full_design`）沿用内核原名，不要另起别名。
 
 ### POSIX sh
 
 - shebang 固定 `#!/system/bin/sh`；不使用 bash 数组、`[[`、`local` 等非 POSIX 特性。
 - 变量加引号，路径优先使用 `$MODPATH` / `$MODDIR`；不要写死 `/data/adb/modules/...` 以外的路径。
+- 安装器控制台输出走 `ui_print`（管理器未提供时回退 `echo`），取消用 `abort`（无 `abort` 才 `exit 1`）；安装器总输出控制在约 8~10 行（标题/说明、设备、两条按键提示、结果、一条提示），详细说明放 README/WebUI。
+- 应用内安装与 Magisk 恢复模式都使用同一套两步按键（选语言 → 确认安装）；**不要按 BOOTMODE/管理器类型跳过按键**——LSPosed、Zygisk 系模块在 App 内安装也能读到音量键（2026-10 实机确认）。只有读不到 `getevent`/`timeout` 工具时才自动安装，绝不能因此误取消。
+- `read_key` 只采纳 `DOWN`（按下）事件，忽略 `UP`/`SYN`；否则第一次按键的抬起会被第二步确认当成第二次按键（实机曾出现“按一次就安装”）。回归模拟：只按一次应取消，按两次才安装。
+- `SKIPUNZIP=0` 时安装器已解压到 `MODPATH`，不要再重复 `unzip`；仅在缺 `module.prop` 的异常环境兜底一次。
+- 只发布 arm64：安装器用 `$ARCH`（缺失时跳过）门控，非 arm64 直接失败。
 - 安装器交互文案走 `T` / `L` 双语辅助函数，语言探测顺序与 `i18n.go` 保持一致；不要把逻辑改动混进文案替换。
 - 安装器只给 `bin/batteryd` 设权限，**不要给 `webroot` 加 chmod/set_perm**。
 
@@ -140,10 +145,10 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 | 路径 | 用途 |
 | :-- | :-- |
-| `cmd/batteryd/` | Go daemon：采样、结算、容量估计、SQLite、description、`daemon` / `once` / `json` / `history` 子命令 |
+| `cmd/batteryd/` | Go daemon：采样、结算、容量估计、SQLite、description、`daemon` / `once` / `json` / `history` / `diag` 子命令 |
 | `service.sh` | 开机等待 `sys.boot_completed=1` 后启动 daemon |
 | `action.sh` | 管理器 Action：执行一次 `batteryd once`，透传退出码 |
-| `customize.sh` | 刷入交互：语言选择、确认安装、保留旧 `data/`、设置二进制权限 |
+| `customize.sh` | 刷入交互：两步按键（语言/确认，应用内与恢复模式一致）、保留旧 `data/`、设置二进制权限 |
 | `webui/` | WebUI 源码：`index.html`、`public/boot.js`、`src/main.jsx` / `useDocPolling.js` / `useUiPrefs.js` / `i18n` / `core` / `charts` / `ui/` / `history/` / `assets/icons/` / `app.css` |
 | `webui/public/` | 构建时原样复制的静态文件：`boot.js` |
 | `webui/src/assets/icons/` | 静态 SVG 图标（导航、刷新），CSS mask 引用，构建时输出为独立文件 |
@@ -166,7 +171,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 ### 取数协议
 
-- 通过管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名)` 调用固定命令：`/data/adb/modules/CRecordEvolution/bin/batteryd json`、`... once` 和 `... history`。
+- 通过管理器官方 cbName 协议 `exec(cmd, '{}', 回调函数名)` 调用固定命令：`/data/adb/modules/CRecordEvolution/bin/batteryd json`、`... once`、`... history` 和 `... diag`。`diag` 只输出短文本（≤1800 字符），内容为设备型号/系统版本/root 管理器/电池节点/校准与最近会话摘要，外加最近一次校准或口径裁决的 detail（≤160 字，带 `(Nd)` 时效）与最后采样时间；日志按高价值关键词优先、启动行去重。**不得加入序列号、IMEI、MAC、账号等唯一标识**；所有 `getprop` 必须走 `diagAllowedProps` 白名单（仅 manufacturer/model/device/release/sdk/abi），白名单外的 key 直接返回空、不执行命令，新增字段前先确认不是设备唯一标识。WebUI 设置页「复制诊断」按钮执行它并写入剪贴板（失败时回退为可长按选择的只读文本框）。
 - 历史页使用 `history --days 7|30|90 --limit 20 --type all|charge|discharge [--before TS]`：服务端在范围内合并充电/放电事件，按时间倒序游标分页，并返回范围内摘要与趋势点；`json` 命令保持原样，仅供概览/设置使用。
 - 有 15s 超时和 `ksu` → `APatch`/`apatch` 的宿主级联回退；普通浏览器没有 `ksu` 时显示 gate 页。
 - 命令必须是常量或由固定模板拼接；`history` 的参数只接受数字与固定枚举，不要把用户输入、远端数据或任意字符串拼进 shell 命令。
@@ -183,7 +188,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - 概览：健康度主卡、容量/循环/估算/内阻/趋势/可信度、估算趋势图。
 - 历史：摘要统计；`记录` 视图按日期分组的时间轴（充电/放电，范围与类型筛选合并为一行 chip，7/30/90 天 + 全部/充电/放电，分页“加载更早”）；`趋势` 视图的容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图，小图点按展开；记录详情渐进展开。
-- 设置：外观（主题/语言/底栏）、手动刷新、数据信息、关于。
+- 设置：外观（主题/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`；末尾附「复制诊断」按钮）、关于（品牌卡 + 版本/通道/许可/第三方信息，版本来自 JSON 顶层 `version`）。
 - 底栏支持悬浮胶囊 / 传统贴底（`cre_barmode`，默认悬浮）；主题 `cre_theme` 为 `auto|light|dark`；语言 `cre_lang`。
 - 切页保存/恢复滚动位置；设置页隐藏顶部刷新按钮，换成页内“立即刷新”。
 
@@ -197,7 +202,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 采样与会话结算
 
 - 采样间隔：充电期 15s，其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，待电流停歇去抖后结算。
-- 会话电量双口径：电量计差分（`charge_counter`，结算估算首选）与电流积分（`avgI`、吞吐、样本口径）。两者相差 3 倍以上判刻度/单位异常，回退积分并写入 `counter_scale` 事件。
+- 会话电量双口径：电量计差分（`charge_counter`，结算估算首选）与电流积分（`avgI`、吞吐、样本口径）。两者相差 3 倍以上时用容量参考值（设计容量，缺失时用 `charge_full`）做 0.5~1.5 倍窗口裁决：只有「电量计隐含容量在窗内、积分在窗外」才保留电量计，其余情况维持旧行为（回退积分）；3 倍失配导致裁决时写 `counter_scale` 事件（差 3 倍以内不写）。
 - `chargeSuppressed`：满电后系统高负载时内核仍报 Charging 且电流为正，但端电压相对充电峰值回落超过 `30mV × 电芯数`，视为充电器直供系统的假电流，不计入会话电量与循环吞吐；该门控只作用于电流积分口径。
 
 ### 容量估计、校准与趋势
@@ -212,6 +217,9 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - `NormCurrentUAWithFull` 以 `charge_full` 的**量纲**判别电流单位：≥100000 只可能是 µAh，同驱动 `current_now` 已是 µA 直通；以 mAh 计则 ×1000；无锚点退化为幅值启发式；最后用 25A 物理上界兜底。
 - **不要拿 `charge_full` 当幅值阈值**：曾按 `|I| < charge_full/10` 判成 mA，把 0.6A 以下的真实 µA 读数整批 ×1000，污染采样、积分和校准。
+- `current_now` 的量纲可能随内核/厂商不同：一加 Ace 3 等欧加系机型报 mA，而同一节点的 `charge_counter` / `charge_full` 报 µAh。旁证：公开的 OnePlusOSS SM8550/Ace 3 分支 `oplus_charger.c` 对 `CHARGE_FULL`（mAh→µAh）、`VOLTAGE_NOW`（mV→µV）都做了 ×1000 换算，`CURRENT_NOW` 却直接透传 gauge 的 mA 读数；同类 gauge 驱动的量程常量（如 `CURR_MAX 25000`）也按 mA 语义。生产路径一律走 `Pipeline.currentUA`（内部 `normalizeCurrentUA`：已学习刻度优先，未校准时退回 `NormCurrentUAWithFull` 锚点），**禁止把原始读数当 µA 直接积分**，也禁止只凭 `charge_full` 的量纲就断言电流单位。
+- 运行时自校准：充电会话结算时用「电量计差分电量 vs 会话期原始电流读数积分（rawUAs）」反推 µA / 原始单位；**不能用已被当前刻度/锚点缩放过的 `accUAs` 反推**，否则已学 ×1000 会在下一会话被算成 ×1、与真实刻度来回震荡（回归断言见 `TestIssue6MilliampCurrentCalibration` 的第二会话段）。比值须落在 10 的整数次幂（10⁻³~10³）±0.15 decade 内才采信（且仅在结算已采信电量计口径后学习）。采信值写 kv `cur_scale`，之后所有 `current_now` 读数按该刻度归一；事件 `cur_cal` 记录刻度落盘/变化，`cur_cal_fail` 记录写库失败，`counter_scale` 仍记录结算时的口径裁决。允许覆盖旧刻度：系统 OTA 改变 `current_now` 单位后，下一个采信会话会自动纠正，不会永久卡住。
+- `sessions.cc` 是会话期电量计差分电量（µAh，新增列）：存结算时口径裁决采信的电量计增量——即使该会话随后因温度/涨幅等门控被拒也照存（历史页据此展示真实量级的估算），`0` 表示无电量计或裁决未采信（回退积分）。历史页「估算」优先由它折算，缺 `cc` 时才回退电流积分。`sessions.ua` 仍是积分口径（µA·s），两者不要混用。
 - `NormTempC` 截断 `[-40, 80]°C`；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时从设备树读 `vivo,bat-capacity-mah`，绝对路径优先。
 - `current_now` 带符号读取（放电为负），其余节点严格非负。
 
@@ -219,7 +227,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - 设备上 Go 的 `time.Now()` 可能返回 UTC（无 tzdata）。面向用户的时间戳一律走 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → UTC），内嵌 `time/tzdata`；Pipeline 注入时钟同样传 `localNow`。
 - SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；90 天清理。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
-- 旧库升级会做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000，kv 标记 `samples_unit_repair`；给 `samples` 补 `cc` 列。
+- 旧库升级会做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000，kv 标记 `samples_unit_repair`；给 `samples` 补 `cc` 列，给 `sessions` 补 `cc` 列（会话期电量计差分 µAh，旧行默认 0）。
 - `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
 
 ### 关键数值与口径（勿随意改）
@@ -235,6 +243,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
 - 放电会话只在 `status=Discharging` 时累计；旁路供电机型（status=Full 但实际放电）会漏记。
 - 放电隐含容量以“显示掉幅”为分母，顶部区间显示被压缩，绝对值偏高，只作观测，不进估算通道。
+- 电流刻度自校准在充电会话结算时才发生：刻度落盘前的第一个会话，`avgI`、电流积分口径以及该会话的采样电流（内阻/CCCT/ICA 的输入）仍可能带错误量纲，刻度生效后恢复正常；没有 `charge_counter` 的机型缺少标尺，无法自校准，只能沿用 `charge_full` 量纲初判（有 `charge_counter`、没有 `charge_full` 的机型仍可校准：rawUAs 不依赖锚点）。
 
 ## 安全注意事项
 
