@@ -78,7 +78,7 @@ func localNow() time.Time {
 var channel = "stable"
 
 const (
-	usageText = "用法: batteryd <daemon|once|json|history> [options]\n"
+	usageText = "用法: batteryd <daemon|once|json|history|diag> [options]\n"
 
 	refreshRetryMax  = 10
 	refreshRetryWait = 30 * time.Second
@@ -117,6 +117,8 @@ func main() {
 		err = runJson()
 	case "history":
 		err = runHistory(os.Args[2:])
+	case "diag":
+		err = runDiag()
 	default:
 		printUsage(os.Stderr)
 		os.Exit(2)
@@ -131,6 +133,7 @@ func main() {
 type app struct {
 	moddir    string
 	propPath  string
+	version   string
 	fs        SysFS
 	st        *Store
 	est       Estimator
@@ -139,6 +142,32 @@ type app struct {
 
 	nodePaths    map[string]string
 	lastPruneDay int64
+}
+
+// readModuleVersion 从 module.prop 读取版本号，返回 "version(versionCode)" 形式；
+// 读不到/缺 version 时返回错误（调用方按未知版本降级）。
+func readModuleVersion(propPath string) (string, error) {
+	data, err := os.ReadFile(propPath)
+	if err != nil {
+		return "", err
+	}
+	version, code := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "version="):
+			version = strings.TrimSpace(strings.TrimPrefix(line, "version="))
+		case strings.HasPrefix(line, "versionCode="):
+			code = strings.TrimSpace(strings.TrimPrefix(line, "versionCode="))
+		}
+	}
+	if version == "" {
+		return "", fmt.Errorf("module.prop 缺少 version")
+	}
+	if code != "" {
+		return version + "(" + code + ")", nil
+	}
+	return version, nil
 }
 
 func deriveModdir(exePath string) string {
@@ -202,9 +231,12 @@ func newApp() (*app, error) {
 	if channel == "ml" {
 		est = NewLearning(st, cellCount)
 	}
+	propPath := filepath.Join(moddir, "module.prop")
+	version, _ := readModuleVersion(propPath)
 	return &app{
 		moddir:    moddir,
-		propPath:  filepath.Join(moddir, "module.prop"),
+		propPath:  propPath,
+		version:   version,
 		fs:        fs,
 		st:        st,
 		est:       est,
@@ -345,6 +377,7 @@ func (a *app) refreshPruned() error {
 func (a *app) stats() (Design, Snapshot, error) {
 	d := a.basics()
 	snap := Snapshot{
+		Version:    a.version,
 		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUAh),
 		RMoh:       a.rMoh(),
 	}
@@ -355,6 +388,8 @@ func (a *app) stats() (Design, Snapshot, error) {
 	}
 	snap.Quality = CapacityQuality(kvInt(a.st, kvKeyEmaUAh),
 		kvInt(a.st, kvMidImpliedUAh), kvInt(a.st, kvDisImpliedUAh), fullUAh)
+	// 电流刻度校准诊断：采样节点、学习刻度、当前读数原始/归一值（设置页展示）
+	snap.Calib = a.calibInfo()
 	if ema, samples, ok := a.estimate(); ok {
 		snap.EstUAh = &ema
 		snap.Samples = samples
@@ -384,6 +419,46 @@ func (a *app) stats() (Design, Snapshot, error) {
 		}
 	}
 	return d, snap, nil
+}
+
+// calibInfo 组装电流刻度校准诊断：采样节点路径、学习刻度（kv cur_scale）、
+// 单位标签与当前读数的原始/归一值，供 WebUI 设置页展示。
+// 节点全缺失且未校准时返回 nil（JSON 省略 calib）。
+func (a *app) calibInfo() *CalibInfo {
+	info := &CalibInfo{}
+	curPath, curErr := a.nodePath("current_now")
+	if curErr == nil {
+		info.CurrentNode = curPath
+	}
+	if p, err := a.nodePath("charge_counter"); err == nil {
+		info.CounterNode = p
+	}
+	scale := 0.0
+	if txt, ok := a.st.KVGet(kvCurrentScale); ok {
+		scale = parseCurrentScale(txt)
+	}
+	if scale > 0 {
+		info.Scale = &scale
+	}
+	fullUAh := int64(0)
+	if v, err := a.readIntNode("charge_full"); err == nil {
+		fullUAh = v
+	}
+	if anchor := anchorScaleUA(fullUAh); anchor > 0 {
+		info.AnchorScale = &anchor
+	}
+	info.Unit = currentUnitLabel(fullUAh, scale)
+	if curErr == nil {
+		if raw, err := a.fs.ReadIntSigned(curPath); err == nil {
+			ua := normalizeCurrentUA(raw, fullUAh, scale)
+			info.Raw = &raw
+			info.UA = &ua
+		}
+	}
+	if info.CurrentNode == "" && info.CounterNode == "" && info.Scale == nil {
+		return nil
+	}
+	return info
 }
 
 func (a *app) estimate() (int64, int64, bool) {

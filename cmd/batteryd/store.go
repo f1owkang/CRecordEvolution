@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL, -- 会话起止（Unix 秒）
   start_cap INTEGER, end_cap INTEGER,                 -- 起止显示电量（%）
   ua INTEGER, avg_i INTEGER, c_rate REAL,             -- ua=电流积分累计电量（µA·s，非电流）；avg_i=平均电流（µA）；c_rate=倍率
+  cc INTEGER NOT NULL DEFAULT 0,                      -- cc=会话期电量计差分电量（µAh，0=无电量计/未采信）
   temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER, -- 温度（℃）
   v_start INTEGER, duration INTEGER,                  -- v_start=起始电压（µV）；duration=时长（秒）
   valid INTEGER NOT NULL,                             -- 0/1
@@ -120,7 +122,7 @@ func scanSession(rows *sql.Rows) (Session, error) {
 	var v int64
 	var reason sql.NullString
 	if err := rows.Scan(&se.StartTs, &se.EndTs, &se.StartCap, &se.EndCap,
-		&se.AccUAs, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
+		&se.AccUAs, &se.CounterUAh, &se.AvgI, &se.CRate, &se.TempAvg, &v, &reason); err != nil {
 		return Session{}, err
 	}
 	se.Valid = v == 1
@@ -131,11 +133,13 @@ func scanSession(rows *sql.Rows) (Session, error) {
 // Store 封装 SQLite 引擎：schema 初始化、幂等迁移与各表读写。
 type Store struct{ db *sql.DB }
 
-// Session 为充电会话的落库/查询结构：AccUAs 为累计电量（µA·s），AvgI 为平均电流（µA）。
+// Session 为充电会话的落库/查询结构：AccUAs 为电流积分累计电量（µA·s），
+// CounterUAh 为会话期电量计差分电量（µAh，0=无电量计或未采信），AvgI 为平均电流（µA）。
 type Session struct {
 	StartTs, EndTs            int64
 	StartCap, EndCap          int64
-	AccUAs, AvgI              int64
+	AccUAs, CounterUAh        int64
+	AvgI                      int64
 	CRate                     float64
 	TempMin, TempMax, TempAvg int64
 	VStart, Duration          int64
@@ -165,6 +169,11 @@ func OpenStore(path string) (*Store, error) {
 	}
 	// 旧库在线迁移：sessions 表补 invalid_reason 列（新库 DDL 已含，重复执行幂等）
 	if err := migrateSessionsReason(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// sessions 表补 cc 列（会话期电量计差分 µAh，历史行默认 0）
+	if err := migrateSessionsCounter(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -223,6 +232,17 @@ func migrateSessionsReason(db *sql.DB) error {
 		return err
 	}
 	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN invalid_reason TEXT`)
+	return err
+}
+
+// migrateSessionsCounter 检查 sessions 表是否缺 cc 列，缺则补列；已存在时不动（幂等）。
+// cc 存会话期电量计差分电量（µAh），补列后的历史行 cc=0，展示时回退电流积分口径。
+func migrateSessionsCounter(db *sql.DB) error {
+	has, err := hasColumn(db, "sessions", "cc")
+	if err != nil || has {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN cc INTEGER NOT NULL DEFAULT 0`)
 	return err
 }
 
@@ -291,10 +311,10 @@ func boolToInt(b bool) int64 {
 // InsertSession 写入一条充电会话，返回自增 id。
 func (s *Store) InsertSession(sess Session) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO sessions(
-		start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
+		start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
 		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sess.StartTs, sess.EndTs, sess.StartCap, sess.EndCap, sess.AccUAs, sess.AvgI, sess.CRate,
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		sess.StartTs, sess.EndTs, sess.StartCap, sess.EndCap, sess.AccUAs, sess.CounterUAh, sess.AvgI, sess.CRate,
 		sess.TempMin, sess.TempMax, sess.TempAvg, sess.VStart, sess.Duration, boolToInt(sess.Valid),
 		sql.NullString{String: sess.InvalidReason, Valid: sess.InvalidReason != ""})
 	if err != nil {
@@ -349,7 +369,7 @@ type RestPoint struct {
 
 // RecentSessions 取最近 limit 条充电会话（按 end_ts 倒序）。
 func (s *Store) RecentSessions(limit int) ([]Session, error) {
-	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
 		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, scanSession, limit)
 }
 
@@ -368,6 +388,57 @@ func (s *Store) InsertEvent(kind, detail string) error {
 	_, err := s.db.Exec(`INSERT INTO events(ts, kind, detail) VALUES(?, ?, ?)`,
 		time.Now().Unix(), kind, detail)
 	return err
+}
+
+// EventCountsSince 按 kind 统计 ts >= since 的事件数，供诊断摘要展示（不含
+// detail 正文，避免把可能较长的排障明细带进粘贴文本）。
+func (s *Store) EventCountsSince(since int64) (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT kind, COUNT(*) FROM events WHERE ts >= ? GROUP BY kind`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return nil, err
+		}
+		out[kind] = n
+	}
+	return out, rows.Err()
+}
+
+// LatestSampleTS 返回 samples 表最新样本时间戳；无样本返回 0。诊断用它判断
+// 数据是否新鲜（daemon 是否还在采样）。
+func (s *Store) LatestSampleTS() (int64, error) {
+	var ts int64
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(ts), 0) FROM samples`).Scan(&ts)
+	return ts, err
+}
+
+// LatestEvent 返回指定 kind 中最新一条事件（kind/detail/ts）。诊断只带这一条
+// detail 用于说明最近一次校准/裁决/互检结论；detail 由调用方清洗并限长。
+func (s *Store) LatestEvent(kinds []string) (kind, detail string, ts int64, ok bool, err error) {
+	if len(kinds) == 0 {
+		return "", "", 0, false, nil
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ",")
+	args := make([]any, 0, len(kinds))
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	row := s.db.QueryRow(`SELECT kind, COALESCE(detail,''), COALESCE(ts,0)
+		FROM events WHERE kind IN (`+ph+`) ORDER BY ts DESC LIMIT 1`, args...)
+	err = row.Scan(&kind, &detail, &ts)
+	if err == sql.ErrNoRows {
+		return "", "", 0, false, nil
+	}
+	if err != nil {
+		return "", "", 0, false, err
+	}
+	return kind, detail, ts, true, nil
 }
 
 // InsertSample 写入一条充电样本。ts 为秒级主键：60s tick 下同一秒只写一次、
@@ -445,7 +516,7 @@ func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
 
 // SessionsSince 返回 end_ts >= since 的全部充电会话（新→旧）。
 func (s *Store) SessionsSince(since int64) ([]Session, error) {
-	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,c_rate,
+	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
 		temp_avg,valid,invalid_reason FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC`,
 		scanSession, since)
 }

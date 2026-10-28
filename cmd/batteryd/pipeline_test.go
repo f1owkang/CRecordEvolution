@@ -68,9 +68,9 @@ func onlySession(t *testing.T, st *Store) Session {
 	t.Helper()
 	var s Session
 	var reason sql.NullString
-	err := st.db.QueryRow(`SELECT start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
+	err := st.db.QueryRow(`SELECT start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
 		temp_min,temp_max,temp_avg,v_start,duration,valid,invalid_reason FROM sessions ORDER BY id`).Scan(
-		&s.StartTs, &s.EndTs, &s.StartCap, &s.EndCap, &s.AccUAs, &s.AvgI, &s.CRate,
+		&s.StartTs, &s.EndTs, &s.StartCap, &s.EndCap, &s.AccUAs, &s.CounterUAh, &s.AvgI, &s.CRate,
 		&s.TempMin, &s.TempMax, &s.TempAvg, &s.VStart, &s.Duration, &s.Valid, &reason)
 	if err != nil {
 		t.Fatalf("读取会话行: %v", err)

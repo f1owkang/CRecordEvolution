@@ -234,3 +234,46 @@ func TestRenderJSONDischargeEntries(t *testing.T) {
 		t.Fatalf("空放电切片应整体省略: %s", b2)
 	}
 }
+
+// calib 是顶层诊断对象（设置页「采样节点 / 电流刻度」消费）：字段齐全时
+// 全量输出，Snapshot.Calib 为 nil 时整体省略。
+func TestRenderJSONCalibInfo(t *testing.T) {
+	scale := 1000.0
+	raw, ua := int64(3000), int64(3_000_000)
+	snap := Snapshot{Calib: &CalibInfo{
+		CurrentNode: "/sys/class/power_supply/battery/current_now",
+		CounterNode: "/sys/class/power_supply/battery/charge_counter",
+		Scale:       &scale, Unit: "ma", Raw: &raw, UA: &ua,
+	}}
+	b, err := RenderJSON("stable", Design{}, snap, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"calib":{"current_node":"/sys/class/power_supply/battery/current_now",` +
+		`"counter_node":"/sys/class/power_supply/battery/charge_counter",` +
+		`"current_scale":1000,"current_unit":"ma","raw_current":3000,"current_ua":3000000}`
+	if !strings.Contains(string(b), want) {
+		t.Fatalf("calib 序列化不符, want 含 %s, got %s", want, b)
+	}
+	// 节点名含 / 与引号无需转义，但字段缺失时必须整段省略
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if strings.Contains(string(b2), `"calib"`) {
+		t.Fatalf("无诊断数据时不应输出 calib: %s", b2)
+	}
+}
+
+// version 是 WebUI 关于页展示的模块版本（module.prop）；读不到时省略。
+func TestRenderJSONVersion(t *testing.T) {
+	b, err := RenderJSON("stable", Design{}, Snapshot{Version: "1.3.6(35)"},
+		nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version":"1.3.6(35)"`) {
+		t.Fatalf("缺少 version 字段: %s", b)
+	}
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if strings.Contains(string(b2), `"version"`) {
+		t.Fatalf("版本缺失时应省略 version: %s", b2)
+	}
+}

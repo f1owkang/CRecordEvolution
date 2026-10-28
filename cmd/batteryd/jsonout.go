@@ -52,9 +52,27 @@ type icaEntry struct {
 	PeakHRel *float64 `json:"peak_h_rel,omitempty"`
 }
 
+// CalibInfo 是电流刻度校准与采样节点的诊断出口（设置页展示）。
+// 字段缺失即省略：未校准没有 Scale，读不到节点没有路径，读不到电流没有读数。
+// Unit 取值 ua（按量纲初判 µA）/ ma（按量纲初判 mA）/ auto（无 ×1/×1000 初判，
+// 或学习刻度不是 10 的整数次幂；仅作诊断展示，不参与归一计算）。
+type CalibInfo struct {
+	CurrentNode string   `json:"current_node,omitempty"`
+	CounterNode string   `json:"counter_node,omitempty"`
+	Scale       *float64 `json:"current_scale,omitempty"`
+	// AnchorScale 为未校准时的 charge_full 量纲锚点（1/1000），仅诊断展示，
+	// 用来说明 auto 单位是按哪一侧推断的。
+	AnchorScale *float64 `json:"anchor_scale,omitempty"`
+	Unit        string   `json:"current_unit,omitempty"`
+	Raw         *int64   `json:"raw_current,omitempty"`
+	UA          *int64   `json:"current_ua,omitempty"`
+}
+
 // jsonDoc 是 `batteryd json` 的输出结构；字段全为指针或 omitempty，缺失即省略。
 type jsonDoc struct {
-	Channel         string   `json:"channel"`
+	Channel string `json:"channel"`
+	// Version 为模块版本（"1.3.6(35)"），WebUI 关于页展示；读不到时省略。
+	Version         string   `json:"version,omitempty"`
 	DesignMah       *int64   `json:"design_mah"`
 	FullMah         *int64   `json:"full_mah"`
 	Cycles          *int64   `json:"cycles"`
@@ -72,7 +90,9 @@ type jsonDoc struct {
 	TrendSpanDay *int64 `json:"trend_span_day,omitempty"`
 	// Quality 通道互检（各路容量口径互相印证）；可用路数 <2 时整体省略，
 	// 旧前端忽略未知字段，缺失即省略纪律不破坏
-	Quality    *Quality       `json:"quality,omitempty"`
+	Quality *Quality `json:"quality,omitempty"`
+	// Calib 电流刻度校准诊断（采样节点 / 学习刻度 / 当前读数）；节点全缺失时省略
+	Calib      *CalibInfo     `json:"calib,omitempty"`
 	Updated    string         `json:"updated"`
 	Recent     []recentEntry  `json:"recent"`
 	Sessions   []sessionEntry `json:"sessions"`
@@ -119,7 +139,14 @@ func convSession(se Session) sessionEntry {
 	e := sessionEntry{StartTs: se.StartTs, EndTs: se.EndTs,
 		DeltaPct: (se.EndCap - se.StartCap), Valid: se.Valid, InvalidReason: se.InvalidReason}
 	if e.DeltaPct > 0 {
-		mah := se.AccUAs * 100 / (e.DeltaPct * 3_600_000)
+		// 估算优先按会话期电量计差分折算（与结算采信口径一致）；cc=0（无电量计或
+		// 裁决未采信）时回退电流积分，避免展示口径与结算口径不一致。
+		var mah int64
+		if se.CounterUAh > 0 {
+			mah = se.CounterUAh * 100 / (e.DeltaPct * 1000)
+		} else {
+			mah = se.AccUAs * 100 / (e.DeltaPct * 3_600_000)
+		}
 		e.EstMah = &mah
 	}
 	if se.TempAvg > 0 {
@@ -149,6 +176,7 @@ func convDischarge(r DischargeRow) dischargeEntry {
 func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, disch []dischargeEntry, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:         ch,
+		Version:         snap.Version,
 		Samples:         snap.Samples,
 		RMoh:            finitePtr(snap.RMoh),
 		TempC:           finitePtr(snap.TempC),
@@ -180,6 +208,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		doc.EstMah = &mah
 	}
 	doc.Quality = snap.Quality
+	doc.Calib = snap.Calib
 	// estimates 表存 µAh，此处换算为 mAh 展示
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})

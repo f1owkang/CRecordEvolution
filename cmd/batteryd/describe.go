@@ -25,6 +25,8 @@ type Design struct {
 
 // Snapshot 为估算出口快照：EstUAh 为实测满容量（µAh），其余为显示层派生量。
 type Snapshot struct {
+	// Version 为模块版本（"1.3.6(35)"），供 WebUI 关于页展示；读不到时为空。
+	Version    string
 	EstUAh     *int64
 	Samples    int64
 	CycleEquiv float64
@@ -38,6 +40,8 @@ type Snapshot struct {
 
 	// Quality 通道互检结果（各路容量口径互相印证），无从互检时为 nil
 	Quality *Quality
+	// Calib 电流刻度校准诊断（设置页展示），节点全缺失时为 nil
+	Calib *CalibInfo
 }
 
 // BuildDescription 按可用数据逐段组装描述：缺哪个字段就省略哪个段。

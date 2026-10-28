@@ -371,3 +371,108 @@ func TestCCCTRoundtripAndPrune(t *testing.T) {
 		t.Fatalf("清理后 ccct 行数 = %d, want 1", n)
 	}
 }
+
+// sessions.cc 为会话期电量计差分 µAh：InsertSession 写入后必须能由
+// RecentSessions / SessionsSince 原样回读，供历史页按电量计口径显示估算。
+func TestSessionCounterRoundtrip(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	in := Session{StartTs: 1000, EndTs: 2000, StartCap: 20, EndCap: 80,
+		AccUAs: 36_000_000, CounterUAh: 2_500_000, AvgI: 2_000_000, Valid: true}
+	if _, err := s.InsertSession(in); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	for name, rows := range map[string]func() ([]Session, error){
+		"RecentSessions": func() ([]Session, error) { return s.RecentSessions(1) },
+		"SessionsSince":  func() ([]Session, error) { return s.SessionsSince(1) },
+	} {
+		got, err := rows()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(got) != 1 || got[0].CounterUAh != 2_500_000 || got[0].AvgI != 2_000_000 {
+			t.Fatalf("%s 回读 cc/avg_i = %+v, want CounterUAh=2500000 AvgI=2000000", name, got)
+		}
+	}
+}
+
+// 缺 cc 列的库：OpenStore 需幂等补列，历史行默认 0（cc=0 时展示回退电流积分口径）。
+func TestSessionCounterMigration(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "battery.db")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath)+"?_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("打开旧库: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE sessions(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL,
+		start_cap INTEGER, end_cap INTEGER,
+		ua INTEGER, avg_i INTEGER, c_rate REAL,
+		temp_min INTEGER, temp_max INTEGER, temp_avg INTEGER,
+		v_start INTEGER, duration INTEGER,
+		valid INTEGER NOT NULL, invalid_reason TEXT)`); err != nil {
+		t.Fatalf("建旧表: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(start_ts,end_ts,start_cap,end_cap,ua,avg_i,c_rate,
+		temp_min,temp_max,temp_avg,v_start,duration,valid)
+		VALUES(100,200,20,80,1000000,800000,0.2,25,30,27,4000000,1000,1)`); err != nil {
+		t.Fatalf("插旧行: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭旧库: %v", err)
+	}
+
+	s := openTestStore(t, dbPath)
+	defer func() { _ = s.Close() }()
+	got, err := s.RecentSessions(1)
+	if err != nil {
+		t.Fatalf("迁移后 RecentSessions: %v", err)
+	}
+	if len(got) != 1 || !got[0].Valid || got[0].CounterUAh != 0 || got[0].AccUAs != 1_000_000 {
+		t.Fatalf("迁移后旧行 = %+v, want valid 且 cc=0、ua=1000000", got)
+	}
+	// 补列后新写入正常
+	if _, err := s.InsertSession(Session{StartTs: 300, EndTs: 400, StartCap: 20,
+		EndCap: 80, CounterUAh: 2_000_000, Valid: true}); err != nil {
+		t.Fatalf("迁移后 InsertSession: %v", err)
+	}
+	got, err = s.RecentSessions(2)
+	if err != nil {
+		t.Fatalf("RecentSessions(2): %v", err)
+	}
+	if len(got) != 2 || got[0].CounterUAh != 2_000_000 {
+		t.Fatalf("新行 cc 未落库: %+v", got)
+	}
+}
+
+// 诊断依赖的两条查询：最新样本时间（判断数据新鲜度）与最近一条指定 kind 的
+// 事件（带 detail，用于说明最近一次校准/裁决）。
+func TestLatestSampleAndEvent(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	if ts, err := s.LatestSampleTS(); err != nil || ts != 0 {
+		t.Fatalf("空库 LatestSampleTS = (%d,%v), want (0,nil)", ts, err)
+	}
+	if err := s.InsertSample(100, 1_000_000, 4_000_000, 50, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(200, 2_000_000, 4_100_000, 60, 0); err != nil {
+		t.Fatal(err)
+	}
+	if ts, err := s.LatestSampleTS(); err != nil || ts != 200 {
+		t.Fatalf("LatestSampleTS = (%d,%v), want (200,nil)", ts, err)
+	}
+
+	mustExec(t, s, `INSERT INTO events(ts,kind,detail) VALUES
+		(100,'cur_cal','old'),(200,'counter_scale','detail-200'),(300,'tick_error','other')`)
+	kind, detail, ts, ok, err := s.LatestEvent([]string{"cur_cal", "counter_scale"})
+	if err != nil || !ok || kind != "counter_scale" || detail != "detail-200" || ts != 200 {
+		t.Fatalf("LatestEvent = (%q,%q,%d,%v,%v), want (counter_scale,detail-200,200,true,nil)",
+			kind, detail, ts, ok, err)
+	}
+	if _, _, _, ok, err := s.LatestEvent([]string{"missing"}); err != nil || ok {
+		t.Fatalf("无匹配事件应返回 ok=false: (%v,%v)", ok, err)
+	}
+}

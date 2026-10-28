@@ -60,6 +60,9 @@ const (
 	kvSessCounterAccUAh  = "sess_cc_acc"
 	kvSessCounterLastUAh = "sess_cc_last"
 	kvSessCounterTs      = "sess_cc_ts"
+	// kvSessRawUAs 会话期「原始电流读数绝对值 × dt」累计（原始单位·秒），只用于
+	// 反推 µA/原始单位；不能用被当前刻度缩放过的 accUAs 反推（见 currentcal.go）。
+	kvSessRawUAs = "sess_raw_uas"
 )
 
 // plausibleDelta 判「真实电量变化」与「电量计跳变/回修」：用 Δ/Δt 反推电流，
@@ -121,6 +124,10 @@ type sessionState struct {
 	counterLastUAh int64
 	counterTs      int64
 	counterHole    bool
+	// rawUAs 会话期「原始电流读数绝对值 × dt」累计（原始单位·秒），与 accUAs
+	// 同步计入门控（suppressed 拍不计）；自校准只用它反推 µA/原始单位，避免用
+	// 被当前刻度缩放过的 accUAs 反推导致刻度震荡。
+	rawUAs int64
 }
 
 // Pipeline 是采样状态机：每拍读 sysfs、累计会话/放电/吞吐并在状态翻转时结算。
@@ -134,6 +141,10 @@ type Pipeline struct {
 	now       func() time.Time
 
 	nodePaths map[string]string
+
+	// curScale 从电量计差分学习到的电流刻度（µA/原始单位），0=未校准，退回
+	// charge_full 锚点逻辑（见 currentcal.go）。
+	curScale float64
 
 	sess sessionState
 	dis  disState
@@ -200,6 +211,8 @@ func NewPipeline(fs SysFS, st *Store, est Estimator, designUAh int64, cellCount 
 			p.fullUAh = v
 		}
 	}
+	// 恢复已学习的电流刻度；未校准时 curScale=0，走锚点逻辑
+	p.curScale = parseCurrentScale(kvText(st, kvCurrentScale))
 	p.restoreSession()
 	p.restoreDischarge()
 	return p
@@ -268,6 +281,7 @@ func (p *Pipeline) restoreSession() {
 		counterAccUAh:  kvInt(p.st, kvSessCounterAccUAh),
 		counterLastUAh: kvInt(p.st, kvSessCounterLastUAh),
 		counterTs:      kvInt(p.st, kvSessCounterTs),
+		rawUAs:         kvInt(p.st, kvSessRawUAs),
 		// 电量计增量带上读数时刻一起恢复：重启间隙的增量按 Δ/Δt 反推电流判
 		// 可信后照常计入（物理上合理的长间隙不丢电量）；电量计在开账后才可用
 		// 才算缺口（accumulate 判）。
@@ -301,6 +315,23 @@ func (p *Pipeline) readNodeSigned(name string) (int64, error) {
 		return 0, err
 	}
 	return p.fs.ReadIntSigned(path)
+}
+
+// currentUA 把 current_now 原始读数归一为 µA（保留符号）：优先用从电量计
+// 学习到的刻度，未校准时退回 charge_full 锚点/幅值启发式。所有电流消费方
+// （会话积分、尾段判续、放电样本、静置门控、CCCT/ICA 倍率门控）必须走这里，
+// 不要各自对原始读数做单位推断——current_now 的量纲可能随内核/厂商不同。
+func (p *Pipeline) currentUA(raw int64) int64 {
+	return normalizeCurrentUA(raw, p.fullUAh, p.curScale)
+}
+
+// energyRefUAh 返回容量口径裁决的参考满容量：优先设计容量，缺失时用内核
+// charge_full（电量计自学习值）。两者都缺失时返回 0，裁决退回电流积分。
+func (p *Pipeline) energyRefUAh() int64 {
+	if p.designUAh > 0 {
+		return p.designUAh
+	}
+	return p.fullUAh
 }
 
 // readChargeCounter 读电量计 charge_counter（µAh）。节点确认不存在时置负缓存
@@ -346,10 +377,10 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	// Not charging）：视为充电延续，继续累计并重置去抖。内核电量计报 100%
 	// 时真实充电常还要持续数分钟，等电流停歇再走去抖结算。
 	if status != "Discharging" && p.sess.active {
-		if iUA, flowing := p.tailCurrent(); flowing {
+		if iUA, rawAbs, flowing := p.tailCurrent(); flowing {
 			p.notChargStreak = 0
 			p.logDeb = false
-			return outcome, p.tickTailCharge(iUA)
+			return outcome, p.tickTailCharge(iUA, rawAbs)
 		}
 	}
 	p.notChargStreak++
@@ -406,22 +437,19 @@ func (p *Pipeline) chargeSuppressed(capVal, vUV int64) bool {
 	return sup
 }
 
-// tailCurrent 读带符号电流并判别是否仍在充电方向灌入。单位判别在幅值上做
-// （NormCurrentUAWithFull 的 mA/µA 启发式对负值会误乘 1000），再按原始符号回填；
-// 放电（负值）与读取失败均返回未灌入，走常规去抖路径。
-func (p *Pipeline) tailCurrent() (int64, bool) {
+// tailCurrent 读带符号电流并判别是否仍在充电方向灌入。单位归一统一走
+// currentUA（已学习刻度优先），再按原始符号回填；返回归一后电流与原始读数
+// 绝对值（后者供会话自校准累计）。放电（负值）与读取失败均返回未灌入。
+func (p *Pipeline) tailCurrent() (int64, int64, bool) {
 	iRaw, err := p.readNodeSigned("current_now")
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	iUA := NormCurrentUAWithFull(absI64(iRaw), p.fullUAh)
-	if iRaw < 0 {
-		iUA = -iUA
-	}
+	iUA := p.currentUA(iRaw)
 	if iUA > tailQuietUA {
-		return iUA, true
+		return iUA, absI64(iRaw), true
 	}
-	return 0, false
+	return 0, 0, false
 }
 
 func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
@@ -433,8 +461,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	if err != nil {
 		return &SysfsTransient{Err: err}
 	}
-	iAbs := absI64(iRaw)
-	iUA := absI64(NormCurrentUAWithFull(iAbs, p.fullUAh))
+	iUA := absI64(p.currentUA(iRaw))
 
 	// 电压先读：既用于内阻/样本，也用于「满电后假充电电流」门控（见
 	// chargeSuppressed）。峰值的建立与判定都依赖本拍电压。
@@ -491,12 +518,21 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 	}
 	// 显示 100% 不等于充电完成（内核报数早于真实充满）：不在此封账，CV 尾段
 	// 由 Tick 的 tailCurrent 路径继续累计，待电流停歇后走去抖结算。
-	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed, counterUAh)
+	return p.accumulate(tickReading{
+		iUA:        iUA,
+		rawAbs:     absI64(iRaw),
+		capVal:     capVal,
+		tempC:      tempC,
+		haveTemp:   haveTemp,
+		suppressed: suppressed,
+		counterUAh: counterUAh,
+	})
 }
 
 // tickTailCharge 非充电状态下仍在灌电的一拍（CV 尾段）：仅对已活跃会话累计，
 // 不开新会话（满电插入不开会话）、不做内阻回归（恒压段 dV/dI 语义不成立）。
-func (p *Pipeline) tickTailCharge(iUA int64) error {
+// rawAbs 为原始电流读数绝对值，供自校准累计原始读数·秒。
+func (p *Pipeline) tickTailCharge(iUA, rawAbs int64) error {
 	capVal, err := p.readNode("capacity")
 	if err != nil {
 		return &SysfsTransient{Err: err}
@@ -525,66 +561,102 @@ func (p *Pipeline) tickTailCharge(iUA int64) error {
 		tempC = NormTempC(tRaw)
 		haveTemp = true
 	}
-	return p.accumulate(iUA, capVal, tempC, haveTemp, suppressed, counterUAh)
+	return p.accumulate(tickReading{
+		iUA:        iUA,
+		rawAbs:     rawAbs,
+		capVal:     capVal,
+		tempC:      tempC,
+		haveTemp:   haveTemp,
+		suppressed: suppressed,
+		counterUAh: counterUAh,
+	})
 }
 
-// accumulate 向活跃会话与全局累计充电量（Charging 拍与 CV 尾段拍共用）；
-// 调用方保证会话已开启。counterUAh 为本拍电量计读数（µAh，0=未采到）。
-func (p *Pipeline) accumulate(iUA, capVal int64, tempC float64, haveTemp bool, suppressed bool, counterUAh int64) error {
+// tickReading 归集一拍充电读数。字段在调用点具名传入：iUA 与 rawAbs 都是
+// int64 且相邻，位置参数写反了编译器不会报错，具名字段可消除这类隐患。
+type tickReading struct {
+	iUA        int64   // 归一到 µA 的电流（已按已学刻度换算）
+	rawAbs     int64   // current_now 原始读数绝对值，仅用于电流刻度自校准
+	capVal     int64   // 显示电量（%）
+	tempC      float64 // 电池温度（℃）
+	haveTemp   bool    // 本拍是否读到温度
+	suppressed bool    // 满电后电压回落判定的假电流：不计电量
+	counterUAh int64   // 本拍电量计读数（µAh，0=未采到）
+}
+
+// accumulate 向活跃会话累计一拍充电读数（Charging 拍与 CV 尾段拍共用）；
+// 调用方保证会话已开启。
+func (p *Pipeline) accumulate(rd tickReading) error {
 	s := &p.sess
-	// 电量按真实时间差累积：daemon 充电期 15s/其余 60s 变步长，固定
-	// tickSeconds 会高估充电期电量 4 倍。dt 上限 90s：覆盖步长切换间隙，
-	// 同时把去抖期回充拍的高估（回充电流按去抖整段时长计）限制在一拍内。
-	dt := tickSeconds
 	now := p.now().Unix()
+	dt := p.tickDelta(now)
 	// firstTick：会话开账拍（含从未累计过的首拍）；重启续记后 lastTickTs 已恢复
 	// 非 0，故不误判为开账拍，电量计基线由 restoreSession 带回。
 	firstTick := s.lastTickTs == 0
-	if s.lastTickTs > 0 {
-		if d := now - s.lastTickTs; d >= 1 && d <= 90 {
+	s.lastTickTs = now
+	p.accumulateCounter(rd.counterUAh, now, firstTick)
+	// suppressed：满电后电压回落的假充电电流不计入电量（时间基线照常推进，
+	// 避免下一拍 dt 跨越被丢弃的区间）
+	if !rd.suppressed {
+		s.accUAs += rd.iUA * dt
+		s.rawUAs += rd.rawAbs * dt
+		s.ticks++
+	}
+	s.lastCap = rd.capVal
+	if rd.haveTemp {
+		p.accumulateTemp(rd.tempC)
+	}
+	return p.persistSession()
+}
+
+// tickDelta 本拍实际间隔（秒）：daemon 充电期 15s、其余 60s 变步长，固定
+// tickSeconds 会把充电期电量高估数倍；上限 90s 覆盖步长切换间隙，同时把去抖期
+// 回充拍按整段时长计的高估限制在一拍内。
+func (p *Pipeline) tickDelta(now int64) int64 {
+	dt := tickSeconds
+	if last := p.sess.lastTickTs; last > 0 {
+		if d := now - last; d >= 1 && d <= 90 {
 			dt = d
 		}
 	}
-	s.lastTickTs = now
-	// 电量计增量累计：只跳过物理不可能的跳变（回修/复位），零与负增量照记，
-	// 长间隙的大增量也照记（Δ/Δt 反推电流合理）
-	if counterUAh > 0 {
-		if s.counterLastUAh == 0 {
-			s.counterLastUAh = counterUAh
-			if !firstTick {
-				s.counterHole = true // 电量计在开账后才可用：增量只覆盖部分区间
-			}
-		} else {
-			if d := counterUAh - s.counterLastUAh; plausibleDelta(d, now-s.counterTs) {
-				s.counterAccUAh += d
-			}
-			s.counterLastUAh = counterUAh
-		}
-		s.counterTs = now
+	return dt
+}
+
+// accumulateCounter 累计本拍电量计增量：只跳过物理不可能的跳变（回修/复位），
+// 零与负增量照记，长间隙的大增量也照记（Δ/Δt 反推电流仍合理）。
+func (p *Pipeline) accumulateCounter(counterUAh, now int64, firstTick bool) {
+	s := &p.sess
+	if counterUAh <= 0 {
+		return
 	}
-	// suppressed：满电后电压回落的假充电电流不计入电量（时间基线照常推进，
-	// 避免下一拍 dt 跨越被丢弃的区间）
-	if !suppressed {
-		s.accUAs += iUA * dt
-		s.ticks++
-	}
-	s.lastCap = capVal
-	if haveTemp {
-		ti := int64(tempC)
-		if s.tempN == 0 || ti < s.tempMin {
-			if s.tempN == 0 {
-				s.tempMin, s.tempMax = ti, ti
-			} else {
-				s.tempMin = ti
-			}
+	if s.counterLastUAh == 0 {
+		s.counterLastUAh = counterUAh
+		if !firstTick {
+			s.counterHole = true // 电量计在开账后才可用：增量只覆盖部分区间
 		}
-		if ti > s.tempMax {
-			s.tempMax = ti
+	} else {
+		if d := counterUAh - s.counterLastUAh; plausibleDelta(d, now-s.counterTs) {
+			s.counterAccUAh += d
 		}
-		s.tempSum += tempC
-		s.tempN++
+		s.counterLastUAh = counterUAh
 	}
-	return p.persistSession()
+	s.counterTs = now
+}
+
+// accumulateTemp 累计会话期温度的 min/max/均值三统计。
+func (p *Pipeline) accumulateTemp(tempC float64) {
+	s := &p.sess
+	ti := int64(tempC)
+	if s.tempN == 0 {
+		s.tempMin, s.tempMax = ti, ti
+	} else if ti < s.tempMin {
+		s.tempMin = ti
+	}
+	if ti > s.tempMax {
+		s.tempMax = ti
+	}
+	s.tempSum += tempC
+	s.tempN++
 }
 
 // chargeThroughput 全局充电吞吐累计（循环当量口径）：独立于会话生命周期，
@@ -627,6 +699,7 @@ func (p *Pipeline) persistSession() error {
 		{kvSessCounterAccUAh, strconv.FormatInt(s.counterAccUAh, 10)},
 		{kvSessCounterLastUAh, strconv.FormatInt(s.counterLastUAh, 10)},
 		{kvSessCounterTs, strconv.FormatInt(s.counterTs, 10)},
+		{kvSessRawUAs, strconv.FormatInt(s.rawUAs, 10)},
 	}
 	for _, it := range sets {
 		if err := p.st.KVSet(it.key, it.val); err != nil {
@@ -641,21 +714,22 @@ func (p *Pipeline) resetSession() error {
 	return p.st.KVSet(kvSessActive, "0")
 }
 
+// settle 结算一个已结束的充电会话：先裁决采信哪一路电量口径，再把会话交给
+// 估算器落库，最后跑中段校准/特征采集/互检等旁路。
 func (p *Pipeline) settle() error {
 	s := &p.sess
-	// 结算开始即置会话为不活跃：若进程在此之后、写库完成前被杀，
-	// 重启后不会重复结算（最多丢失本次会话，绝不产生重复行）。
+	// 结算开始即置会话为不活跃：若进程在此之后、写库完成前被杀，重启后不会
+	// 重复结算（最多丢失本次会话，绝不产生重复行）。
 	if err := p.st.KVSet(kvSessActive, "0"); err != nil {
 		return &SettleError{Err: err}
 	}
-	// duration 用墙钟差：变步长采样下拍数×固定秒数不再成立；墙钟口径
-	// 同时覆盖浮充/去抖期，avgI 口径随之更贴近真实平均电流。
+	// duration 用墙钟差：变步长采样下拍数×固定秒数不再成立；墙钟口径同时覆盖
+	// 浮充/去抖期，avgI 口径随之更贴近真实平均电流。
 	duration := p.now().Unix() - s.startTs
-	var avgI int64
+	avgI := int64(0)
 	if duration > 0 {
 		avgI = s.accUAs / duration
 	}
-	// dur 供下方结算日志复用（只做格式化，不参与口径计算）。
 	dur := (time.Duration(duration) * time.Second).Truncate(time.Second)
 	row := Session{
 		StartTs:  s.startTs,
@@ -672,51 +746,91 @@ func (p *Pipeline) settle() error {
 		Duration: duration,
 		Valid:    false,
 	}
-	// 结算口径：电量计增量累计（counterAccUAh）优先——与放电侧、内核 charge_full 同源，
-	// 免疫 current_now 刻度偏差与满电假电流。
-	sr := SettledSession{Session: row, AccUAs: s.accUAs, CounterUAh: s.counterAccUAh, DesignUAh: p.designUAh}
-	counterSrc := "电量计"
-	// 口径校验：电量计在开账后才可用 ⇒ 增量只覆盖部分区间，按覆盖率反推会偏低，
-	// 回退电流积分口径。
-	if s.counterHole {
-		if sr.CounterUAh > 0 {
-			p.log("[结算] 会话期电量计增量不完整（%dmAh，只覆盖部分区间），回退电流积分口径",
-				sr.CounterUAh/1000)
-		}
-		sr.CounterUAh = 0
+	counterUAh, counterSrc := p.adjudicateCounter(s, &row)
+	// 电流刻度自校准（第一次有效会话起生效）：本次会话的估算已由上面的口径裁决
+	// 兜住，校准用于之后的采样/积分/倍率门控。必须用「原始读数·秒」而不是
+	// accUAs（已被当前刻度/锚点缩放），否则已学刻度会在下一会话被反推回 ×1。
+	if counterUAh > 0 {
+		p.learnCurrentScaleFromSession(s.rawUAs, counterUAh)
 	}
-	// 口径校验二：若与电流积分相差 3 倍以上，判为刻度/单位异常（防其它机型
-	// charge_counter 量纲不同），同样回退积分并留痕。
-	if sr.CounterUAh > 0 {
-		if accUAh := s.accUAs / 3600; accUAh > 0 && (sr.CounterUAh > accUAh*3 || accUAh > sr.CounterUAh*3) {
-			_ = p.st.InsertEvent("counter_scale",
-				fmt.Sprintf("counter=%dµAh vs 积分=%dµAh，比值超 3 倍", sr.CounterUAh, accUAh))
-			p.log("[结算] 电量计口径异常（%dmAh vs 积分 %dmAh），回退电流积分",
-				sr.CounterUAh/1000, accUAh/1000)
-			sr.CounterUAh = 0
-		}
+	sr := SettledSession{Session: row, AccUAs: s.accUAs, CounterUAh: counterUAh, DesignUAh: p.designUAh}
+	// sessions.cc 落库本会话实际采信的电量计电量（µAh）：历史页「估算」按同一口径
+	// 显示，避免展示口径与结算口径不一致。
+	row.CounterUAh = counterUAh
+	accepted, err := p.applySettlement(&row, sr, dur, avgI, counterSrc)
+	if err != nil || !accepted {
+		return err
 	}
-	if sr.CounterUAh <= 0 {
-		counterSrc = "积分"
-	}
+	// 以下为采信后的旁路：任何失败仅记 events，绝不影响结算主链路。
+	// 中段分窗容量校准、CCCT 特征采集（同源 ICA 复用其
+	// 过门样本行避免重复扫库）、四路容量口径互检。
+	p.calibrateMid(row.EndTs)
+	p.recordICA(row.EndTs, p.recordCCCT(s.startTs, row.EndTs))
+	p.checkQuality()
+	return nil
+}
 
+// adjudicateCounter 裁决本会话采信哪一路电量，返回采信的电量计增量（µAh，
+// 0 表示回退电流积分）与日志用的口径标签。两条校验：
+//  1. 电量计在开账后才可用（counterHole）⇒ 增量只覆盖部分区间，回退电流积分；
+//  2. 电量计与电流积分相差 3 倍以上 ⇒ 用参考满容量裁决，只有「电量计在窗内、
+//     积分在窗外」才保留电量计（两路都不在窗内时回退电流积分），见 currentcal.go。
+func (p *Pipeline) adjudicateCounter(s *sessionState, row *Session) (int64, string) {
+	counterUAh := s.counterAccUAh
+	if s.counterHole {
+		if counterUAh > 0 {
+			p.log("[结算] 会话期电量计增量不完整（%dmAh，只覆盖部分区间），回退电流积分口径",
+				counterUAh/1000)
+		}
+		return 0, "积分"
+	}
+	if counterUAh <= 0 {
+		return 0, "积分"
+	}
+	res := resolveCounterSource(counterUAh, s.accUAs, row.EndCap-row.StartCap, p.energyRefUAh())
+	switch {
+	case !res.UseCounter:
+		_ = p.st.InsertEvent("counter_scale", fmt.Sprintf(
+			"counter=%dµAh 积分=%dµAh 隐含(counter/积分)=%d/%dµAh ref=%dµAh 回退积分(%s)",
+			counterUAh, s.accUAs/3600, res.CounterImpliedUAh, res.IntegralImpliedUAh,
+			p.energyRefUAh(), res.Reason))
+		p.log("[结算] 电量计口径异常（%dmAh vs 积分 %dmAh，隐含 %dmAh vs %dmAh），回退电流积分",
+			counterUAh/1000, s.accUAs/3600/1000,
+			res.CounterImpliedUAh/1000, res.IntegralImpliedUAh/1000)
+		return 0, "积分"
+	case res.Reason == "counter_plausible":
+		_ = p.st.InsertEvent("counter_scale", fmt.Sprintf(
+			"counter=%dµAh 积分=%dµAh 隐含(counter/积分)=%d/%dµAh ref=%dµAh 保留电量计",
+			counterUAh, s.accUAs/3600, res.CounterImpliedUAh, res.IntegralImpliedUAh,
+			p.energyRefUAh()))
+		p.log("[结算] 电流积分口径异常（%dmAh vs 电量计 %dmAh，隐含 %dmAh vs %dmAh），保留电量计口径",
+			s.accUAs/3600/1000, counterUAh/1000,
+			res.IntegralImpliedUAh/1000, res.CounterImpliedUAh/1000)
+	}
+	return counterUAh, "电量计"
+}
+
+// applySettlement 把会话交给估算器并落库：被拒时记录拒绝原因并返回
+// accepted=false，采信时写 sessions/estimates 并返回 accepted=true。
+// 采信后的旁路（中段校准/特征采集/互检）由调用方负责。
+func (p *Pipeline) applySettlement(row *Session, sr SettledSession, dur time.Duration, avgI int64, counterSrc string) (bool, error) {
 	upd, err := p.est.OnSession(sr)
 	if err != nil {
 		var re *RejectError
 		if !errors.As(err, &re) {
-			return &SettleError{Err: err}
+			return false, &SettleError{Err: err}
 		}
 		row.Valid = false
 		row.InvalidReason = re.Result.Reason
 		p.log("[结算] 拒绝 reason=%s cap=%d→%d dur=%s avgI=%dmA",
 			re.Result.Reason, row.StartCap, row.EndCap, dur, avgI/1000)
-		if _, insErr := p.st.InsertSession(row); insErr != nil {
-			return &SettleError{Err: insErr}
+		if _, insErr := p.st.InsertSession(*row); insErr != nil {
+			return false, &SettleError{Err: insErr}
 		}
 		if evErr := p.st.InsertEvent(re.Result.Reason, ""); evErr != nil {
-			return &SettleError{Err: evErr}
+			return false, &SettleError{Err: evErr}
 		}
-		return nil
+		return false, nil
 	}
 	row.Valid = true
 	// σ 仅 ML 通道产出（stable 恒为 0）：≤0 时省略段，避免打印误导性的 σ=0.0；
@@ -727,21 +841,41 @@ func (p *Pipeline) settle() error {
 	}
 	p.log("[结算] 采信 cap=%d→%d dur=%s avgI=%dmA 口径=%s 估算=%dmAh%s",
 		row.StartCap, row.EndCap, dur, avgI/1000, counterSrc, upd.EstUAh/1000, sigmaNote)
-	if _, insErr := p.st.InsertSession(row); insErr != nil {
-		return &SettleError{Err: insErr}
+	if _, insErr := p.st.InsertSession(*row); insErr != nil {
+		return false, &SettleError{Err: insErr}
 	}
 	if estErr := p.st.InsertEstimate(row.EndTs, upd.EstUAh); estErr != nil {
-		return &SettleError{Err: estErr}
+		return false, &SettleError{Err: estErr}
 	}
-	// 中段分窗容量校准：与 CCCT/ICA 同为采信后的旁路步骤，失败静默不影响结算
-	p.calibrateMid(row.EndTs)
-	// CCCT 特征采集：只在有效结算后做一次，60~240 行扫描毫秒级；一切
-	// 失败仅记 events，静默跳过，绝不影响结算主链路。同源特征 ICA 复用
-	// 其返回的过门段样本行，避免重复扫库。
-	p.recordICA(row.EndTs, p.recordCCCT(s.startTs, row.EndTs))
-	// 通道互检：各路容量口径互相印证，结论翻转时留痕
-	p.checkQuality()
-	return nil
+	return true, nil
+}
+
+// learnCurrentScaleFromSession 用本次会话的「电量计差分 vs 原始读数·秒」反推
+// µA/原始单位并落盘（kv cur_scale），供之后所有采样/积分/倍率门控使用。
+// 只在结算已采信电量计口径后调用：电量计是否可信、比值是否贴近 10 的整数次幂
+// 都已由 resolveCounterSource 与 learnCurrentScale 把关，因此允许覆盖旧刻度，
+// current_now 单位变化后由后续会话自动纠正。
+// 任何失败只留痕，绝不影响结算主链路。
+func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) {
+	scale, ok := learnCurrentScale(rawUAs, counterUAh)
+	if !ok {
+		return
+	}
+	old := p.curScale
+	if old == scale {
+		return
+	}
+	p.curScale = scale
+	if err := p.st.KVSet(kvCurrentScale, strconv.FormatFloat(scale, 'f', -1, 64)); err != nil {
+		_ = p.st.InsertEvent("cur_cal_fail", err.Error())
+		return
+	}
+	_ = p.st.InsertEvent("cur_cal", fmt.Sprintf("scale=%g 旧=%g rawUAs=%d 电量计=%dµAh",
+		scale, old, rawUAs, counterUAh))
+	// 只在单位口径真正变化时打日志：正常设备 ×1 属预期，无需刷日志
+	if old > 0 || scale != anchorScaleUA(p.fullUAh) {
+		p.log("[校准] 电流刻度 %g→%g µA/原始单位（电量计差分与原始读数积分比值）", old, scale)
+	}
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控
@@ -896,7 +1030,7 @@ func (p *Pipeline) tickResting(status string) error {
 	if err != nil {
 		return &SysfsTransient{Err: err}
 	}
-	if absI64(NormCurrentUAWithFull(absI64(iRaw), p.fullUAh)) >= restQuietUA {
+	if absI64(p.currentUA(iRaw)) >= restQuietUA {
 		p.restStreak = 0
 		return nil
 	}

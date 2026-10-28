@@ -124,7 +124,7 @@ func (p *Pipeline) sampleDischarge(now, capVal, counterUAh int64) {
 	}
 	dUA := int64(0)
 	if iRaw, ierr := p.readNodeSigned("current_now"); ierr == nil {
-		dUA = -absI64(NormCurrentUAWithFull(iRaw, p.fullUAh))
+		dUA = -absI64(p.currentUA(iRaw))
 	}
 	if err := p.st.InsertSample(now, dUA, vUV, capVal, counterUAh); err != nil {
 		_ = p.st.InsertEvent("sample_fail", err.Error())
