@@ -2,7 +2,7 @@
 # 脚本编写感谢 酷安@阿巴酱
 SKIPUNZIP=0
 
-# 安装器输出控制在 8~11 行：标题/说明、设备、语言选择两行、确认提示、结果、一条提示。
+# 安装器输出控制在 8~14 行：标题/说明、设备、语言选择四行、确认提示两行、结果、一条提示。
 # 管理器提供 ui_print（recovery 控制台可见）时优先使用，否则退回 echo。
 say()
 {
@@ -108,22 +108,26 @@ rule
 say "$(L "设备：" "Device: ")${device:-unknown}${android:+ · $android}"
 
 # 两步按键：选语言（12s 超时跟随系统）→ 确认安装（30s 超时取消）。
-# 选语言时偏好尚未确定，这一步固定中英双语输出，同时给出两种语言的按键说明。
+# 选语言时偏好尚未确定，固定中英双语、一行一个选项，避免控制台折行挤在一起。
 lang_chosen=0
 if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-	say "[1/2] 选择语言 / Choose language（12 秒内无按键则跟随系统 / no key in 12s → system）"
-	say "音量+ 中文 / Volume+ Chinese ｜ 音量- English / Volume- English"
+	say "[1/2] 选择语言 / Choose language"
+	say "    音量+  中文 / Volume+ Chinese"
+	say "    音量-  English / Volume- English"
+	say "    12 秒后跟随系统 / follows system after 12s"
 	case `read_key 4` in
 	UP)   T=zh; lang_chosen=1 ;;
 	DOWN) T=en; lang_chosen=1 ;;
 	esac
-	say "$(L "[2/2] 音量+ 安装 / 音量- 取消（30 秒后取消）" "[2/2] Volume+ install / Volume- cancel (30s → cancel)")"
+	say "$(L "[2/2] 确认安装（30 秒后取消）" "[2/2] Confirm install (30s → cancel)")"
+	say "$(L "    音量+ 安装 / 音量- 取消" "    Volume+ install / Volume- cancel")"
 	case `read_key 10` in
 	UP) ;;
 	*) die "$(L "已取消安装" "Installation cancelled")" ;;
 	esac
 else
-	say "未检测到按键工具，自动安装（语言跟随系统）/ No key tools detected; installing with the system language"
+	say "    未检测到按键工具，自动安装（语言跟随系统）"
+	say "    No key tools detected; installing with the system language"
 fi
 
 say "$(L "正在写入模块…" "Installing module...")"
