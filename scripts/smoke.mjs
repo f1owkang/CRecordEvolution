@@ -74,6 +74,9 @@ const jsonDoc = {
   trend_mah_per_week: -6.2,
   trend_state: 'significant',
   trend_span_day: 21,
+  // 趋势虚线端点：与 recent 同一份数据拟合（后端 trend_from/to），前端直接画线
+  trend_from_mah: 4600,
+  trend_to_mah: 4490,
   quality: { ok: true, spread_pct: 4, ema_mah: 4500, mid_mah: 4600, dis_mah: 4480, full_mah: 4800 },
   updated: '2026-10-27 19:00',
   samples_n: 1420,
@@ -315,6 +318,10 @@ try {
   check(
     (await page.locator('#page_overview .hero-line').innerText()).includes('%'),
     '概览：健康度百分比'
+  );
+  check(
+    (await page.locator('#page_overview .chart svg path[stroke-dasharray]').count()) === 1,
+    '概览：估算趋势虚线'
   );
   check((await page.locator('#nav_overview').count()) === 1, '底栏：三页导航存在');
   await shot(page, 'overview.png');

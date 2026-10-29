@@ -15,9 +15,16 @@ func TestFitTrend(t *testing.T) {
 	if tr.MahPerWeek > -19_000 || tr.MahPerWeek < -22_000 {
 		t.Fatalf("斜率每周约 -21 mAh, got %.0f", tr.MahPerWeek)
 	}
+	// 拟合线端点（供前端画虚线）：完美线性序列应精确落在首末点容量上。
+	if tr.FitFromUAh != 4_500_000 || tr.FitToUAh != 4_413_000 {
+		t.Fatalf("拟合线端点 = (%.0f, %.0f), want (4500000, 4413000)", tr.FitFromUAh, tr.FitToUAh)
+	}
 	tr5, ok := FitTrend(rising[:5])
 	if ok || tr5.State != TrendInsufficient {
 		t.Fatal("点数不足应为 insufficient")
+	}
+	if tr5.FitFromUAh != 0 || tr5.FitToUAh != 0 {
+		t.Fatalf("未达显著时不应给出拟合端点, got (%.0f, %.0f)", tr5.FitFromUAh, tr5.FitToUAh)
 	}
 	if tr5.SpanDay != 4 {
 		t.Fatalf("insufficient 应携带跨度天数, got %d", tr5.SpanDay)

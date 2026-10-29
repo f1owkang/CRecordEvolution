@@ -279,3 +279,37 @@ func TestRenderJSONVersion(t *testing.T) {
 		t.Fatalf("版本缺失时应省略 version: %s", b2)
 	}
 }
+
+// 概览趋势图回归：趋势端点由后端按 recent 同一份数据拟合给出，前端直接用
+// 端点画虚线；只下发斜率时前端会拿首个实际点当锚点，虚线与数据整体错位。
+func TestRenderJSONTrendLineEndpoints(t *testing.T) {
+	base := int64(1735689600)
+	pts := make([]TsVal, 0, 30)
+	for d := 0; d < 30; d++ {
+		pts = append(pts, TsVal{TS: base + int64(d)*86400, V: 4_500_000 - int64(d)*3000})
+	}
+	// store 返回最新在前，RenderJSON 按传入顺序输出 recent
+	for i, j := 0, len(pts)-1; i < j; i, j = i+1, j-1 {
+		pts[i], pts[j] = pts[j], pts[i]
+	}
+	mahPerWeek := -21000.0
+	snap := Snapshot{TrendMahPerWeek: &mahPerWeek, TrendState: string(TrendSignificant)}
+	b, err := RenderJSON("stable", Design{}, snap, pts, nil, nil, nil, nil, nil, 0, time.Unix(base, 0))
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if !strings.Contains(string(b), `"trend_from_mah":4500`) {
+		t.Fatalf("缺 trend_from_mah 4500: %s", b)
+	}
+	if !strings.Contains(string(b), `"trend_to_mah":4413`) {
+		t.Fatalf("缺 trend_to_mah 4413: %s", b)
+	}
+	// 趋势不显著（stats 未下发斜率）时不输出端点，前端不画虚线
+	b2, err := RenderJSON("stable", Design{}, Snapshot{}, pts, nil, nil, nil, nil, nil, 0, time.Unix(base, 0))
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if strings.Contains(string(b2), "trend_from_mah") {
+		t.Fatalf("不显著时不应输出趋势端点: %s", b2)
+	}
+}

@@ -34,11 +34,15 @@ const (
 )
 
 // TrendResult 为稳健趋势拟合结果：MahPerWeek 与估算点同单位（µAh/周），SpanDay 为跨度天数。
+// FitFromUAh/FitToUAh 是拟合直线在首/末估算点时刻上的取值（µAh），供前端直接画
+// 趋势线端点；只给斜率会让前端拿首个实际点当锚点，虚线整体偏移。
 type TrendResult struct {
 	MahPerWeek float64
 	R2         float64
 	State      TrendState
 	SpanDay    int64
+	FitFromUAh float64
+	FitToUAh   float64
 }
 
 // FitTrend 对容量估计点做 Theil-Sen 稳健线性拟合：x=(ts-first)/86400 天，斜率×7 折算为
@@ -125,5 +129,14 @@ func FitTrend(pts []TsVal) (TrendResult, bool) {
 	if float64(absI64(int64(mkS))) > trendMKZ*math.Sqrt(mkVar) {
 		state = TrendSignificant
 	}
-	return TrendResult{MahPerWeek: slopeDay * 7, R2: r2, State: state, SpanDay: spanDay}, state == TrendSignificant
+	// 拟合线端点：xs[0]=0，故起点即截距；终点为末尾点时刻的拟合值。
+	fitTo := intercept + slopeDay*xs[n-1]
+	return TrendResult{
+		MahPerWeek: slopeDay * 7,
+		R2:         r2,
+		State:      state,
+		SpanDay:    spanDay,
+		FitFromUAh: intercept,
+		FitToUAh:   fitTo,
+	}, state == TrendSignificant
 }

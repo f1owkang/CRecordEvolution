@@ -90,6 +90,10 @@ const (
 	refreshEveryTicks = 1440
 	retainDays        = 90
 	jsonRecentLimit   = 10
+	// jsonEstimateLimit 概览趋势图的估算点上限：与 stats() 的趋势拟合窗口
+	// （RecentEstimates(200)）保持一致，否则图只画最近 10 点、虚线却用 90 天
+	// 斜率外推，两者时间窗不同会显示成「虚线方向与数据相反」。
+	jsonEstimateLimit = 200
 	tickFailMax       = 5
 
 	logFile       = "batteryd.log"
@@ -783,7 +787,7 @@ func runJson() error {
 	if err != nil {
 		return err
 	}
-	recent, err := a.st.RecentEstimates(jsonRecentLimit)
+	recent, err := a.st.RecentEstimates(jsonEstimateLimit)
 	if err != nil {
 		return err
 	}

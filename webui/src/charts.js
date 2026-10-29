@@ -148,8 +148,10 @@ function normPt(v, mn, mx) {
 }
 
 // data: [{ts,v}]，自动 min/max 归一化；0 点返回 ''（由调用方决定占位/隐藏），仅 1 点渲染单点
-// trendMpw: mAh/周 斜率；有效时按首尾 ts 两端点叠一条拟合虚线（下置于主曲线之下，颜色区分）
-function svgLine(data, w, h, color, trendMpw) {
+// trend: {from,to} 为后端拟合线在首/末数据点时刻上的容量（mAh）；给出时画虚线。
+// 不要把斜率交给前端外推：只给斜率时只能拿首个实际点当锚点，虚线会整体偏移，
+// 也和后端拟合窗口（与 data 同一份 estimates）对不上。
+function svgLine(data, w, h, color, trend) {
   const raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
   if (!raw.length) return '';
   raw.sort(function (a, b) {
@@ -178,11 +180,10 @@ function svgLine(data, w, h, color, trendMpw) {
     return p.y;
   });
   let trendPts = null;
-  if (typeof trendMpw === 'number' && isFinite(trendMpw)) {
-    const vEnd = raw[0].y + trendMpw * ((tx.max - tx.min) / 604800);
+  if (trend && isFinite(trend.from) && isFinite(trend.to)) {
     trendPts = [
-      { x: raw[0].x, y: raw[0].y },
-      { x: tx.max, y: vEnd },
+      { x: raw[0].x, y: trend.from },
+      { x: tx.max, y: trend.to },
     ];
     ys.push(trendPts[0].y, trendPts[1].y);
   }
@@ -191,7 +192,9 @@ function svgLine(data, w, h, color, trendMpw) {
     return { x: spanPad(normPt(p.x, tx.min, tx.max)), y: spanPad(normPt(p.y, ty.min, ty.max)) };
   }
   const pts = raw.map(toXY);
-  // 可见数据点 + 透明命中圈：点按看该次明细（与 svgScatter 同口径）
+  // 可见数据点 + 透明命中圈：点按看该次明细（与 svgScatter 同口径）。
+  // 长历史（>40 点）缩小可见点半径，避免点连成一片；命中圈保持 12px。
+  const dotR = pts.length > 40 ? 2 : 3;
   let dots = '';
   for (let i = 0; i < pts.length; i++) {
     let cx = (pts[i].x * w).toFixed(1);
@@ -208,7 +211,9 @@ function svgLine(data, w, h, color, trendMpw) {
       cx +
       '" cy="' +
       cy +
-      '" r="3" style="fill:' +
+      '" r="' +
+      dotR +
+      '" style="fill:' +
       color +
       '" fill-opacity=".85" pointer-events="none"/>';
   }

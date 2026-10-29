@@ -74,6 +74,12 @@ function buildOverviewModel(doc, lang, t) {
   const trendMahPerWeek = doc ? Number(doc.trend_mah_per_week) : NaN;
   const hasTrendMahPerWeek = doc && doc.trend_mah_per_week != null && isFinite(trendMahPerWeek);
   const trendText = overviewTrendText(doc, hasTrendMahPerWeek, trendMahPerWeek, t);
+  // 趋势线端点由后端给出（与 recent 同一份 estimates 拟合）；旧 JSON 没有这两个
+  // 字段时不画虚线，避免前端拿首点+斜率外推导致线整体偏移。
+  const trendLine =
+    doc && doc.trend_from_mah != null && doc.trend_to_mah != null
+      ? { from: Number(doc.trend_from_mah), to: Number(doc.trend_to_mah) }
+      : null;
   const quality = doc ? doc.quality : null;
   const qualityOk = quality != null && quality.ok != null;
   const qualityDetailText = qualityOk
@@ -92,13 +98,7 @@ function buildOverviewModel(doc, lang, t) {
   const estPoints = pickPairs(recentAsc, 'ts', 'mah');
   const latest = recent.length ? recent[0] : null;
   const estSvg = estPoints.length
-    ? svgLine(
-        recentAsc,
-        CHART_W,
-        CHART_H,
-        'var(--accent)',
-        hasTrendMahPerWeek ? trendMahPerWeek : null
-      )
+    ? svgLine(recentAsc, CHART_W, CHART_H, 'var(--accent)', trendLine)
     : '';
   const capParts = [];
   if (latest != null) capParts.push(t('est_cap_latest', { mah: fmtInt(latest.mah) }));

@@ -90,6 +90,11 @@ type jsonDoc struct {
 	// 无估算点时两者皆省略，前端按缺失降级（旧前端只认 trend_mah_per_week）
 	TrendState   string `json:"trend_state,omitempty"`
 	TrendSpanDay *int64 `json:"trend_span_day,omitempty"`
+	// TrendFromMah/TrendToMah 趋势拟合线在 recent 首/末点时刻上的容量（mAh）；
+	// 趋势显著时给出，供概览趋势图直接画虚线端点。只下发斜率会让前端拿首个
+	// 实际点当锚点，虚线整体偏移。
+	TrendFromMah *int64 `json:"trend_from_mah,omitempty"`
+	TrendToMah   *int64 `json:"trend_to_mah,omitempty"`
 	// Quality 通道互检（各路容量口径互相印证）；可用路数 <2 时整体省略，
 	// 旧前端忽略未知字段，缺失即省略纪律不破坏
 	Quality *Quality `json:"quality,omitempty"`
@@ -219,6 +224,17 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	// estimates 表存 µAh，此处换算为 mAh 展示
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
+	}
+	// 趋势线端点与 recent 用同一份数据拟合，保证概览趋势图里虚线与数据点同一
+	// 时间窗、同一锚点（见 cmd/batteryd/trend.go 的 FitTrend）。stats() 判定显著
+	// 才下发 trend_mah_per_week，这里保持一致；不显著时不画虚线。
+	if snap.TrendMahPerWeek != nil {
+		if tr, ok := FitTrend(recent); ok {
+			from := int64(math.Round(tr.FitFromUAh / 1000))
+			to := int64(math.Round(tr.FitToUAh / 1000))
+			doc.TrendFromMah = &from
+			doc.TrendToMah = &to
+		}
 	}
 	// sessions/rest_points/ccct/ica_peaks 直接透传调用方切片：nil 输出 null，非 nil 空
 	// 切片输出 []，「空数据 ⇒ [] 禁止 null 噪声」由调用方（runJson）以 make(...,0) 保证
