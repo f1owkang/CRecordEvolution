@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,11 +53,15 @@ func TestLearnCurrentScale(t *testing.T) {
 }
 
 // 结算自校准的落库行为：比值落在吸附区内时学到对应刻度并落 cur_cal 事件；
-// 学不出刻度时落 cur_cal_fail 事件并带原始比值，且不覆盖已有刻度。
+// 同一刻度不重复落盘/落事件；学不出刻度时落 cur_cal_fail 事件并带原始比值，
+// 且不覆盖已有刻度。
 func TestLearnCurrentScaleFromSessionEvents(t *testing.T) {
 	r := newPipeRig(t)
 	// 原始积分 2,001,720µA·s、电量计 1,074,000µAh（比值约 1.93×10³）
-	r.p.learnCurrentScaleFromSession(2_001_720, 1_074_000)
+	scale, learned := r.p.learnCurrentScaleFromSession(2_001_720, 1_074_000)
+	if !learned || scale != 1000 {
+		t.Fatalf("学到刻度 = (%v, %v), want (1000, true)", scale, learned)
+	}
 	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
 		t.Fatalf("kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
 	}
@@ -68,8 +73,21 @@ func TestLearnCurrentScaleFromSessionEvents(t *testing.T) {
 		t.Fatalf("cur_cal = %d, want 1", n)
 	}
 
+	// 同一刻度再学一次：不重复落盘/落事件，也不触发本会话重算
+	if scale, learned = r.p.learnCurrentScaleFromSession(2_001_720, 1_074_000); learned || scale != 1000 {
+		t.Fatalf("重复学习 = (%v, %v), want (1000, false)", scale, learned)
+	}
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='cur_cal'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("刻度未变不应重复落 cur_cal, got %d", n)
+	}
+
 	// 比值 3.5 倍：不覆盖已学刻度，只落 cur_cal_fail 留痕
-	r.p.learnCurrentScaleFromSession(5_000_000*3600, 17_500_000)
+	if scale, learned = r.p.learnCurrentScaleFromSession(5_000_000*3600, 17_500_000); learned || scale != 0 {
+		t.Fatalf("异常比值 = (%v, %v), want (0, false)", scale, learned)
+	}
 	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
 		t.Fatalf("学不出刻度时 kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
 	}
@@ -79,6 +97,30 @@ func TestLearnCurrentScaleFromSessionEvents(t *testing.T) {
 	}
 	if !strings.Contains(detail.String, "3.50") {
 		t.Fatalf("cur_cal_fail detail 应带原始比值 3.50, got %q", detail.String)
+	}
+}
+
+// 学到新刻度后本会话积分电量的就地换算：非正输入/刻度/溢出返回 0（调用方保留
+// 原值），正常输入按刻度换算成 µA·s。
+func TestScaledAccUAs(t *testing.T) {
+	cases := []struct {
+		name   string
+		rawUAs int64
+		scale  float64
+		want   int64
+	}{
+		{"×1000", 2_001_720, 1000, 2_001_720_000},
+		{"×1", 10_980_000, 1, 10_980_000},
+		{"无原始积分", 0, 1000, 0},
+		{"未校准", 2_001_720, 0, 0},
+		{"溢出", math.MaxInt64/2 + 1, 1000, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := scaledAccUAs(c.rawUAs, c.scale); got != c.want {
+				t.Fatalf("scaledAccUAs(%d, %v) = %d, want %d", c.rawUAs, c.scale, got, c.want)
+			}
+		})
 	}
 }
 
@@ -234,6 +276,22 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
 		t.Fatalf("kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
 	}
+	// 学到刻度的这个会话自身也要按新刻度重算：否则历史里它的 ua 只有几分之一
+	// mAh、avgI 显示 0mA、倍率 0.00C，看起来像「没校准」。
+	rawUAs := kvInt(r.st, kvSessRawUAs)
+	if rawUAs <= 0 {
+		t.Fatalf("会话原始积分 = %d, want >0", rawUAs)
+	}
+	wantAcc := rawUAs * 1000
+	if sess.AccUAs != wantAcc {
+		t.Fatalf("会话 ua = %d, want %d（原始积分 × 1000）", sess.AccUAs, wantAcc)
+	}
+	if sess.AvgI != sess.AccUAs/sess.Duration {
+		t.Fatalf("会话 avgI = %d, want %d", sess.AvgI, sess.AccUAs/sess.Duration)
+	}
+	if sess.CRate <= 0 {
+		t.Fatalf("会话倍率 = %v, want >0", sess.CRate)
+	}
 	var n int
 	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='counter_scale'`).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -287,6 +345,20 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("刻度未变化时不应重复落 cur_cal 事件, got %d", n)
+	}
+	// 第二会话积分已按 ×1000 归一，与电量计同量级，不再触发口径裁决事件
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='counter_scale'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("校准后不应再落 counter_scale 事件, got %d", n)
+	}
+	var secondUA, secondAvg int64
+	if err := r.st.db.QueryRow(`SELECT ua, avg_i FROM sessions ORDER BY id DESC LIMIT 1`).Scan(&secondUA, &secondAvg); err != nil {
+		t.Fatal(err)
+	}
+	if secondUA <= 0 || secondAvg <= 0 {
+		t.Fatalf("第二会话积分/平均电流 = (%d, %d), want >0（已按新刻度累计）", secondUA, secondAvg)
 	}
 	rows, err = r.st.SamplesRange(secondStart, r.cur.Unix())
 	if err != nil {

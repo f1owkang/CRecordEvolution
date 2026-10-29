@@ -750,10 +750,22 @@ func (p *Pipeline) settle() error {
 	// 电流刻度自校准（第一次有效会话起生效）：本次会话的估算已由上面的口径裁决
 	// 兜住，校准用于之后的采样/积分/倍率门控。必须用「原始读数·秒」而不是
 	// accUAs（已被当前刻度/锚点缩放），否则已学刻度会在下一会话被反推回 ×1。
+	// 学到新刻度时本会话已累计的积分电量按新刻度重算（avgI/倍率同步），否则
+	// 教会刻度的这个会话会永远停在旧量纲（avgI≈0、倍率 0.00C），历史里看起来
+	// 像是没校准。
 	if counterUAh > 0 {
-		p.learnCurrentScaleFromSession(s.rawUAs, counterUAh)
+		if scale, learned := p.learnCurrentScaleFromSession(s.rawUAs, counterUAh); learned {
+			if acc := scaledAccUAs(s.rawUAs, scale); acc > 0 {
+				row.AccUAs = acc
+				if duration > 0 {
+					avgI = acc / duration
+				}
+				row.AvgI = avgI
+				row.CRate = crRate(avgI, p.designUAh)
+			}
+		}
 	}
-	sr := SettledSession{Session: row, AccUAs: s.accUAs, CounterUAh: counterUAh, DesignUAh: p.designUAh}
+	sr := SettledSession{Session: row, AccUAs: row.AccUAs, CounterUAh: counterUAh, DesignUAh: p.designUAh}
 	// sessions.cc 落库本会话实际采信的电量计电量（µAh）：历史页「估算」按同一口径
 	// 显示，避免展示口径与结算口径不一致。
 	row.CounterUAh = counterUAh
@@ -855,8 +867,10 @@ func (p *Pipeline) applySettlement(row *Session, sr SettledSession, dur time.Dur
 // 只在结算已采信电量计口径后调用：电量计是否可信、比值是否贴近 10 的整数次幂
 // 都已由 resolveCounterSource 与 learnCurrentScale 把关，因此允许覆盖旧刻度，
 // current_now 单位变化后由后续会话自动纠正。学不出刻度时落 cur_cal_fail 事件
-// 并带上原始比值，供诊断定位。任何失败只留痕，绝不影响结算主链路。
-func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) {
+// 并带上原始比值，供诊断定位。返回 scale 与「本次是否学到新刻度」：同刻度不
+// 重复落盘，调用方据此决定要不要重算本会话的积分电量。任何失败只留痕，
+// 绝不影响结算主链路。
+func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) (float64, bool) {
 	scale, ratio, ok := learnCurrentScale(rawUAs, counterUAh)
 	if !ok {
 		// 已采信电量计却学不出刻度：落带原始比值的 cur_cal_fail 事件，
@@ -866,23 +880,24 @@ func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) {
 				"比值=%.2f×（电量计/原始积分）rawUAs=%d 电量计=%dµAh，偏离 10 的整数次幂超过 %.1f decade",
 				ratio, rawUAs, counterUAh, curScaleSnapTol))
 		}
-		return
+		return 0, false
 	}
 	old := p.curScale
 	if old == scale {
-		return
+		return scale, false
 	}
-	p.curScale = scale
 	if err := p.st.KVSet(kvCurrentScale, strconv.FormatFloat(scale, 'f', -1, 64)); err != nil {
 		_ = p.st.InsertEvent("cur_cal_fail", err.Error())
-		return
+		return 0, false
 	}
+	p.curScale = scale
 	_ = p.st.InsertEvent("cur_cal", fmt.Sprintf("scale=%g 旧=%g 比值=%.2f rawUAs=%d 电量计=%dµAh",
 		scale, old, ratio, rawUAs, counterUAh))
 	// 只在单位口径真正变化时打日志：正常设备 ×1 属预期，无需刷日志
 	if old > 0 || scale != anchorScaleUA(p.fullUAh) {
 		p.log("[校准] 电流刻度 %g→%g µA/原始单位（电量计差分与原始读数积分比值）", old, scale)
 	}
+	return scale, true
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控

@@ -116,6 +116,20 @@ func learnCurrentScale(rawUAs, counterUAh int64) (scale, ratio float64, ok bool)
 	return math.Pow(10, snap), ratio, true
 }
 
+// scaledAccUAs 把会话期「原始读数绝对值×dt」积分（原始单位·秒）按电流刻度
+// 换算成 µA·s，供学到新刻度的会话就地重算自己的积分电量。rawUAs 或刻度非正、
+// 结果溢出时返回 0，调用方保留原累计值。
+func scaledAccUAs(rawUAs int64, scale float64) int64 {
+	if rawUAs <= 0 || !(scale > 0) {
+		return 0
+	}
+	acc := math.Round(float64(rawUAs) * scale)
+	if !(acc > 0) || acc >= float64(math.MaxInt64) {
+		return 0
+	}
+	return int64(acc)
+}
+
 // counterResolution 是电量计差分与电流积分相差 3 倍以上时的裁决结果。
 // CounterImplied/IntegralImplied 为两路各自反推的隐含满容量（µAh，delta≤0
 // 时不计算，保持 0）。
