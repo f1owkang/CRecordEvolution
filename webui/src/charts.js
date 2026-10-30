@@ -108,6 +108,31 @@ function dotEl(x, y, colorVar) {
   );
 }
 
+// 选中点高亮：只拼内部坐标，颜色引用主题变量。
+// pointer-events 关闭，避免高亮圈盖住下面带 data-i 的透明命中圈。
+// SVG 根节点默认按 viewBox 裁剪，最高/最低点若贴着上下边，固定 r=6.5 的圈会被
+// 切掉一截（真机点选顶部点可见）：按到四条边的距离收小半径，保证整圈都在画布内。
+function selRing(cx, cy, w, h) {
+  const margin = 2; // 预留 stroke-width/2 再加 1px 余量
+  const r = Math.max(2.5, Math.min(6.5, Math.min(cx, w - cx, cy, h - cy) - margin)).toFixed(1);
+  return (
+    '<circle class="pt-sel" cx="' +
+    cx +
+    '" cy="' +
+    cy +
+    '" r="' +
+    r +
+    '" fill="none" style="stroke:var(--fg)" stroke-width="2" stroke-opacity=".85" pointer-events="none"/>'
+  );
+}
+
+// 选中下标只有在整数且落在数据范围内才生效；越界/未选返回 -1。
+function selIndex(sel, count) {
+  const i = Number(sel);
+  if (sel == null || !Number.isInteger(i) || i < 0 || i >= count) return -1;
+  return i;
+}
+
 function pickPairs(rows, kx, ky) {
   let out = [],
     i,
@@ -151,12 +176,13 @@ function normPt(v, mn, mx) {
 // trend: {from,to} 为后端拟合线在首/末数据点时刻上的容量（mAh）；给出时画虚线。
 // 不要把斜率交给前端外推：只给斜率时只能拿首个实际点当锚点，虚线会整体偏移，
 // 也和后端拟合窗口（与 data 同一份 estimates）对不上。
-function svgLine(data, w, h, color, trend) {
+function svgLine(data, w, h, color, trend, sel) {
   const raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'mah');
   if (!raw.length) return '';
   raw.sort(function (a, b) {
     return a.x - b.x;
   });
+  const si = selIndex(sel, raw.length);
   if (raw.length === 1) {
     const sx = spanPad(0.5) * w,
       sy = (1 - spanPad(0.5)) * h;
@@ -164,6 +190,7 @@ function svgLine(data, w, h, color, trend) {
       svgOpen(w, h) +
       chartBase(w, h) +
       dotEl(sx, sy, color) +
+      (si === 0 ? selRing(sx.toFixed(1), sy.toFixed(1), w, h) : '') +
       '<circle class="pt" data-i="0" cx="' +
       sx.toFixed(1) +
       '" cy="' +
@@ -195,10 +222,12 @@ function svgLine(data, w, h, color, trend) {
   // 可见数据点 + 透明命中圈：点按看该次明细（与 svgScatter 同口径）。
   // 长历史（>40 点）缩小可见点半径，避免点连成一片；命中圈保持 12px。
   const dotR = pts.length > 40 ? 2 : 3;
-  let dots = '';
+  let dots = '',
+    ring = '';
   for (let i = 0; i < pts.length; i++) {
     let cx = (pts[i].x * w).toFixed(1);
     let cy = ((1 - pts[i].y) * h).toFixed(1);
+    if (i === si) ring = selRing(cx, cy, w, h);
     dots +=
       '<circle class="pt" data-i="' +
       i +
@@ -234,13 +263,14 @@ function svgLine(data, w, h, color, trend) {
     color +
     '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
     dots +
+    ring +
     '</svg>'
   );
 }
 
 // rest_points 散点：每点一个可见 <circle> 叠一层透明命中圈（点按看详情）；
 // 仅 1 点也渲染（单点居中）
-function svgScatter(data, w, h, color) {
+function svgScatter(data, w, h, color, sel) {
   const raw = pickPairs(Array.isArray(data) ? data : [], 'ts', 'uv');
   if (!raw.length) return '';
   const tx = minMax(
@@ -253,10 +283,13 @@ function svgScatter(data, w, h, color) {
       return p.y;
     })
   );
-  let dots = '';
+  const si = selIndex(sel, raw.length);
+  let dots = '',
+    ring = '';
   for (let i = 0; i < raw.length; i++) {
     let cx = (spanPad(normPt(raw[i].x, tx.min, tx.max)) * w).toFixed(1);
     let cy = ((1 - spanPad(normPt(raw[i].y, ty.min, ty.max))) * h).toFixed(1);
+    if (i === si) ring = selRing(cx, cy, w, h);
     dots +=
       '<circle class="pt" data-i="' +
       i +
@@ -273,11 +306,12 @@ function svgScatter(data, w, h, color) {
       color +
       '" fill-opacity=".85" pointer-events="none"/>';
   }
-  return svgOpen(w, h) + chartBase(w, h) + dots + '</svg>';
+  return svgOpen(w, h) + chartBase(w, h) + dots + ring + '</svg>';
 }
 
-// sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比；仅 1 条也渲染
-function svgBars(data, w, h, color) {
+// sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比；仅 1 条也渲染。
+// 可见柱不接事件，命中用铺满槽位的透明 <rect>（data-i 与传入的升序数组对齐）。
+function svgBars(data, w, h, color, sel) {
   const rows = Array.isArray(data) ? data : [];
   let vals = [],
     i,
@@ -291,28 +325,44 @@ function svgBars(data, w, h, color) {
   if (!(mx > 0)) mx = 1;
   const slot = w / vals.length;
   const bw = Math.min(slot * 0.62, 26);
-  let rects = '';
+  const si = selIndex(sel, vals.length);
+  let rects = '',
+    hits = '',
+    ring = '';
   for (i = 0; i < vals.length; i++) {
     let bh = Math.max((vals[i] / mx) * (h - 6), 2);
+    let bx = i * slot + (slot - bw) / 2;
+    let by = h - bh;
+    if (i === si) ring = selRing((i * slot + slot / 2).toFixed(1), by.toFixed(1), w, h);
     rects +=
       '<rect x="' +
-      (i * slot + (slot - bw) / 2).toFixed(1) +
+      bx.toFixed(1) +
       '" y="' +
-      (h - bh).toFixed(1) +
+      by.toFixed(1) +
       '" width="' +
       bw.toFixed(1) +
       '" height="' +
       bh.toFixed(1) +
       '" rx="3" style="fill:' +
       color +
-      '"/>';
+      '" pointer-events="none"/>';
+    hits +=
+      '<rect class="pt" data-i="' +
+      i +
+      '" x="' +
+      (i * slot).toFixed(1) +
+      '" y="0" width="' +
+      slot.toFixed(1) +
+      '" height="' +
+      h +
+      '" fill="transparent"/>';
   }
-  return svgOpen(w, h) + chartBase(w, h) + rects + '</svg>';
+  return svgOpen(w, h) + chartBase(w, h) + rects + hits + ring + '</svg>';
 }
 
 // ts→key 通用曲线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线；
 // 仅 1 点渲染单点（含参考线）
-function svgTsLine(data, w, h, color, key, refY) {
+function svgTsLine(data, w, h, color, key, refY, sel) {
   const raw = pickPairs(Array.isArray(data) ? data : [], 'ts', key);
   if (!raw.length) return '';
   raw.sort(function (a, b) {
@@ -348,11 +398,14 @@ function svgTsLine(data, w, h, color, key, refY) {
   }
   let body;
   // 数据点标记 + 透明命中圈（点按看详情），与折线同色
-  let marks = '';
+  const si = selIndex(sel, raw.length);
+  let marks = '',
+    ring = '';
   for (let i = 0; i < raw.length; i++) {
     let p = toXY(raw[i]);
     let cx = (p.x * w).toFixed(1),
       cy = ((1 - p.y) * h).toFixed(1);
+    if (i === si) ring = selRing(cx, cy, w, h);
     marks +=
       '<circle class="pt" data-i="' +
       i +
@@ -376,9 +429,10 @@ function svgTsLine(data, w, h, color, key, refY) {
       '" fill="none" style="stroke:' +
       color +
       '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
-      marks;
+      marks +
+      ring;
   } else {
-    body = marks;
+    body = marks + ring;
   }
   return svgOpen(w, h) + chartBase(w, h) + refLine + body + '</svg>';
 }

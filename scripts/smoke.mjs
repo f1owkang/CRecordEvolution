@@ -323,6 +323,9 @@ try {
     (await page.locator('#page_overview .chart svg path[stroke-dasharray]').count()) === 1,
     '概览：估算趋势虚线'
   );
+  check((await page.locator('#page_overview .hero-temp').count()) === 1, '概览：温度行在主卡内');
+  const heroTemp = await page.locator('#page_overview .hero-temp').innerText();
+  check(heroTemp.includes('31.5') && heroTemp.includes('℃'), '概览：温度数值与单位', heroTemp);
   check((await page.locator('#nav_overview').count()) === 1, '底栏：三页导航存在');
   await shot(page, 'overview.png');
 
@@ -358,9 +361,53 @@ try {
   await page.waitForSelector('#page_history .trend-wrap', { timeout: 15000 });
   check((await page.locator('#page_history .trend-hero').count()) === 2, '趋势：两张主卡');
   check((await page.locator('#page_history .trend-tile').count()) === 4, '趋势：四张小图');
+
+  // 容量大图：点按数据点出现读数 + 高亮圈；点图表空白处清除选中回到提示文案
+  const capHero = page.locator('#page_history .trend-hero').first();
+  await capHero.locator('.chart circle[data-i="2"]').click();
+  check(
+    (await capHero.locator('.trend-det').innerText()).includes('mAh'),
+    '趋势：容量大图点按读数'
+  );
+  check((await capHero.locator('circle.pt-sel').count()) === 1, '趋势：容量大图选中高亮');
+  await shot(page, 'trends-tap.png');
+  await capHero.locator('.chart').click({ position: { x: 4, y: 4 } });
+  check(!(await capHero.locator('.trend-det').innerText()).includes('mAh'), '趋势：点空白清除选中');
+
+  // 顶部（最高值）点的高亮圈不能被 SVG 视口裁切：真机点选顶部点曾出现半个圈
+  const topPoint = await capHero.evaluate((el) => {
+    const circles = [...el.querySelectorAll('.chart circle.pt[data-i]')];
+    let best = null;
+    for (const c of circles) {
+      if (best === null || Number(c.getAttribute('cy')) < Number(best.getAttribute('cy'))) best = c;
+    }
+    return best ? Number(best.getAttribute('data-i')) : null;
+  });
+  check(topPoint != null, '趋势：存在可点按数据点');
+  await capHero.locator('.chart circle[data-i="' + topPoint + '"]').click();
+  const ringInside = await capHero.evaluate((el) => {
+    const ring = el.querySelector('circle.pt-sel');
+    const svg = ring && ring.ownerSVGElement;
+    if (!ring || !svg) return false;
+    const cy = Number(ring.getAttribute('cy'));
+    const r = Number(ring.getAttribute('r'));
+    const h = svg.viewBox.baseVal.height;
+    return cy - r - 1 >= 0 && cy + r + 1 <= h;
+  });
+  check(ringInside, '趋势：顶部点高亮圈不被裁切');
+  await shot(page, 'trends-top-tap.png');
+  await capHero.locator('.chart').click({ position: { x: 4, y: 4 } });
+
   await page.locator('#page_history .trend-tile').first().click();
   await page.waitForSelector('#page_history .trend-tile.is-open .trend-big', { timeout: 5000 });
   check(true, '趋势：小图展开大图');
+  const openTile = page.locator('#page_history .trend-tile.is-open');
+  await openTile.locator('.trend-big circle[data-i="0"]').click();
+  check(
+    (await openTile.locator('.trend-det').innerText()).includes('mAh'),
+    '趋势：展开大图点按读数'
+  );
+  check((await openTile.locator('circle.pt-sel').count()) === 1, '趋势：展开大图选中高亮');
   await shot(page, 'trends.png');
 
   await page.click('#nav_settings');
@@ -425,6 +472,15 @@ try {
   check(
     (await page.locator('#page_settings .settings-title').first().innerText()) === '外观',
     '设置：切换中文'
+  );
+  check(
+    (
+      await page.evaluate(() => {
+        const el = document.querySelector('#page_overview .hero-temp');
+        return el ? el.textContent : '';
+      })
+    ).includes('温度'),
+    '概览：温度行中文文案'
   );
   await page.waitForFunction(
     () => window.__crCommands.some((c) => c.indexOf('batteryd once') >= 0),

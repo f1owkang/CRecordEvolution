@@ -312,6 +312,13 @@ html[data-bar='classic'] body {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
+/* 主卡内、容量行下方的紧凑温度行；缺失时整行不渲染 */
+.hero-temp {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
 
 /* 指标格 / 面板 / 图表：概览页的 2 列信息卡与下方图表区共用同一套卡片视觉 */
 .grid {
@@ -748,10 +755,10 @@ html[data-theme='light'] .pill.warn {
   color: var(--faint);
   font-size: 12px;
 }
+/* 点按读数行：图表自带的基线下沿已经是一条分隔线，这里不要再加 border-top，
+   否则趋势页会出现「图表基线 + 读数行边框」双重分割线 */
 .trend-det {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border-soft);
+  margin-top: 4px;
   font-size: 12px;
   color: var(--mute);
   font-variant-numeric: tabular-nums;

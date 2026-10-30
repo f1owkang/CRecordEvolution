@@ -122,6 +122,7 @@ const LANGS = {
     settings_webui_value: '管理器内置 WebUI',
 
     // 概览页：指标格（设计容量 / 满充 / 循环 / 估算 / 内阻）
+    label_temp: '温度',
     label_design: '设计容量',
     label_full: '满充容量',
     label_cycles: '循环次数',
@@ -317,6 +318,7 @@ const LANGS = {
     settings_webui_value: 'Built-in manager WebUI',
 
     // 概览页：指标格（设计容量 / 满充 / 循环 / 估算 / 内阻）
+    label_temp: 'Temp',
     label_design: 'Design capacity',
     label_full: 'Full charge capacity',
     label_cycles: 'Cycle count',

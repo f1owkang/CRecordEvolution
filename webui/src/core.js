@@ -350,7 +350,14 @@ function syncModuleLang(lang) {
 
 function contentFP(doc) {
   return JSON.stringify(doc, function (k, v) {
-    return k === 'updated' || k === 'temp_c' ? undefined : v;
+    // updated 只是采样时间，内容没变时不重绘；温度变化要重绘，但按 0.1℃ 粒度
+    // 纳入指纹，避免浮点尾数抖动让整棵树每秒重建。
+    if (k === 'updated') return undefined;
+    if (k === 'temp_c') {
+      const n = Number(v);
+      return isFinite(n) ? Math.round(n * 10) / 10 : v;
+    }
+    return v;
   });
 }
 

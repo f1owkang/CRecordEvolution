@@ -91,15 +91,25 @@ function buildOverviewModel(doc, lang, t) {
         n: quality.spread_pct,
       })
     : t('qual_insufficient');
+  // 温度 meta 行：temp_c 缺失时整行省略（不显示占位符）；数值与 ℃ 之间留空格。
+  const tempC = doc ? Number(doc.temp_c) : NaN;
+  const tempText =
+    doc != null && doc.temp_c != null && isFinite(tempC)
+      ? t('label_temp') + ' ' + fmtFix(tempC, 1) + ' ℃'
+      : null;
   const recent = doc && Array.isArray(doc.recent) ? doc.recent : [];
   const recentAsc = ascByTs(recent);
   const designOK = design != null && Number(design) > 0;
   const showEst = designOK || recent.length > 0;
   const estPoints = pickPairs(recentAsc, 'ts', 'mah');
   const latest = recent.length ? recent[0] : null;
-  const estSvg = estPoints.length
-    ? svgLine(recentAsc, CHART_W, CHART_H, 'var(--accent)', trendLine)
-    : '';
+  // 选中点高亮要重画 SVG：estSvg 返回一个按选中下标生成图的函数，
+  // 组件只负责把当前下标传进来（图表数据仍全部来自这里）。
+  const estSvg = function (sel) {
+    return estPoints.length
+      ? svgLine(recentAsc, CHART_W, CHART_H, 'var(--accent)', trendLine, sel)
+      : '';
+  };
   const capParts = [];
   if (latest != null) capParts.push(t('est_cap_latest', { mah: fmtInt(latest.mah) }));
   if (doc && doc.samples_n != null)
@@ -130,6 +140,7 @@ function buildOverviewModel(doc, lang, t) {
     qualityText,
     qualityDetailText,
     showEst,
+    tempText,
     estSvg,
     estPoints,
     estCap,
