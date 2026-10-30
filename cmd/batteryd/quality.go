@@ -15,7 +15,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 const (
 	// qualityMaxSpreadPct 互检偏差上限：最高与最低口径的相对偏差超过此值判不
@@ -24,7 +27,56 @@ const (
 	qualityMaxSpreadPct = 40
 	// kvQualityOK 上一次互检结论（"1"/"0"）：只在结论翻转时落事件，避免刷屏
 	kvQualityOK = "quality_ok"
+	// kvMidImpliedTs / kvDisImpliedTs 对应隐含容量的最近更新时间（Unix 秒）：
+	// 互检前按 retainDays 保留窗口做时效判定，过期渠道按缺失处理，避免半年没
+	// 放电的设备拿旧值永久误报/掩盖问题。写隐含值时与值一起落盘。
+	kvMidImpliedTs = "mid_implied_ts"
+	kvDisImpliedTs = "dis_implied_ts"
 )
+
+// impliedFreshness 为一路隐含容量口径的时效判定结果。
+type impliedFreshness struct {
+	// ValueUAh 参与互检的值（µAh）：过期渠道为 0（按缺失处理）。
+	ValueUAh int64
+	// AgeSecs 距最近更新的秒数；ts 缺失或非法时为 0。
+	AgeSecs int64
+	// Stale 值存在但已超过保留窗口，不参与互检。
+	Stale bool
+	// MissingTS 值存在但缺时间戳（旧库升级）：不判死，按未过期处理，
+	// 由装配层回填当前时间给一次宽限。
+	MissingTS bool
+}
+
+// judgeImpliedFreshness 判断某路隐含容量口径是否仍在保留窗口内。retainDays
+// 复用数据保留窗口（main.go 的 retainDays），不另设时效 magic number：
+// 超过 retainDays×86400 秒未更新即视为过期。valueUAh<=0 表示该路本就缺失；
+// ts<=0 表示旧库无时间戳，按「未过期 + 需回填宽限」处理；时钟回拨（ts 在未来）
+// 不判过期。
+func judgeImpliedFreshness(valueUAh, updatedTs, now int64, retainDays int) impliedFreshness {
+	f := impliedFreshness{ValueUAh: valueUAh}
+	if valueUAh <= 0 {
+		return f
+	}
+	if updatedTs <= 0 {
+		f.MissingTS = true
+		return f
+	}
+	if age := now - updatedTs; age > 0 {
+		f.AgeSecs = age
+	}
+	if maxAge := int64(retainDays) * 86400; f.AgeSecs > maxAge {
+		f.Stale = true
+		f.ValueUAh = 0
+	}
+	return f
+}
+
+// freshImpliedUAh 只读地读取一路隐含容量并按保留窗口过滤，供 stats() 的
+// JSON 出口使用（不写库、不落事件）：概览的「口径一致/互差」必须与结算侧
+// checkQuality 用同一份时效口径，否则旧值仍会在概览里误报。
+func freshImpliedUAh(st KVStore, valueKey, tsKey string, now int64) int64 {
+	return judgeImpliedFreshness(kvInt(st, valueKey), kvInt(st, tsKey), now, retainDays).ValueUAh
+}
 
 // Quality 通道互检结果。各路单位 mAh，缺哪路省哪路（出口按「缺失即省略」降级）。
 type Quality struct {
@@ -72,13 +124,16 @@ func CapacityQuality(emaUAh, midUAh, disUAh, fullUAh int64) *Quality {
 	return &q
 }
 
-// checkQuality 通道互检装配：取各路口径比对，结论翻转时落事件留痕。任何失败
-// 只静默，绝不影响结算主链路。
+// checkQuality 通道互检装配：取各路口径比对，结论翻转时落事件留痕。mid/dis
+// 两路隐含容量先过时效判定：超过保留窗口的按缺失处理（不参与互检）并落一次
+// quality_stale 事件；旧库缺时间戳时回填当前时间给一次宽限。任何失败只静默，
+// 绝不影响结算主链路。
 func (p *Pipeline) checkQuality() {
+	now := p.now().Unix()
 	q := CapacityQuality(
 		kvInt(p.st, kvKeyEmaUAh),
-		kvInt(p.st, kvMidImpliedUAh),
-		kvInt(p.st, kvDisImpliedUAh),
+		p.impliedForQuality(kvMidImpliedUAh, kvMidImpliedTs, "mid", now),
+		p.impliedForQuality(kvDisImpliedUAh, kvDisImpliedTs, "dis", now),
 		p.fullUAh,
 	)
 	if q == nil {
@@ -100,4 +155,25 @@ func (p *Pipeline) checkQuality() {
 		q.SpreadPct, q.High, q.Low)
 	_ = p.st.InsertEvent("quality_warn",
 		fmt.Sprintf("spread=%d%% high=%s low=%s", q.SpreadPct, q.High, q.Low))
+}
+
+// impliedForQuality 读取一路隐含容量并做时效装配：过期的按缺失（0）返回并落
+// quality_stale 事件；缺时间戳的旧库回填当前时间（宽限 retainDays 天）并说明。
+// 值本身缺失（≤0）时什么都不做。
+func (p *Pipeline) impliedForQuality(valueKey, tsKey, name string, now int64) int64 {
+	f := judgeImpliedFreshness(kvInt(p.st, valueKey), kvInt(p.st, tsKey), now, retainDays)
+	switch {
+	case f.MissingTS:
+		if err := p.st.KVSet(tsKey, strconv.FormatInt(now, 10)); err != nil {
+			_ = p.st.InsertEvent("quality_stale", fmt.Sprintf(
+				"%s 缺少时间戳且回填失败：%v（本次仍参与互检）", name, err))
+		} else {
+			_ = p.st.InsertEvent("quality_stale", fmt.Sprintf(
+				"%s 缺少时间戳，已按当前时间回填宽限 %d 天", name, retainDays))
+		}
+	case f.Stale:
+		_ = p.st.InsertEvent("quality_stale", fmt.Sprintf(
+			"%s 已 %d 天未更新，不参与互检", name, f.AgeSecs/86400))
+	}
+	return f.ValueUAh
 }

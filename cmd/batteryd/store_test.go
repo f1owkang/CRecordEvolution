@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"math"
 	"path/filepath"
 	"testing"
 )
@@ -477,5 +478,123 @@ func TestLatestSampleAndEvent(t *testing.T) {
 	}
 	if _, _, _, ok, err := s.LatestEvent([]string{"missing"}); err != nil || ok {
 		t.Fatalf("无匹配事件应返回 ok=false: (%v,%v)", ok, err)
+	}
+}
+
+// 电流刻度回填的存储层：只缩放 [from,to] 区间内的 ua，cap/uv/cc 不动；
+// 比例非法/区间非法/可能溢出时返回错误且不改数据。
+func TestScaleSamplesUAInRange(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	if err := s.InsertSample(100, 3_000, 4_100_000, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(200, -3_000, 4_100_000, 30, 6_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(400, 3_000, 4_100_000, 40, 0); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.ScaleSamplesUAInRange(100, 200, 1000)
+	if err != nil {
+		t.Fatalf("ScaleSamplesUAInRange: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("更新行数 = %d, want 2", n)
+	}
+	rows, err := s.SamplesRange(100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("区间样本数 = %d, want 2", len(rows))
+	}
+	if rows[0].UA != 3_000_000 || rows[1].UA != -3_000_000 {
+		t.Fatalf("缩放后 ua = %d/%d, want 3000000/-3000000", rows[0].UA, rows[1].UA)
+	}
+	// cap/uv/cc 不动
+	if rows[0].Cap != 20 || rows[0].UV != 4_100_000 || rows[1].CounterUAh != 6_000_000 {
+		t.Fatalf("cap/uv/cc 不应被缩放: %+v / %+v", rows[0], rows[1])
+	}
+	// 区间外样本保持不变
+	out, err := s.SamplesRange(400, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].UA != 3_000 {
+		t.Fatalf("区间外样本被误改: %+v", out)
+	}
+	// 反向缩放可还原
+	if _, err := s.ScaleSamplesUAInRange(100, 200, 0.001); err != nil {
+		t.Fatalf("反向缩放: %v", err)
+	}
+	rows, _ = s.SamplesRange(100, 200)
+	if rows[0].UA != 3_000 || rows[1].UA != -3_000 {
+		t.Fatalf("反向缩放后 ua = %d/%d, want 3000/-3000", rows[0].UA, rows[1].UA)
+	}
+
+	for _, f := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		if _, err := s.ScaleSamplesUAInRange(100, 200, f); err == nil {
+			t.Fatalf("非法比例 %v 应返回错误", f)
+		}
+	}
+	if _, err := s.ScaleSamplesUAInRange(200, 100, 2); err == nil {
+		t.Fatal("反向区间应返回错误")
+	}
+	// 溢出保护：缩放后超 int64 时报错且不改写
+	if err := s.InsertSample(500, math.MaxInt64/2+1, 4_100_000, 50, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ScaleSamplesUAInRange(500, 500, 1000); err == nil {
+		t.Fatal("溢出缩放应返回错误")
+	}
+	got, err := s.SamplesRange(500, 500)
+	if err != nil || len(got) != 1 || got[0].UA != math.MaxInt64/2+1 {
+		t.Fatalf("溢出失败后样本不应被修改: %+v, %v", got, err)
+	}
+}
+
+// 内阻回填的存储层：按 1/刻度 缩放区间内 mo，区间外不动。
+func TestScaleResistanceInRange(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer func() { _ = s.Close() }()
+
+	if err := s.InsertResistance(100, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertResistance(200, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertResistance(300, 80); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.ScaleResistanceInRange(100, 200, 0.001)
+	if err != nil {
+		t.Fatalf("ScaleResistanceInRange: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("更新行数 = %d, want 2", n)
+	}
+	mos, err := s.RecentResistance(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{80, 0.0005, 0.05} // 新→旧
+	if len(mos) != len(want) {
+		t.Fatalf("内阻样本数 = %d, want %d", len(mos), len(want))
+	}
+	for i := range want {
+		if math.Abs(mos[i]-want[i]) > 1e-12 {
+			t.Fatalf("mo[%d] = %v, want %v", i, mos[i], want[i])
+		}
+	}
+	for _, f := range []float64{0, -2, math.NaN(), math.Inf(-1)} {
+		if _, err := s.ScaleResistanceInRange(100, 200, f); err == nil {
+			t.Fatalf("非法比例 %v 应返回错误", f)
+		}
+	}
+	if _, err := s.ScaleResistanceInRange(200, 100, 2); err == nil {
+		t.Fatal("反向区间应返回错误")
 	}
 }

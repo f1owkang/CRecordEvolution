@@ -115,7 +115,8 @@ func (a *app) diagInput() diagInput {
 		in.LastSampleTS = ts
 	}
 	if kind, detail, ts, ok, err := a.st.LatestEvent([]string{
-		"counter_scale", "cur_cal", "cur_cal_fail", "quality_warn",
+		"counter_scale", "cur_cal", "cur_cal_fail", "cur_backfill", "cur_backfill_fail",
+		"quality_warn", "quality_stale",
 	}); err == nil && ok {
 		in.LastEvent = &diagEvent{Kind: kind, Detail: diagClean(detail, diagEventDetailMax), TS: ts}
 	}
@@ -395,7 +396,7 @@ func diagDischargeLine(d DischargeRow, loc *time.Location) string {
 }
 
 func diagEventsLine(counts map[string]int64) string {
-	keys := []string{"cur_cal", "cur_cal_fail", "counter_scale", "quality_warn", "tick_error", "sample_fail"}
+	keys := []string{"cur_cal", "cur_cal_fail", "cur_backfill_fail", "counter_scale", "quality_warn", "quality_stale", "tick_error", "sample_fail"}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))

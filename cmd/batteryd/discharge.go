@@ -192,8 +192,13 @@ func (p *Pipeline) calibrateDischarge(row DischargeRow) {
 		_ = p.st.InsertEvent("dis_cal_fail", err.Error())
 		return
 	}
-	// 留给通道互检（checkQuality）作对照口径
+	// 留给通道互检（checkQuality）作对照口径：值与最近更新时间成对落盘，
+	// 互检据此判时效（超保留窗口的旧值不参与互检）。先写值再写 ts；ts 写失败
+	// 只留痕，不影响放电校准主链路。
 	_ = p.st.KVSet(kvDisImpliedUAh, strconv.FormatInt(implied, 10))
+	if err := p.st.KVSet(kvDisImpliedTs, strconv.FormatInt(row.TS, 10)); err != nil {
+		_ = p.st.InsertEvent("dis_cal_fail", "写 dis_implied_ts 失败："+err.Error())
+	}
 	p.log("[校准] 放电差分(%d→%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
 		row.StartCap, row.EndCap, implied/1000, ema/1000, blended/1000)
 	_ = p.st.InsertEvent("dis_cal", fmt.Sprintf("implied=%d ema=%d→%d", implied, ema, blended))

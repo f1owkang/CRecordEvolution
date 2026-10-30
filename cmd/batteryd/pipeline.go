@@ -752,7 +752,9 @@ func (p *Pipeline) settle() error {
 	// accUAs（已被当前刻度/锚点缩放），否则已学刻度会在下一会话被反推回 ×1。
 	// 学到新刻度时本会话已累计的积分电量按新刻度重算（avgI/倍率同步），否则
 	// 教会刻度的这个会话会永远停在旧量纲（avgI≈0、倍率 0.00C），历史里看起来
-	// 像是没校准。
+	// 像是没校准。旧有效刻度要在学习之前确定（学习会覆盖 p.curScale），供随后
+	// 的样本/内阻/ICA 基准回填使用。
+	oldScale, oldScaleKnown := p.effectiveCurrentScale()
 	if counterUAh > 0 {
 		if scale, learned := p.learnCurrentScaleFromSession(s.rawUAs, counterUAh); learned {
 			if acc := scaledAccUAs(s.rawUAs, scale); acc > 0 {
@@ -762,6 +764,14 @@ func (p *Pipeline) settle() error {
 				}
 				row.AvgI = avgI
 				row.CRate = crRate(avgI, p.designUAh)
+			}
+			if oldScaleKnown {
+				p.backfillSessionCurrentScale(oldScale, scale, s.startTs, row.EndTs)
+			} else {
+				// 没有可确定的旧刻度（未校准且 charge_full 无锚点）：归一读数来自
+				// 逐值幅值启发式，无法反推单一比例，禁止二次量纲猜测，保留现状。
+				_ = p.st.InsertEvent("cur_backfill_skip", fmt.Sprintf(
+					"学到刻度 %g 但无旧刻度锚点（cur_scale=0 且 charge_full 缺失），跳过本会话样本/内阻回填", scale))
 			}
 		}
 	}
@@ -898,6 +908,68 @@ func (p *Pipeline) learnCurrentScaleFromSession(rawUAs, counterUAh int64) (float
 		p.log("[校准] 电流刻度 %g→%g µA/原始单位（电量计差分与原始读数积分比值）", old, scale)
 	}
 	return scale, true
+}
+
+// effectiveCurrentScale 返回本会话样本落库时实际生效的电流刻度：已学刻度优先，
+// 未校准时退回 charge_full 量纲锚点（仅当锚点给出确定的 1 或 1000）；无锚点时
+// 返回 ok=false——此时归一来自逐值幅值启发式，反推不出单一比例。
+func (p *Pipeline) effectiveCurrentScale() (float64, bool) {
+	if p.curScale > 0 {
+		return p.curScale, true
+	}
+	if p.fullUAh > 0 {
+		if anchor := anchorScaleUA(p.fullUAh); anchor == 1 || anchor == 1000 {
+			return anchor, true
+		}
+	}
+	return 0, false
+}
+
+// backfillSessionCurrentScale 学到新刻度后回填本会话已落库的电流派生数据：
+// samples.ua 乘 new/old；resistance.mo 乘 old/new（R=ΔU/ΔI，电流刻度放大 k 倍
+// 则内阻缩小 k 倍）；已有 ica_peak_base 也按 new/old 修正，使新刻度下算出的
+// peak_h_rel 与历史基准可比（否则首个校准会话能用旧刻度样本把基准写偏 1000×）。
+// 必须在 recordCCCT/recordICA 之前调用，两个特征采集才能看到新刻度样本。
+// 任何一步失败只记 events，绝不影响结算主链路。
+func (p *Pipeline) backfillSessionCurrentScale(old, newScale float64, from, to int64) {
+	factor := newScale / old
+	if !(factor > 0) || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		_ = p.st.InsertEvent("cur_backfill_fail", fmt.Sprintf("刻度回填比例非法：old=%g new=%g", old, newScale))
+		return
+	}
+	if factor == 1 {
+		return // 旧刻度与学到的刻度一致：样本已是新刻度，无需改写
+	}
+	nSamples, err := p.st.ScaleSamplesUAInRange(from, to, factor)
+	if err != nil {
+		// 样本回填失败时不再修正 ICA 基准：基准与样本必须同刻度，否则 rel 失真。
+		_ = p.st.InsertEvent("cur_backfill_fail", "samples 回填失败："+err.Error())
+		return
+	}
+	nRes, rerr := p.st.ScaleResistanceInRange(from, to, 1/factor)
+	if rerr != nil {
+		_ = p.st.InsertEvent("cur_backfill_fail", "resistance 回填失败："+rerr.Error())
+	}
+	baseNote := "ica_peak_base 不存在（将以新刻度写入基准）"
+	if txt, has := p.st.KVGet(kvICAPeakBase); has {
+		base, perr := strconv.ParseFloat(txt, 64)
+		if perr != nil || !(base > 0) || math.IsInf(base, 0) {
+			// 基准本身异常：留给 recordICA 按原逻辑降级留痕，这里不猜。
+			baseNote = "ica_peak_base 异常，未修正"
+		} else if next := base * factor; math.IsNaN(next) || math.IsInf(next, 0) {
+			_ = p.st.InsertEvent("cur_backfill_fail", fmt.Sprintf("ica_peak_base 缩放结果非有限：%g×%g", base, factor))
+			baseNote = "ica_peak_base 修正失败"
+		} else if err := p.st.KVSet(kvICAPeakBase, strconv.FormatFloat(next, 'f', -1, 64)); err != nil {
+			_ = p.st.InsertEvent("cur_backfill_fail", "ica_peak_base 回填失败："+err.Error())
+			baseNote = "ica_peak_base 修正失败"
+		} else {
+			baseNote = "ica_peak_base 已按比例修正"
+		}
+	}
+	_ = p.st.InsertEvent("cur_backfill", fmt.Sprintf(
+		"刻度 %g→%g 回填本会话 samples %d 条、resistance %d 条；%s",
+		old, newScale, nSamples, nRes, baseNote))
+	p.log("[校准] 刻度 %g→%g，回填本会话样本 %d 条、内阻 %d 条", old, newScale, nSamples, nRes)
 }
 
 // recordCCCT 从会话样本中识别跨 0.1V 窗的恒流段并落 ccct 表。倍率门控

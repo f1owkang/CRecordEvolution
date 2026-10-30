@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -475,6 +476,69 @@ func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
 			err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh)
 			return r, err
 		}, from, to)
+}
+
+// checkScaleFactor 校验按区间缩放的比例：必须为正的有限值，否则拒绝执行
+// （NaN/Inf/0 都会把整段数据写成垃圾）。
+func checkScaleFactor(factor float64) error {
+	if !(factor > 0) || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		return fmt.Errorf("缩放比例非法：%v", factor)
+	}
+	return nil
+}
+
+// ScaleSamplesUAInRange 把 [from,to] 闭区间内样本的电流 ua 乘以 factor，用于
+// 电流刻度自校准后回填本会话样本（见 Pipeline.backfillSessionCurrentScale）。
+// cap/uv/cc 不动。factor 非法、区间非法或缩放后可能超出 int64 时返回错误且不做
+// 修改；返回实际更新行数。
+func (s *Store) ScaleSamplesUAInRange(from, to int64, factor float64) (int64, error) {
+	if err := checkScaleFactor(factor); err != nil {
+		return 0, err
+	}
+	if from > to {
+		return 0, fmt.Errorf("缩放区间非法：[%d,%d]", from, to)
+	}
+	// 先查区间内最大幅值：SQLite 的整数乘法溢出会静默转成 REAL，CAST 回
+	// INTEGER 时再静默饱和，事后无法与正常数据区分，必须提前拦截。
+	var maxAbs int64
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(ABS(ua)), 0) FROM samples WHERE ts BETWEEN ? AND ?`,
+		from, to).Scan(&maxAbs); err != nil {
+		return 0, err
+	}
+	if float64(maxAbs)*factor > float64(math.MaxInt64) {
+		return 0, fmt.Errorf("缩放溢出：区间最大 |ua|=%d × %g 超出 int64", maxAbs, factor)
+	}
+	res, err := s.db.Exec(`UPDATE samples SET ua = CAST(ROUND(ua * ?) AS INTEGER)
+		WHERE ts BETWEEN ? AND ?`, factor, from, to)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// ScaleResistanceInRange 把 [from,to] 闭区间内内阻样本的 mo（mΩ）乘以 factor。
+// 内阻来自 R=ΔU/ΔI，电流刻度放大 k 倍时内阻应缩小 k 倍，故调用方传 1/k。
+// factor 非法、区间非法或结果非有限时返回错误且不做修改；返回实际更新行数。
+func (s *Store) ScaleResistanceInRange(from, to int64, factor float64) (int64, error) {
+	if err := checkScaleFactor(factor); err != nil {
+		return 0, err
+	}
+	if from > to {
+		return 0, fmt.Errorf("缩放区间非法：[%d,%d]", from, to)
+	}
+	var maxAbs float64
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(ABS(mo)), 0) FROM resistance WHERE ts BETWEEN ? AND ?`,
+		from, to).Scan(&maxAbs); err != nil {
+		return 0, err
+	}
+	if v := maxAbs * factor; math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("缩放结果非有限：区间最大 |mo|=%g × %g", maxAbs, factor)
+	}
+	res, err := s.db.Exec(`UPDATE resistance SET mo = mo * ? WHERE ts BETWEEN ? AND ?`, factor, from, to)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // CcctRow 为 ccct 表一行：穿窗上沿时刻、窗下/上沿电压与穿窗耗时。

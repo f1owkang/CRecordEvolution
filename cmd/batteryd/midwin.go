@@ -230,8 +230,13 @@ func (p *Pipeline) calibrateMid(now int64) {
 		_ = p.st.InsertEvent("mid_cal_fail", err.Error())
 		return
 	}
-	// 留给通道互检（checkQuality）作对照口径
+	// 留给通道互检（checkQuality）作对照口径：值与最近更新时间成对落盘，
+	// 互检据此判时效（超保留窗口的旧值不参与互检）。先写值再写 ts；ts 写失败
+	// 只留痕，不影响校准主链路。
 	_ = p.st.KVSet(kvMidImpliedUAh, strconv.FormatInt(mid, 10))
+	if err := p.st.KVSet(kvMidImpliedTs, strconv.FormatInt(now, 10)); err != nil {
+		_ = p.st.InsertEvent("mid_cal_fail", "写 mid_implied_ts 失败："+err.Error())
+	}
 	_ = p.st.KVSet(kvMidCalTs, strconv.FormatInt(now, 10))
 	p.log("[校准] 中段分窗(%d~%d%%) 隐含=%dmAh，按1/10权重并入（%d→%d）",
 		midWinLo, midWinHi, mid/1000, ema/1000, blended/1000)

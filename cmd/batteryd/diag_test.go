@@ -155,7 +155,7 @@ func TestRenderDiag(t *testing.T) {
 		"valid=1", "avgI=7000mA", "ua=14280000µA·s", "cc=3850011", "src=cc", "est=5273mAh",
 		"valid=0 reason=out_of_window", "src=?",
 		"discharge=", "released=3308mAh implied=4531mAh",
-		"events7d=cur_cal=1 cur_cal_fail=0 counter_scale=2",
+		"events7d=cur_cal=1 cur_cal_fail=0 cur_backfill_fail=0 counter_scale=2 quality_warn=0 quality_stale=0 tick_error=0 sample_fail=0",
 		"last_event=", "(3d)", "counter_scale:", "保留电量计",
 		"log=[10-28 20:05:12]",
 	} {

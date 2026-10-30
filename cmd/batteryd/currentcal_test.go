@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -241,6 +242,11 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	if err := r.st.KVSet(kvKeySamples, "3"); err != nil {
 		t.Fatal(err)
 	}
+	// 预置一个旧刻度下写成的 ICA 基准：学到 ×1000 后基准应同步 ×1000，否则
+	// 新刻度算出的峰高相对旧基准会恒偏 1000×。
+	if err := r.st.KVSet(kvICAPeakBase, "1234"); err != nil {
+		t.Fatal(err)
+	}
 
 	cc := int64(6_000_000)
 	putCounter(t, r, cc)
@@ -253,6 +259,11 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 			putCounter(t, r, cc)
 		}
 		r.step("Charging")
+	}
+	// 会话期内落一条按旧刻度算出的内阻（电流被当 µA 直通 ⇒ mo 偏大 1000 倍），
+	// 校准回填后应缩回 1/1000。
+	if err := r.st.InsertResistance(r.cur.Unix(), 50); err != nil {
+		t.Fatal(err)
 	}
 	r.put(80, 20_000, 4_100_000)
 	for k := 0; k < 3; k++ {
@@ -304,6 +315,46 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("应落 1 条 cur_cal 事件, got %d", n)
+	}
+
+	// 校准会话自身落库的样本必须已按新刻度回填（否则 recordCCCT/recordICA 会用
+	// 旧刻度样本，把 1000× 偏小的峰高写进 ica_peak_base）。区间回填不早于首拍、
+	// 不晚于结算时刻，全部 61 条样本都应在内。
+	firstRows, err := r.st.SamplesRange(sess.StartTs, sess.EndTs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstRows) < 30 {
+		t.Fatalf("校准会话样本数 = %d, 过少", len(firstRows))
+	}
+	for _, row := range firstRows {
+		if row.UA != 3_000_000 {
+			t.Fatalf("校准会话样本 ua = %dµA, want 3000000（已按新刻度回填）", row.UA)
+		}
+	}
+	// 内阻按 1/刻度 缩放：R=ΔU/ΔI，电流放大 1000 倍则内阻缩小 1000 倍。
+	var mo float64
+	if err := r.st.db.QueryRow(`SELECT mo FROM resistance`).Scan(&mo); err != nil {
+		t.Fatalf("读取回填后的内阻: %v", err)
+	}
+	if math.Abs(mo-0.05) > 1e-9 {
+		t.Fatalf("回填后内阻 = %v mΩ, want 0.05（旧刻度 50mΩ ÷ 1000）", mo)
+	}
+	// ICA 基准按同一比例修正，保证新刻度下的 peak_h_rel 与历史基准可比。
+	baseTxt, ok := kvString(t, r.st, kvICAPeakBase)
+	if !ok {
+		t.Fatal("应有 ica_peak_base")
+	}
+	base, perr := strconv.ParseFloat(baseTxt, 64)
+	if perr != nil || math.Abs(base-1_234_000) > 1e-6 {
+		t.Fatalf("ica_peak_base = %q, want 1234000（旧基准 1234 × 1000）", baseTxt)
+	}
+	var backfillN int
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='cur_backfill'`).Scan(&backfillN); err != nil {
+		t.Fatal(err)
+	}
+	if backfillN != 1 {
+		t.Fatalf("应落 1 条 cur_backfill 事件, got %d", backfillN)
 	}
 
 	// 学习刻度即时生效：第二会话首拍采样电流已按 ×1000 归一
@@ -377,6 +428,79 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	r.rebuildPipeline()
 	if got := r.p.currentUA(3_000); got != 3_000_000 {
 		t.Fatalf("重启后 currentUA(3000) = %d, want 3000000", got)
+	}
+}
+
+// 无锚点机型（无 charge_full、未校准）禁止回填：旧有效刻度无法确定，任何按
+// 比例缩放都是二次量纲猜测（AGENTS 明令禁止），会把真实的 µA 样本再放大/缩小。
+// 学到刻度只影响之后的会话，本会话样本/内阻保持原样并记事件留痕。
+func TestNoAnchorSkipsCurrentScaleBackfill(t *testing.T) {
+	r := newPipeRig(t) // 不写 charge_full：fullUAh=0，anchorScaleUA=0
+	if err := r.st.KVSet(kvKeyEmaUAh, "4800000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.KVSet(kvKeySamples, "3"); err != nil {
+		t.Fatal(err)
+	}
+
+	cc := int64(6_000_000)
+	putCounter(t, r, cc)
+	// 原始 2400：无锚点时幅值启发式 ×1000 ⇒ 采样 2,400,000µA（本身已是 µA）。
+	// 电量计每拍 +40000µAh 共 2400mAh，涨幅 60 点 ⇒ 隐含 4000mAh（设计容量），
+	// 原始积分 vs 电量计比值 = 2,400,000×3600/(2400×3600) = 1000 ⇒ 学到 ×1000。
+	for i := int64(0); i <= 60; i++ {
+		r.put(20+i, 2_400, 4_100_000)
+		if i > 0 {
+			cc += 40_000
+			putCounter(t, r, cc)
+		}
+		r.step("Charging")
+	}
+	// 会话期内的旧内阻样本：无锚点不回填，必须保持原值。
+	if err := r.st.InsertResistance(r.cur.Unix(), 50); err != nil {
+		t.Fatal(err)
+	}
+	r.put(80, 0, 4_100_000)
+	for k := 0; k < 3; k++ {
+		if out := r.step("Full"); out.SessionSettled {
+			break
+		}
+	}
+	if got, ok := kvString(t, r.st, kvCurrentScale); !ok || got != "1000" {
+		t.Fatalf("kv[cur_scale] = (%q,%v), want (\"1000\",true)", got, ok)
+	}
+	sess := onlySession(t, r.st)
+	rows, err := r.st.SamplesRange(sess.StartTs, sess.EndTs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) < 30 {
+		t.Fatalf("样本数 = %d, 过少", len(rows))
+	}
+	for _, row := range rows {
+		if row.UA != 2_400_000 {
+			t.Fatalf("无锚点会话样本 ua = %dµA, want 2400000（不回填）", row.UA)
+		}
+	}
+	var mo float64
+	if err := r.st.db.QueryRow(`SELECT mo FROM resistance`).Scan(&mo); err != nil {
+		t.Fatalf("读取内阻: %v", err)
+	}
+	if math.Abs(mo-50) > 1e-9 {
+		t.Fatalf("无锚点内阻 = %v mΩ, want 50（不回填）", mo)
+	}
+	var n int
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='cur_backfill_skip'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("无锚点应落 1 条 cur_backfill_skip, got %d", n)
+	}
+	if err := r.st.db.QueryRow(`SELECT count(*) FROM events WHERE kind='cur_backfill'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("无锚点不应回填, cur_backfill = %d", n)
 	}
 }
 

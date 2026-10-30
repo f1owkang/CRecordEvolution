@@ -385,13 +385,17 @@ func (a *app) stats() (Design, Snapshot, error) {
 		CycleEquiv: cycleEquiv(kvInt(a.st, kvChargedTotal), a.designUAh),
 		RMoh:       a.rMoh(),
 	}
-	// 通道互检：四路容量口径互相印证，量纲误判/脏数据类问题的出口（见 quality.go）
+	// 通道互检：四路容量口径互相印证，量纲误判/脏数据类问题的出口（见 quality.go）。
+	// mid/dis 隐含容量按保留窗口过滤，半年前的旧值不参与互检，避免概览「口径一致/
+	// 互差」长期误报或掩盖问题（与结算侧 checkQuality 用同一判定）。
 	fullUAh := int64(0)
 	if v, err := a.readIntNode("charge_full"); err == nil {
 		fullUAh = v
 	}
+	now := time.Now().Unix()
 	snap.Quality = CapacityQuality(kvInt(a.st, kvKeyEmaUAh),
-		kvInt(a.st, kvMidImpliedUAh), kvInt(a.st, kvDisImpliedUAh), fullUAh)
+		freshImpliedUAh(a.st, kvMidImpliedUAh, kvMidImpliedTs, now),
+		freshImpliedUAh(a.st, kvDisImpliedUAh, kvDisImpliedTs, now), fullUAh)
 	// 电流刻度校准诊断：采样节点、学习刻度、当前读数原始/归一值（设置页展示）
 	snap.Calib = a.calibInfo()
 	if ema, samples, ok := a.estimate(); ok {
