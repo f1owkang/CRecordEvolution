@@ -33,7 +33,7 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 ## Features
 
 - **Health and capacity at a glance**: the module description shows kernel health, full-charge and design capacities plus the measured estimate — no app needed.
-- **Three-page WebUI**: Overview / History / Settings; history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap.
+- **Three-page WebUI**: Overview / History / Settings; the Overview shows the current battery temperature, history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap with per-point values.
 - **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
 - **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.
 - **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
@@ -59,7 +59,7 @@ Pick the zip in your manager and answer two short prompts (the same in-app and i
 - Older Magisk versions have no Action button; wait for a reboot;
 - Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
 - The language is chosen at install time and can be switched later in the WebUI; the module description refreshes immediately. With no explicit choice it follows the system language;
-- KernelSU / APatch / MMRL can open the bundled WebUI: the bottom bar toggles between a floating pill and the classic edge-to-edge style, and chart points can be tapped for exact values.
+- KernelSU / APatch / MMRL can open the bundled WebUI: the bottom bar toggles between a floating pill and the classic edge-to-edge style, and chart points can be tapped for exact values (both the Overview chart and the History trend charts highlight the selected point).
 
 ## How it works
 

@@ -163,6 +163,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | `.github/workflows/release.yml` | CI 构建、WebUI 守卫、KernelSU 校验、双变体打包与发布 |
 | `.github/workflows/webui.yml` | PR/push 的 WebUI 构建、离线/体积守卫与无头冒烟 |
 | `.github/workflows/go.yml` | PR/push 的 Go 守卫：gofmt / go vet / go test |
+| `.release-baseline` | 上一版发布内容所在的 commit（更新日志基线），CI 发版后自动回写，不要手工改 |
 | `README.md` / `README_EN.md` | 中英用户文档，必须同步 |
 | `docs/` | 论文 PDF 库；过程文档不入库 |
 
@@ -187,8 +188,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 ### 三页与设置项
 
-- 概览：健康度主卡、容量/循环/估算/内阻/趋势/可信度、估算趋势图。趋势图的 `recent` 与 `trend_mah_per_week` 共用同一份 estimates 窗口（最近 200 点）；趋势显著时 JSON 附带 `trend_from_mah`/`trend_to_mah`（拟合线在窗口首/末点的容量），前端直接用这两个端点画虚线——不要只下发斜率让前端拿首个实际点外推，那样虚线与数据的时间窗/锚点不一致，会显示成「虚线方向和数据相反」。
-- 历史：摘要统计；`记录` 视图按日期分组的时间轴（充电/放电，范围与类型筛选合并为一行 chip，7/30/90 天 + 全部/充电/放电，分页“加载更早”）；`趋势` 视图的容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图，小图点按展开；记录详情渐进展开。
+- 概览：健康度主卡（含主卡内、容量行下方的温度行 `temp_c`，缺失即整行省略）、容量/循环/估算/内阻/趋势/可信度、估算趋势图。`contentFP` 按 0.1℃ 粒度把 `temp_c` 纳入内容指纹，否则温度变了不重绘。趋势图的 `recent` 与 `trend_mah_per_week` 共用同一份 estimates 窗口（最近 200 点）；趋势显著时 JSON 附带 `trend_from_mah`/`trend_to_mah`（拟合线在窗口首/末点的容量），前端直接用这两个端点画虚线——不要只下发斜率让前端拿首个实际点外推，那样虚线与数据的时间窗/锚点不一致，会显示成「虚线方向和数据相反」。
+- 历史：摘要统计；`记录` 视图按日期分组的时间轴（充电/放电，范围与类型筛选合并为一行 chip，7/30/90 天 + 全部/充电/放电，分页“加载更早”）；`趋势` 视图的容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图，小图点按展开；大图与小图展开后的大图都支持点按数据点读数值并高亮选中点（`charts.js` 的绘图函数接受可选选中索引，只能拼内部数值）；记录详情渐进展开。
 - 设置：外观（主题/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`；末尾附「复制诊断」按钮）、关于（品牌卡 + 版本/通道/许可/第三方信息，版本来自 JSON 顶层 `version`）。`json` 的 `sessions` 数组只是最近 10 条，设置页「会话数」必须用顶层 `sessions_n` 总数；会话条目带 `start_cap`/`end_cap`，趋势卡与时间轴的百分比是 **SOC 百分点变化**（如 70%→97% 即 27 个点），不是容量增长。
 - 底栏支持悬浮胶囊 / 传统贴底（`cre_barmode`，默认悬浮）；主题 `cre_theme` 为 `auto|light|dark`；语言 `cre_lang`。
 - 切页保存/恢复滚动位置；设置页隐藏顶部刷新按钮，换成页内“立即刷新”。
@@ -211,7 +212,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 构建注入 `main.channel` 选择 stable/ml Estimator。
 - 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)` 窗口；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc`（列名历史遗留，实为 charge_counter 读数 µAh）的电量计差分；样本里有 counter 读数时，缺 counter 的旧区间直接跳过，只有整批无 counter 才回退电流积分。隐含值必须过 `capacityInWindow` 门控，最近一次采信值存 kv `mid_implied_ua`。
 - 放电通道 `discharge`：读 `charge_counter` 差分累计，转入充电即结算；放电样本按 5 分钟降采样。结算门控为掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`，按 1/10 权重并入 EMA，采信值存 `dis_implied_ua`。该通道不经 `current_now`，是四路容量口径中最稳的一路。
-- 质量哨兵 `quality`：ema/mid/dis/full 四路互检，互差 >40% 判不一致；结论翻转才写 `quality_warn` 事件。可用路数 <2 时整体省略 `quality` 字段。
+- 质量哨兵 `quality`：ema/mid/dis/full 四路互检，互差 >40% 判不一致；结论翻转才写 `quality_warn` 事件。可用路数 <2 时整体省略 `quality` 字段。mid/dis 的隐含值带时间戳（kv `mid_implied_ts`/`dis_implied_ts`），超过 90 天保留窗口就不参与互检（否则半年没放电的设备会拿旧值永久误报）；缺 ts 的旧库首次读取按「当天」回填并给一次宽限。时效判定在结算侧 `checkQuality`（会写 ts、落 `quality_stale` 事件）与 `stats()` 的 JSON 出口（只读过滤）共用同一个纯函数，改一处必须同步另一处。只记事件，不改变 JSON 契约。
 - 趋势 `trend`：三态 `insufficient|stable|significant`，显著性用 Mann-Kendall 点对符号检验（双侧 5%）。R² 门控已废弃，单次估算噪声远大于真实周衰减。
 
 ### sysfs 与单位
@@ -244,7 +245,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
 - 放电会话只在 `status=Discharging` 时累计；旁路供电机型（status=Full 但实际放电）会漏记。
 - 放电隐含容量以“显示掉幅”为分母，顶部区间显示被压缩，绝对值偏高，只作观测，不进估算通道。
-- 电流刻度自校准在充电会话结算时才发生：学到新刻度时会一并按新刻度重算该会话的积分电量、平均电流与倍率（`sessions.ua`/`avg_i`/`c_rate`），但该会话已落库的 `samples.ua` 仍是旧刻度（内阻/CCCT/ICA 的输入），下一会话起完全正常；没有 `charge_counter` 的机型缺少标尺，无法自校准，只能沿用 `charge_full` 量纲初判（有 `charge_counter`、没有 `charge_full` 的机型仍可校准：rawUAs 不依赖锚点）。
+- 电流刻度自校准在充电会话结算时才发生：学到新刻度时会按新刻度重算该会话的积分电量、平均电流与倍率（`sessions.ua`/`avg_i`/`c_rate`），并把该会话区间的 `samples.ua`、`resistance.mo` 按比例回填、修正已有 `ica_peak_base`（避免首个校准会话用旧刻度把 ICA 基准带偏 1000×，事件 `cur_backfill`/`cur_backfill_fail`/`cur_backfill_skip`）；仅当旧有效刻度可确定（已学刻度 >0，或 `anchorScaleUA(charge_full)` 为 1/1000）时才回填，无锚点机型仍保留旧刻度并记事件。回填只覆盖本会话的 `samples`/`resistance` 与 ICA 基准，`charged_ua_total` 吞吐与历史行不回溯；已发布库中既有的坏基准无法自动识别，只能靠新学习路径不再污染；没有 `charge_counter` 的机型缺少标尺，无法自校准，只能沿用 `charge_full` 量纲初判（有 `charge_counter`、没有 `charge_full` 的机型仍可校准：rawUAs 不依赖锚点）。
 
 ## 安全注意事项
 
@@ -260,9 +261,11 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 0. 仓库 Settings → Releases 必须已开启 **Enable release immutability**；未开启时 KernelSU Modules 会报 `release-not-immutable`，该版本只能作废。
 1. 同步修改 `module.prop` 的 `version` 与 `versionCode`，必须严格递增，**不得复用历史值**。
 2. 提交到 main（只提交源码；`webroot/` 是生成目录，不入库）。
-3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → go vet + go test → Go 构建 → `pnpm install --frozen-lockfile` + `pnpm run verify` 构建并守卫 WebUI → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json`。
+3. `git tag vX.Y.Z && git push origin main --tags`。CI 会：校验标签与 version 一致 → go vet + go test → Go 构建 → `pnpm install --frozen-lockfile` + `pnpm run verify` 构建并守卫 WebUI → 打包 stable/ML 两个变体 → KernelSU 官方校验器 dry-run → 创建 draft Release 并上传产物 → 发布（immutable）→ 回写 `update.json` 与 `.release-baseline`。
 4. 标签必须与 `module.prop` 的 `version` 一致（如 v1.2 ↔ version=1.2），否则 CI 直接失败。
-5. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。两个 zip 都包含根目录 `THIRD_PARTY_NOTICES.txt`。
+5. 更新日志基线：根目录 `.release-baseline` 记录「上一版发布内容所在的 commit」，`Generate changelog` 用它算 `git log` 区间，发版后由 CI 回写，不要手工改。**不能**改用 `git describe --tags` 找上一版：tag 可能与 main 历史脱节（v1.3.6 的 tag 就不在 main 祖先上），临时测试 tag（如 `issue6-test-*`）也可能落在祖先链上，两种情况都会让更新日志只剩几条或重复整版内容。
+6. 发版 tag 必须落在 main 的历史上；临时测试 tag 用完即删（`git push --delete origin <tag>`），不要长期留在 origin 干扰任何基于 tag 的工具。
+7. 资产名：`CRecordEvolution-{versionCode}-{version}.zip` / `CRecordEvolution_ML-{versionCode}-{version}.zip` / `changelog.txt`；`module.yaml` 的 `release.assetPattern` 只匹配 stable。两个 zip 都包含根目录 `THIRD_PARTY_NOTICES.txt`。
 
 ## 提交前检查清单
 
