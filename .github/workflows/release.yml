@@ -84,13 +84,25 @@ jobs:
           sed -i '/^updateJson=/d' mlstage/module.prop
           cd mlstage && zip -r "../${ML_ASSET_NAME}" . && cd ..
 
+      # 更新日志基线由 .release-baseline 记录（上一版发布内容所在的 commit，发版后
+      # 由下面的 Update 步骤回写）。不能用 `git describe --tags` 找上一 tag：v1.3.6
+      # 的 tag 不在 main 祖先上，而测试 tag（issue6-test-*）恰好在祖先链上，拿最近
+      # tag 只会生成 4 条或把已发过的整版内容重复一遍。
       - name: Generate changelog
         run: |
-          PREV_TAG="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
-          if [ -n "$PREV_TAG" ]; then
-            git log "$PREV_TAG..${GITHUB_REF_NAME}" --pretty='- %s' > changelog.txt
+          BASE="$(tr -d '[:space:]' < .release-baseline 2>/dev/null || true)"
+          if [ -n "$BASE" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null \
+             && git merge-base --is-ancestor "$BASE" "${GITHUB_REF_NAME}^{commit}"; then
+            git log "${BASE}..${GITHUB_REF_NAME}" --pretty='- %s' > changelog.txt
           else
-            git log --pretty='- %s' > changelog.txt
+            # 兜底：只认「正式版本 tag」且必须是本次 tag 的祖先；测试 tag 一律排除
+            PREV_TAG="$(git tag --merged "${GITHUB_REF_NAME}^{commit}" --list 'v[0-9]*' --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
+            echo "::warning::.release-baseline 缺失或不可用，回落到上一个正式 tag：${PREV_TAG:-（无，输出全量日志）}"
+            if [ -n "$PREV_TAG" ]; then
+              git log "$PREV_TAG..${GITHUB_REF_NAME}" --pretty='- %s' > changelog.txt
+            else
+              git log --pretty='- %s' > changelog.txt
+            fi
           fi
           # 这份文件同时作为 release notes（KernelSU 模块页/更新弹窗的更新日志）
           # 与 update.json 的 changelog 资产，保持 Markdown 可读
@@ -134,18 +146,21 @@ jobs:
             echo "::warning::release ${GITHUB_REF_NAME} 不是 immutable，请到 Settings → General → Releases 开启 Enable release immutability 后发下一个版本"
           fi
 
-      - name: Update update.json on main
+      - name: Update update.json and release baseline on main
         run: |
           VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
           VERSION_CODE="$(grep '^versionCode=' module.prop | cut -d= -f2)"
           [ -n "$VERSION_CODE" ] || { echo "::error::module.prop 缺少 versionCode"; exit 1; }
           printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/%s",\n  "changelog": "https://github.com/f1owkang/CRecordEvolution/releases/download/%s/changelog.txt"\n}\n' "$VERSION" "$VERSION_CODE" "${GITHUB_REF_NAME}" "$ASSET_NAME" "${GITHUB_REF_NAME}" > update.json
+          # 本版内容所在的 commit 成为下一版更新日志的基线（见 Generate changelog）。
+          # 存解析后的 commit SHA（tag 若是 annotated object，直接存 GITHUB_SHA 会是 tag 对象）。
+          printf '%s\n' "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" > .release-baseline
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add update.json
+          git add update.json .release-baseline
           if git diff --cached --quiet; then
-            echo "update.json 已是最新"
+            echo "update.json 与 .release-baseline 已是最新"
           else
-            git commit -m "add: update.json 更新至 ${GITHUB_REF_NAME}"
+            git commit -m "add: update.json 更新至 ${GITHUB_REF_NAME}（含发布基线）"
             git push origin HEAD:main
           fi
