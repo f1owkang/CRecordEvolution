@@ -22,3 +22,4 @@ webui/** text eol=lf
 # gofmt -l 会把全仓文件误报为「未格式化」，掩盖真实的格式问题。
 *.go text eol=lf
 *.md text eol=lf
+.release-baseline text eol=lf
