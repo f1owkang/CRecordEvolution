@@ -36,7 +36,7 @@ modname=`grep '^name=' "$MODPATH/module.prop" | cut -d= -f2- | tr -d '\r'`
 modver=`grep '^version=' "$MODPATH/module.prop" | cut -d= -f2- | tr -d '\r'`
 modcode=`grep '^versionCode=' "$MODPATH/module.prop" | cut -d= -f2- | tr -d '\r'`
 [ -n "$modid" ] || modid=`basename "$MODPATH"`
-[ -n "$modname" ] || modname=CRecordEvolution
+[ -n "$modname" ] || modname="ChargingRecord Evolution"
 
 # 只发布 arm64；安装器通常注入 ARCH，缺失时跳过检查。
 case "${ARCH:-}" in

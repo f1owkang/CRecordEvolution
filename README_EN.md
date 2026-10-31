@@ -54,7 +54,7 @@ Pick the zip in your manager and answer two short prompts (the same in-app and i
 
 ### Notes
 
-- Both variants share the same id and are mutually exclusive;
+- Both variants share the same id and name, and are mutually exclusive; the ML build is marked by the `[ML experimental]` prefix on the module description;
 - Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
 - Older Magisk versions have no Action button; wait for a reboot;
 - Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
