@@ -170,6 +170,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - `NormCurrentUAWithFull` 按 `charge_full` 的**量纲**判电流单位：≥100000 只可能是 µAh，同驱动 `current_now` 已是 µA；mAh 则 ×1000；无锚点退化幅值启发式；最后 25A 物理上界兜底。**不要拿 `charge_full` 当幅值阈值**（曾把 <0.6A 的真实 µA 读数整批 ×1000）。
 - `current_now` 量纲随内核不同（欧加系报 mA，同节点 `charge_counter`/`charge_full` 报 µAh）；生产路径一律走 `Pipeline.currentUA`（`normalizeCurrentUA`：已学刻度优先，未校准退回锚点），**禁止把原始读数当 µA 直接积分**。
+- `charge_counter` 量纲也可能不守 ABI：荣耀 Magic7（issue #7）上 `charge_counter` 报 mAh、`current_now` 报 mA，而 `charge_full`/`charge_full_design` 仍是 µAh。**所有生产读取必须走 `normCounterUAh(raw, charge_full, cap%)`**（双锚点：`charge_full` 是 µAh 量纲、读数 < `full/500`，且 raw×1000 落在 `cap% × charge_full` 的 0.5~1.5 倍内 ⇒ ×1000；显示电量 0/缺失时一律不缩放，避免把 µAh 机低电量边缘读数放大 1000 倍），充电会话、放电差分、`samples.cc`、`sessions.cc`、diag 展示都不例外；只有迁移判定可用 `counterUnitDecided` 区分「确定 µAh / 确定 mAh / 无法判定」。**不要用相对比值判 counter 单位**：电流自校准的比值由 counter/积分反推，两路同时 milli 化时比值相消（≈1.4），会把错误刻度固化成 ×1；必须先归一 counter，电流刻度才能学到 ×1000（回归见 `TestIssue7CounterMilliampDevice`）。
 - 运行时自校准：充电结算时用「电量计差分 vs 会话期原始电流积分 `rawUAs`」反推 µA/原始单位，**不能用已缩放的 `accUAs` 反推**（否则 ×1000 与 ×1 来回震荡，回归见 `TestIssue6MilliampCurrentCalibration` 第二会话段）。比值须落在 10 的整数次幂 ±0.4 decade（≤2.5 倍偏差；<0.5 保证吸附区不重叠）且结算已采信电量计口径才学习；采信值写 kv `cur_scale`，事件 `cur_cal` 记落盘/变化、`cur_cal_fail` 记写库失败或比值不达标、`counter_scale` 记口径裁决。允许覆盖旧刻度（OTA 改单位后下个会话自动纠正）。
 - `sessions.cc` 存结算时采信的电量计增量 µAh（被门控拒绝也照存；0=无或未采信）；历史页「估算」优先由它折算，缺才回退积分。`sessions.ua` 仍是积分口径，两者不混用。
 - `NormTempC` 截断 `[-40, 80]°C`；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时读设备树 `vivo,bat-capacity-mah`（绝对路径优先）；`current_now` 带符号读取（放电为负），其余节点严格非负。
@@ -178,7 +179,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - 设备 `time.Now()` 可能是 UTC：面向用户的时间戳一律 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → UTC，内嵌 `time/tzdata`）；Pipeline 注入时钟同样用 `localNow`。
 - SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；90 天清理。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
-- 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
+- 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`RepairCounterUnits` 按「counter 读数 + charge_full + 显示电量」判定 mAh 口径机型，把历史 `samples.cc`/`sessions.cc`/`discharge.uah`/`discharge.implied` 与进行中会话 kv 一次性 ×1000（kv `counter_unit_repair`）。迁移以 kv `counter_unit_epoch`（新代码首次启动时刻）为截止，**只处理该时刻之前写入的行**：后续启动复用同一 epoch 重试也不会碰到已归一的新行；读不到节点/量纲不确定时本次不判定、不落终态标记，下次启动重试。不迁移 estimates/ema/mid_implied（可能来自积分口径）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
 - `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
 
 ### 关键数值与口径（勿随意改）
@@ -191,6 +192,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 已知局限（有意取舍，勿当 bug）
 
 - 电流单位启发式在涓流 <10mA 可能误判；RLS 无遗忘因子、P 矩阵长期膨胀是潜伏项；`FindNode` 全树兜底只在缺节点时触发。
+- `charge_counter` 的 mAh 判定需要显示电量做交叉校验：显示电量为 0/不可读时读时归一不缩放、历史迁移本次不判定（下次启动重试）；`charge_full` 缺失或本身以 mAh 计时不归一（保持既有设备口径）。升级后旧 daemon 仍在内存里跑、继续按旧口径写库的情况无法自动识别，**升级后需要重启**。
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
 - 放电会话只在 `status=Discharging` 时累计；旁路供电机型（Full 但实际放电）会漏记。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。

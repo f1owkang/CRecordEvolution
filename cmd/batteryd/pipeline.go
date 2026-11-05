@@ -152,6 +152,9 @@ type Pipeline struct {
 	// disCounterOff charge_counter 首读失败后永久禁用放电记录（负缓存，
 	// 避免每拍全树扫 /sys）
 	disCounterOff bool
+	// counterUnitLogged 已就「charge_counter 原始单位为 mAh」打过一次日志
+	// （诊断用；归一是每次读数都做的，不依赖该标记）
+	counterUnitLogged bool
 
 	// peakChargeUV 本次充电插入周期内的电压峰值（µV）：满电后电压回落判据的
 	// 基准。拔出充电器（转入 Discharging）时清零，下次插入重新建立。
@@ -334,20 +337,36 @@ func (p *Pipeline) energyRefUAh() int64 {
 	return p.fullUAh
 }
 
-// readChargeCounter 读电量计 charge_counter（µAh）。节点确认不存在时置负缓存
+// readChargeCounterRaw 读取 charge_counter 原始读数。节点确认不存在时置负缓存
 // （disCounterOff），避免充电期每拍全树扫 /sys；瞬时读取失败不置缓存，下一拍重试。
-func (p *Pipeline) readChargeCounter() (int64, bool) {
+func (p *Pipeline) readChargeCounterRaw() (int64, bool) {
 	if p.disCounterOff {
 		return 0, false
 	}
-	counterUAh, err := p.readNode("charge_counter")
+	raw, err := p.readNode("charge_counter")
 	if err != nil {
 		if errors.Is(err, ErrNodeNotFound) {
 			p.disCounterOff = true
 		}
 		return 0, false
 	}
-	return counterUAh, true
+	return raw, true
+}
+
+// readChargeCounter 读 charge_counter 并归一为 µAh（见 normCounterUAh）：个别内核
+// 该节点按 mAh 报数（issue #7），不归一会让会话/放电/中段校准整体小 1000 倍。
+// capPct 为本拍显示电量，用于区分「mAh 机正常读数」与「µAh 机低电量边缘读数」。
+func (p *Pipeline) readChargeCounter(capPct int64) (int64, bool) {
+	raw, ok := p.readChargeCounterRaw()
+	if !ok {
+		return 0, false
+	}
+	uah := normCounterUAh(raw, p.fullUAh, capPct)
+	if uah != raw && !p.counterUnitLogged {
+		p.counterUnitLogged = true
+		p.log("[校准] charge_counter 原始单位为 mAh（raw=%d），按 ×1000 归一为 µAh", raw)
+	}
+	return uah, true
 }
 
 // notChargDebounce 非充电状态去抖：status 连续非 Charging 达到该拍数才真正
@@ -491,7 +510,7 @@ func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
 			return err
 		}
 	}
-	counterUAh, _ := p.readChargeCounter()
+	counterUAh, _ := p.readChargeCounter(capVal)
 	if vUV > 0 && capVal > 0 {
 		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal, counterUAh); err != nil {
 			_ = p.st.InsertEvent("sample_fail", err.Error())
@@ -549,7 +568,7 @@ func (p *Pipeline) tickTailCharge(iUA, rawAbs int64) error {
 			return err
 		}
 	}
-	counterUAh, _ := p.readChargeCounter()
+	counterUAh, _ := p.readChargeCounter(capVal)
 	if vUV > 0 && capVal > 0 {
 		if err := p.st.InsertSample(p.now().Unix(), iUA, vUV, capVal, counterUAh); err != nil {
 			_ = p.st.InsertEvent("sample_fail", err.Error())

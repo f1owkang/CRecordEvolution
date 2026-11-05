@@ -2,9 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -217,6 +219,125 @@ func (s *Store) repairSampleUnits() error {
 		_ = s.InsertEvent("unit_repair", fmt.Sprintf("修正 %d 条电流量纲误判样本（÷1000）", n))
 	}
 	return s.KVSet(kvSamplesUnitRepair, "1")
+}
+
+// kvCounterUnitRepair 一次性数据修复标记：charge_counter 的历史 cc 数据已按
+// ×1000 迁移完毕，或已确认本机口径正常无需迁移。
+const kvCounterUnitRepair = "counter_unit_repair"
+
+// kvCounterUnitEpoch 新二进制首次启动时刻（Unix 秒）：迁移只处理该时刻之前写入
+// 的行——之后的 cc 已是归一值，再乘会二次放大。时间戳同时把迁移变成可安全重试的
+// 幂等操作（跨启动重复执行也只覆盖旧行）。
+const kvCounterUnitEpoch = "counter_unit_epoch"
+
+// txKVInt 读事务内 kv 的整数值；缺失或非法返回 ok=false。
+func txKVInt(tx *sql.Tx, key string) (int64, bool) {
+	var txt string
+	if err := tx.QueryRow(`SELECT v FROM kv WHERE k = ?`, key).Scan(&txt); err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(txt, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// txScaleKV 把 kv 整数值 ×1000 写回；缺失/非正值跳过。
+func txScaleKV(tx *sql.Tx, key string) error {
+	n, ok := txKVInt(tx, key)
+	if !ok || n <= 0 {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`, key, strconv.FormatInt(n*1000, 10))
+	return err
+}
+
+// RepairCounterUnits 按 charge_counter 的原始单位迁移历史 cc 数据。scale=1000
+// 表示该机 charge_counter 以 mAh 报数（issue #7）：旧版把读数当 µAh 直落库，
+// samples.cc / sessions.cc / discharge.uah / discharge.implied 与进行中会话的 kv
+// 全都小 1000 倍，此处换算；scale=1 表示本机口径正常，只落标记不动数据。
+// epoch 为「新代码首次启动」时刻：只迁移 epoch 之前写入的行，之后的行已归一。
+//
+// 只迁移「电量计专用」数据：estimates / ema_ua / mid_implied_ua 可能来自电流
+// 积分通道（口径不同，同机也出现过电流与电量计不同步缩小的组合），按 1000 倍
+// 改会制造新的口径错误，宁可保留旧值。
+//
+// 幂等与并发：daemon 启动与 WebUI 的 json/diag 子进程都会走这里，迁移不是幂等
+// 乘法（重复执行会连乘 1000），因此标记检查、数据迁移与标记写入放在同一个写事务
+// 里；同时用 epoch 截断保证即使重试也不会碰到新行。后到的事务要么读到标记直接
+// 返回，要么在升级写锁时失败、由下次启动用同一 epoch 重试。
+func (s *Store) RepairCounterUnits(scale, epoch int64) error {
+	if v, ok := s.KVGet(kvCounterUnitRepair); ok && v == "1" {
+		return nil
+	}
+	if epoch <= 0 {
+		return fmt.Errorf("迁移截止时间无效：%d", epoch)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var flag string
+	switch err := tx.QueryRow(`SELECT v FROM kv WHERE k = ?`, kvCounterUnitRepair).Scan(&flag); {
+	case err == nil && flag == "1":
+		return nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+
+	detail := ""
+	if scale == 1000 {
+		var moved []string
+		for _, u := range []struct{ query, name string }{
+			{`UPDATE samples SET cc = cc * 1000 WHERE cc > 0 AND ts < ?`, "samples"},
+			{`UPDATE sessions SET cc = cc * 1000 WHERE cc > 0 AND start_ts < ?`, "sessions"},
+			{`UPDATE discharge SET uah = uah * 1000 WHERE uah > 0 AND end_ts < ?`, "discharge"},
+			// implied 是由 uah 反推的隐含满容量（µAh），与 uah 同源必须同步换算，
+			// 否则历史行会出现 uah=1Ah、implied=5mAh 的自相矛盾展示。
+			{`UPDATE discharge SET implied = implied * 1000 WHERE implied > 0 AND end_ts < ?`, "discharge.implied"},
+		} {
+			res, err := tx.Exec(u.query, epoch)
+			if err != nil {
+				return err
+			}
+			if n, rerr := res.RowsAffected(); rerr == nil && n > 0 {
+				moved = append(moved, fmt.Sprintf("%s %d 行", u.name, n))
+			}
+		}
+		// 进行中的充电/放电会话状态以 kv 保存，同样是小 1000 倍的口径。只换算
+		// epoch 之前已开始的会话：跨 epoch 的会话在下次启动后才可能混入新口径。
+		if start, ok := txKVInt(tx, kvSessStartTs); ok && start > 0 && start < epoch {
+			for _, k := range []string{kvSessCounterAccUAh, kvSessCounterLastUAh} {
+				if err := txScaleKV(tx, k); err != nil {
+					return err
+				}
+			}
+		}
+		if start, ok := txKVInt(tx, kvDisStartTs); ok && start > 0 && start < epoch {
+			for _, k := range []string{kvDisAcc, kvDisLastCounterUAh} {
+				if err := txScaleKV(tx, k); err != nil {
+					return err
+				}
+			}
+		}
+		detail = "charge_counter 原始单位 mAh，历史 cc 数据按 ×1000 迁移"
+		if len(moved) > 0 {
+			detail += "（" + strings.Join(moved, "、") + "）"
+		}
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, '1')`, kvCounterUnitRepair); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if detail != "" {
+		_ = s.InsertEvent("cc_unit_repair", detail)
+	}
+	return nil
 }
 
 // Checkpoint 主动做 TRUNCATE 检查点：把 WAL 落进主库并把 -wal 清零。有并发

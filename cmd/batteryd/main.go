@@ -196,6 +196,9 @@ func newApp() (*app, error) {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
 	}
 	fs := SysFS{}
+	// 历史数据量纲修复：charge_counter 按 mAh 报数的机型（issue #7）升级后把旧库
+	// 的 cc 列一次性迁移到 µAh；节点读数不齐时不做猜测，留待下次启动再判。
+	repairCounterUnitsOnUpgrade(st, fs)
 	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
 	// 设计容量窗口而保持「学习期」，但内核读数（满充容量/循环次数）仍可正常展示。
 	designUAh := int64(0)
@@ -278,6 +281,57 @@ func (a *app) redetectCellCount(p *Pipeline) {
 	}
 	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
 	a.appendLog("[电芯] cellCount 重检→%d (voltage_now=%d)", want, v)
+}
+
+// readRawNodeValue 读节点原始整数；节点缺失或内容非法时返回 ok=false。
+// 仅供启动期的一次性判定（不缓存路径），失败只降级不阻断启动。
+func readRawNodeValue(fs SysFS, name string) (int64, bool) {
+	node, err := fs.FindNode(name)
+	if err != nil {
+		return 0, false
+	}
+	v, err := fs.ReadInt(node)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// repairCounterUnitsOnUpgrade 判定 charge_counter 的原始单位，并在需要时把历史
+// cc 数据从 mAh 迁移到 µAh（issue #7）。三个读数缺失或量纲无法确定时本次不迁移、
+// 也不落终态标记：下次启动再判。迁移按 kv `counter_unit_epoch`（新代码首次启动
+// 时刻）截断，只处理该时刻之前的行，所以重试永远不会把已归一的新行二次 ×1000。
+func repairCounterUnitsOnUpgrade(st *Store, fs SysFS) {
+	if v, ok := st.KVGet(kvCounterUnitRepair); ok && v == "1" {
+		return
+	}
+	epoch, hasEpoch := int64(0), false
+	if txt, ok := st.KVGet(kvCounterUnitEpoch); ok {
+		if v, err := strconv.ParseInt(txt, 10, 64); err == nil && v > 0 {
+			epoch, hasEpoch = v, true
+		}
+	}
+	if !hasEpoch {
+		epoch = time.Now().Unix()
+		if err := st.KVSet(kvCounterUnitEpoch, strconv.FormatInt(epoch, 10)); err != nil {
+			// 截止时间落不了盘就不迁移：否则下次启动可能把本次已写的新行当旧行。
+			return
+		}
+	}
+
+	full, okFull := readRawNodeValue(fs, "charge_full")
+	counter, okCounter := readRawNodeValue(fs, "charge_counter")
+	capPct, okCap := readRawNodeValue(fs, "capacity")
+	if !okFull || !okCounter || !okCap {
+		return // 读数不齐：不猜，下次启动再判（epoch 截断保证重试安全）
+	}
+	scale, decided := counterUnitDecided(counter, full, capPct)
+	if !decided {
+		return // 读数与显示电量对不上（刚开机 0% 等）：下次启动再判
+	}
+	if err := st.RepairCounterUnits(scale, epoch); err != nil {
+		_ = st.InsertEvent("cc_unit_repair_fail", err.Error())
+	}
 }
 
 func (a *app) readIntNode(name string) (int64, error) {

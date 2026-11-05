@@ -196,6 +196,67 @@ func TestNormCurrentUAWithFullUnitAnchorBoundary(t *testing.T) {
 	}
 }
 
+// charge_counter 量纲归一：以 charge_full（µAh）+ 显示电量双锚点判定。mAh 机型的
+// 绝对读数比满容量小三个数量级（issue #7：37% 时 1874 vs charge_full 5,226,000µAh
+// 且 1874×1000≈37%×full）；µAh 机型即使低电量也在阈值之上（1% ≈ full/100），
+// 显示电量为 0/缺失时一律不判，避免把低电量边缘的 µAh 读数放大 1000 倍。
+func TestNormCounterUAh(t *testing.T) {
+	const fullUAh = 5_226_000
+	cases := []struct {
+		name string
+		raw  int64
+		full int64
+		cap  int64
+		want int64
+	}{
+		{"µAh 机型直通（实测 1874mAh 报 1874000）", 1_874_000, fullUAh, 37, 1_874_000},
+		{"mAh 机型 ×1000（issue #7：37% 报 1874）", 1874, fullUAh, 37, 1_874_000},
+		{"mAh 机型满充 ×1000", 5226, fullUAh, 100, 5_226_000},
+		{"mAh 机型但显示电量对不上不缩放", 1874, fullUAh, 80, 1874},
+		{"显示电量为 0 时不缩放（低电量边缘）", 522, fullUAh, 0, 522},
+		{"µAh 机型 1% 电量仍在阈值上", 52_260, fullUAh, 1, 52_260},
+		{"charge_full 缺失不猜", 1874, 0, 37, 1874},
+		{"charge_full 本身是 mAh 量纲时不改", 1874, 5226, 37, 1874},
+		{"非正读数不变", 0, fullUAh, 37, 0},
+		{"超出 mAh 合理上界不乘", 200_000, fullUAh, 37, 200_000},
+	}
+	for _, c := range cases {
+		if got := normCounterUAh(c.raw, c.full, c.cap); got != c.want {
+			t.Errorf("%s: normCounterUAh(%d, %d, %d) = %d, want %d",
+				c.name, c.raw, c.full, c.cap, got, c.want)
+		}
+	}
+}
+
+// 历史迁移判定必须「已确定」才动手：µAh 机型判为 1，无法判定时 decided=false，
+// 调用方放弃迁移而不是猜一个倍数去改库。
+func TestCounterUnitDecided(t *testing.T) {
+	const fullUAh = 5_226_000
+	cases := []struct {
+		name        string
+		raw         int64
+		full        int64
+		cap         int64
+		wantScale   int64
+		wantDecided bool
+	}{
+		{"issue #7 读数与 37% 对应", 1874, fullUAh, 37, 1000, true},
+		{"µAh 机型判为 µAh", 1_874_000, fullUAh, 37, 1, true},
+		{"mAh 读数与显示电量对不上", 1874, fullUAh, 80, 1, false},
+		{"显示电量缺失", 1874, fullUAh, 0, 1, false},
+		{"charge_full 是 mAh 量纲", 1874, 5226, 37, 1, false},
+		{"读数超上界按 µAh 判", 200_000, fullUAh, 37, 1, true},
+		{"charge_full 缺失", 1874, 0, 37, 1, false},
+	}
+	for _, c := range cases {
+		scale, decided := counterUnitDecided(c.raw, c.full, c.cap)
+		if scale != c.wantScale || decided != c.wantDecided {
+			t.Errorf("%s: counterUnitDecided(%d, %d, %d) = (%d,%v), want (%d,%v)",
+				c.name, c.raw, c.full, c.cap, scale, decided, c.wantScale, c.wantDecided)
+		}
+	}
+}
+
 // sysfs 暂时性错误不计入守护进程连续失败计数。
 func TestTickStrikeIgnoresSysfsTransient(t *testing.T) {
 	prev, kill := tickStrike(3, &SysfsTransient{Err: errStub{}})

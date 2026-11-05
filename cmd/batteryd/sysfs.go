@@ -113,6 +113,17 @@ const (
 	// maxCurrentUA 电流物理上界 25A：无论量纲怎么判，结果越界即判为误判并回退
 	// 原值，堵死 1000 倍误乘污染积分的方向。
 	maxCurrentUA int64 = 25_000_000
+	// counterMahThresholdDiv charge_counter 量纲判定除数：读数小于
+	// charge_full/该值 判为 mAh 量纲（见 normCounterUAh）。取 500 的依据：
+	// mAh 机型满充读数 ≈ full/1000，留 2 倍余量；µAh 机型在 1% 显示电量时
+	// 读数 ≈ full/100，仍在阈值 5 倍以上，只有 <0.2% 的关机边缘可能误判。
+	counterMahThresholdDiv int64 = 500
+	// counterMahMaxRaw mAh 报数的 charge_counter 合理上界（100Ah）：防脏读数
+	// 触发 ×1000 溢出，也排除明显不是电量计值的输入。
+	counterMahMaxRaw int64 = 100_000
+	// counterAnchorMaxUAh 量纲锚点 charge_full 的合理上界（100Ah）：坏读数的
+	// charge_full 会把「读数 < full/500」恒判为真，直接拒绝这种锚点。
+	counterAnchorMaxUAh int64 = 100_000_000
 )
 
 // NormCurrentUA 无锚点时的电流单位判别（幅值启发式）。生产路径一律带 charge_full
@@ -151,6 +162,63 @@ func NormCurrentUAWithFull(raw, chargeFullUAh int64) int64 {
 		return raw
 	}
 	return ua
+}
+
+// counterMahPlausible 判断 charge_counter 读数是否按 mAh 报数。只凭「比 charge_full
+// 小三个数量级」不够：µAh 机型在显示电量 <0.2% 时读数也会很小，会和 mAh 混叠，
+// 因此再用显示电量做绝对交叉校验——mAh 判定必须让 raw×1000 落在「cap% ×
+// charge_full」的 0.5~1.5 倍内。显示电量缺失/为 0（刚开机、关机边缘）时一律不判，
+// 宁可不缩放，也不在低电量边缘把整段放电差分放大 1000 倍。
+//
+// charge_full 本身是 mAh 量纲（< microUnitChargeMinUAh）时说明整机口径一致，
+// 保持原值，避免把既有 mAh 设备口径改坏；charge_full 缺失或离谱（>100Ah）时同样不猜。
+func counterMahPlausible(raw, chargeFullUAh, capPct int64) bool {
+	if raw <= 0 || chargeFullUAh < microUnitChargeMinUAh ||
+		chargeFullUAh > counterAnchorMaxUAh || raw > counterMahMaxRaw {
+		return false
+	}
+	if raw >= chargeFullUAh/counterMahThresholdDiv {
+		return false
+	}
+	if capPct <= 0 || capPct > 100 {
+		return false
+	}
+	expected := chargeFullUAh * capPct / 100
+	scaled := raw * 1000
+	return scaled*2 >= expected && scaled*2 <= expected*3
+}
+
+// normCounterUAh 把 charge_counter 原始读数折算成 µAh（无法确认时原样返回）。
+//
+// power_supply ABI 规定 charge_* 用 µAh，但个别内核（issue #7：荣耀 Magic7 /
+// Android 17）的 charge_counter 按 mAh 报数，同一驱动的 current_now 也按 mA 报，
+// 而 charge_full / charge_full_design 仍守 ABI 的 µAh。旧实现把 counter 读数当
+// µAh 直通，会话隐含容量、放电增量、中段校准全部小 1000 倍，被设计容量窗口判为
+// out_of_window，估算永远停在 learning；更糟的是电流自校准的比值由 counter/积分
+// 反推，两个量同时 milli 化时比值相消（≈1.4），把错误刻度固化成 ×1。
+//
+// capPct 为同一拍的显示电量（读不到时传 0）：只有它能区分「mAh 机的正常读数」和
+// 「µAh 机在 0.2% 以下的读数」。所有生产读取都必须带上，不能只传幅值。
+func normCounterUAh(raw, chargeFullUAh, capPct int64) int64 {
+	if !counterMahPlausible(raw, chargeFullUAh, capPct) {
+		return raw
+	}
+	return raw * 1000
+}
+
+// counterUnitDecided 返回 charge_counter 的量纲倍数与「是否已确定」：1=µAh 量纲、
+// 1000=mAh 量纲、decided=false 表示读数/电量不支持判定（迁移应放弃，不能猜）。
+func counterUnitDecided(raw, chargeFullUAh, capPct int64) (int64, bool) {
+	if raw <= 0 || chargeFullUAh < microUnitChargeMinUAh || chargeFullUAh > counterAnchorMaxUAh {
+		return 1, false
+	}
+	if raw > counterMahMaxRaw || raw >= chargeFullUAh/counterMahThresholdDiv {
+		return 1, true
+	}
+	if counterMahPlausible(raw, chargeFullUAh, capPct) {
+		return 1000, true
+	}
+	return 1, false
 }
 
 // NormTempC 把 temp 节点读数归一为摄氏度，并截断到 [-40, 80]。

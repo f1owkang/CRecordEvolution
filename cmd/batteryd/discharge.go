@@ -13,7 +13,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -73,20 +72,24 @@ func (p *Pipeline) trackDischarge(status string) {
 	if p.disCounterOff {
 		return
 	}
-	counterUAh, err := p.readNode("charge_counter")
-	if err != nil {
-		// 只有确认节点不存在才负缓存停用；瞬时读取失败（suspend 竞态等）下一拍
-		// 重试，否则一次抖动会把电量计口径永久关掉直到进程重启。
-		if errors.Is(err, ErrNodeNotFound) {
-			p.disCounterOff = true
-			p.log("[放电] charge_counter 节点缺失，放电记录停用")
-		}
-		return
-	}
+	// 显示电量先读：counter 的单位归一需要它做绝对交叉校验（见 normCounterUAh），
+	// 否则 µAh 机在低电量边缘会被误判成 mAh。读不到就整拍跳过，下一拍再试。
 	capVal, err := p.readNode("capacity")
 	if err != nil {
 		return
 	}
+	raw, ok := p.readChargeCounterRaw()
+	if !ok {
+		if p.disCounterOff {
+			// 只有确认节点不存在才负缓存停用；瞬时读取失败（suspend 竞态等）下一拍
+			// 重试，否则一次抖动会把电量计口径永久关掉直到进程重启。
+			p.log("[放电] charge_counter 节点缺失，放电记录停用")
+		}
+		return
+	}
+	// 与充电侧同口径：mAh 报数的机型（issue #7）先归一成 µAh，否则放出电量、
+	// samples.cc、放电差分校准全部小 1000 倍。
+	counterUAh := normCounterUAh(raw, p.fullUAh, capVal)
 	now := p.now().Unix()
 	// 放电样本按 disSampleGapSecs 降采样落库，供放电侧分窗分析
 	if now-p.lastDisSampleTs >= disSampleGapSecs {

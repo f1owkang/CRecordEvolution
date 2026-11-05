@@ -102,6 +102,21 @@ func (a *app) diagInput() diagInput {
 	in.Cap = a.diagReadInt("capacity")
 	in.VoltageUV = a.diagReadInt("voltage_now")
 	in.CounterUAh = a.diagReadInt("charge_counter")
+	// charge_counter 与 current_now 一样可能不守 ABI 的 µAh（issue #7：mAh 报数），
+	// 展示前按 charge_full 量纲归一，否则 diag 会把 1874mAh 的读数 /1000 打成
+	// 3mAh，反而误导排查。归一需要显示电量做交叉校验，随 in.Cap 一起传。
+	if in.CounterUAh != nil {
+		full := int64(0)
+		if v := a.diagReadInt("charge_full"); v != nil {
+			full = *v
+		}
+		capPct := int64(0)
+		if in.Cap != nil {
+			capPct = *in.Cap
+		}
+		uah := normCounterUAh(*in.CounterUAh, full, capPct)
+		in.CounterUAh = &uah
+	}
 	if sessions, err := a.st.RecentSessions(3); err == nil {
 		in.Sessions = sessions
 	}
@@ -117,6 +132,8 @@ func (a *app) diagInput() diagInput {
 	if kind, detail, ts, ok, err := a.st.LatestEvent([]string{
 		"counter_scale", "cur_cal", "cur_cal_fail", "cur_backfill", "cur_backfill_fail",
 		"quality_warn", "quality_stale",
+		// 升级期一次性的 cc 量纲迁移：进白名单才能在诊断里看到「历史数据没迁移」
+		"cc_unit_repair", "cc_unit_repair_fail",
 	}); err == nil && ok {
 		in.LastEvent = &diagEvent{Kind: kind, Detail: diagClean(detail, diagEventDetailMax), TS: ts}
 	}
@@ -396,7 +413,7 @@ func diagDischargeLine(d DischargeRow, loc *time.Location) string {
 }
 
 func diagEventsLine(counts map[string]int64) string {
-	keys := []string{"cur_cal", "cur_cal_fail", "cur_backfill_fail", "counter_scale", "quality_warn", "quality_stale", "tick_error", "sample_fail"}
+	keys := []string{"cur_cal", "cur_cal_fail", "cur_backfill_fail", "counter_scale", "quality_warn", "quality_stale", "tick_error", "sample_fail", "cc_unit_repair", "cc_unit_repair_fail"}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))
