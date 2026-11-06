@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,8 @@ import (
 // 用例一律用 withUILang 显式覆盖（cleanup 会还原成这里的中文）。
 func TestMain(m *testing.M) {
 	uiLangOverride = langZh
+	managerKindForDesc = managerKernelSU // 描述默认走 KernelSU/APatch 的两行路径
+	descAvailableEmOverride = 40000      // 测试默认按宽屏（全标签）走，宽度自适应另测
 	os.Exit(m.Run())
 }
 
@@ -330,8 +333,11 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "Kernel health 96% (3850 mAh) | Measured health 90% (3600 mAh) | Cycles 210"
-		if got != want {
+		want := descJoin(
+			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
+			"📏 Actual : 90% - 3600 mAh",
+		)
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
@@ -342,8 +348,11 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "Kernel health 96% (3850 mAh) | Design 4000 mAh | Cycles 210"
-		if got != want {
+		want := descJoin(
+			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
+			"📐 Design : 4000 mAh",
+		)
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
@@ -355,9 +364,50 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "Kernel health 96% (3850 mAh) | Design 4000 mAh | Cycles 210 | Temp 31.5°C"
-		if got != want {
+		want := descJoin(
+			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
+			"📐 Design : 4000 mAh • 🌡️ Temp : 31.5°C",
+		)
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("列宽对齐", func(t *testing.T) {
+		withUILang(t, langEn)
+		d := fullDesign()
+		d.Pct = 9
+		estUAh := int64(3_600_000)
+		temp := 31.5
+		desc, err := BuildDescription(d, Snapshot{EstUAh: &estUAh, TempC: &temp})
+		if err != nil {
+			t.Fatalf("BuildDescription: %v", err)
+		}
+		rows := splitDesc(desc)
+		if len(rows) != 2 {
+			t.Fatalf("应为两行: %q", desc)
+		}
+		// 补位只能以空格（约 1/4 em）为单位，允许少于一个空格的舍入残差
+		if a, b := descTextEm(rows[0]), descTextEm(rows[1]); absInt(a-b) >= 2*descEmSpace {
+			t.Fatalf("两行总宽应基本一致: %d vs %d (%q / %q)", a, b, rows[0], rows[1])
+		}
+		split := func(row string) []string {
+			parts := strings.Split(row, " • ")
+			if len(parts) != 2 {
+				t.Fatalf("行应有 2 格: %q", row)
+			}
+			return parts
+		}
+		r0, r1 := split(rows[0]), split(rows[1])
+		// 补位以空格为最小单位（约 1/4 em），允许少于一个空格的舍入残差
+		if a, b := valueStartEm(t, r0[0]), valueStartEm(t, r1[0]); absInt(a-b) >= descEmSpace {
+			t.Fatalf("第 1 列数值起点应基本一致: %d vs %d", a, b)
+		}
+		if a, b := valueStartEm(t, r0[1]), valueStartEm(t, r1[1]); absInt(a-b) >= descEmSpace {
+			t.Fatalf("第 2 列数值起点应基本一致: %d vs %d", a, b)
+		}
+		if got, want := canonicalDesc(rows[0]), canonicalDesc("💚 Kernel : 9% - 3850 mAh • ♻️ Cycles : 210"); got != want {
+			t.Fatalf("第 1 行内容: got %q, want %q", got, want)
 		}
 	})
 
@@ -369,8 +419,11 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "Kernel health 96% (3850 mAh) | Measured 3600 mAh | Cycles 210"
-		if got != want {
+		want := descJoin(
+			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
+			"📏 Actual : 3600 mAh",
+		)
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
@@ -382,8 +435,8 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "Full charge 3850 mAh | Cycles 210"
-		if got != want {
+		want := "🔋 Full charge : 3850 mAh • ♻️ Cycles : 210"
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
@@ -399,8 +452,11 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "[ML experimental] Kernel health 96% (3850 mAh) | Measured health 90% (3600±16 mAh) | Cycles 210"
-		if got != want {
+		want := "[ML experimental] " + descJoin(
+			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
+			"📏 Actual : 90% - 3600±16 mAh",
+		)
+		if canonicalDesc(got) != canonicalDesc(want) {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
@@ -413,7 +469,7 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 	})
 }
 
-// TestBuildDescriptionChineseDefault 锁定中文输出字节（英文支持不得改变默认行为）。
+// TestBuildDescriptionChineseDefault 锁定中文默认文案。
 func TestBuildDescriptionChineseDefault(t *testing.T) {
 	withUILang(t, langZh)
 	estUAh := int64(3_600_000)
@@ -421,21 +477,26 @@ func TestBuildDescriptionChineseDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
-	want := "内核健康 96%（3850 mAh）｜实测健康 90%（3600 mAh）｜循环 210次"
-	if got != want {
+	want := descJoin(
+		"💚 内核 : 96% - 3850 mAh • ♻️ 循环 : 210次",
+		"📏 实测 : 90% - 3600 mAh",
+	)
+	if canonicalDesc(got) != canonicalDesc(want) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
 	old := channel
 	channel = "ml"
 	defer func() { channel = old }()
-	estUAh = int64(3_600_000)
 	got, err = BuildDescription(fullDesign(), Snapshot{EstUAh: &estUAh})
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
-	want = "[ML实验版]内核健康 96%（3850 mAh）｜实测健康 90%（3600 mAh）｜循环 210次"
-	if got != want {
+	want = "[ML实验版]" + descJoin(
+		"💚 内核 : 96% - 3850 mAh • ♻️ 循环 : 210次",
+		"📏 实测 : 90% - 3600 mAh",
+	)
+	if canonicalDesc(got) != canonicalDesc(want) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
