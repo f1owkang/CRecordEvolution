@@ -32,7 +32,7 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 
 ## Features
 
-- **Health and capacity at a glance**: the module description shows kernel health, full-charge and design capacities plus the measured estimate — no app needed.
+- **Health and capacity at a glance**: the module description shows kernel health, measured health and capacity, cycles and temperature on two icons-and-labels lines, and trims labels by screen width so narrow phones still get two lines — no app needed.
 - **Three-page WebUI**: Overview / History / Settings; the Overview shows the current battery temperature, history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap with per-point values.
 - **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
 - **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.

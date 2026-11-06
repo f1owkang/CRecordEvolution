@@ -99,11 +99,20 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - Go 用 `uiText`/`uiKV`；WebUI 用 `LANGS` + `LangCtx` 的 `t()`/`plural()`（两份字典同时补 key，组件禁止硬编码中文）；shell 用 `L()`/`T`。内部日志、events、stderr 保持中文。
 - 数字与复合单位留空格（`%d mAh`、`%d ℃`）；中文百分号/量词紧跟数字（`健康 92%`、`循环 210次`）。英文描述用 ` | `、中文用「｜」；日期按语言分流（`fmtTs`/`fmtRange`）。
+- 模块描述是两行状态卡：`💚 内核 : 92% - 6700 mAh • ♻️ 循环 : 301次` / `📏 实测 : 90% - 6300 mAh • 🌡️ 温度 : 41.1℃`（英文 `Kernel`/`Cycles`/`Actual`/`Temp`；`Kernel` 与 `Actual` 同为 6 字符、字宽几乎相等，所以第一列数值不靠字体相关的补位也能对齐；其余标签 `满充`/`设计`/`Full charge`/`Design`）。分段固定为「图标 标签 : 数值」，格间中文/英文都用 ` • `，数值内 `% - mAh`。**对齐靠 `descRuneEm`（Roboto Regular 实测字宽，em 千分位）＋ Compose 字距 `descLetterEm`（KSU/Magisk bodyMedium 0.25sp/14sp、APatch bodySmall 0.4sp/12sp，每字符都加）**：同列标签补空格让数值同列、第一格补到等宽让 ` • ` 同列、行尾补到等宽；中文标签等宽天然对齐，英文 `Kernel`/`Measured`、`Cycles`/`Temp` 靠字宽差补位（残差 <1 空格 ≈1.5dp，OEM 字体可能略差）。KernelSU/APatch 写**转义 `\n`**（java-properties 会还原成真实 LF，Android 的 `PrecomputedText` 只按 `\n` 切段，U+2028 不换行）；Magisk 不还原转义，退化成单行「行1 · 行2」且不补位。管理器按 `/data/adb/ksu`、`/data/adb/apatch`、`/data/adb/magisk` 探测（测试用 `managerKindForDesc` 覆盖）。**宽度自适应**：`descAvailableEm()` 读 `wm size`（优先 Override size）、`wm density`（优先 Override density）与 `settings get system font_scale`，按 `(dp−64)/font_scale/14sp` 折成可用 em（进程内缓存一次；读不到按 360dp）。标签逐级裁剪：全标签 → 紧凑（去掉循环/温度标签，只留图标）→ 仅图标。实测阈值（em 千分位，中文/英文）：全标签 19569/21656、紧凑 16669/17696、仅图标 13877/13956；即 393dp 屏两者全标签，360dp 屏中文全标签、英文紧凑，360dp+1.15× 字体中文紧凑、英文仅图标。`[ML实验版]` 前缀计入宽度。**`module.prop` 不得写真实 CR/LF**（`WriteModuleProp` 负责清洗）。
 
 ### 文档
 
 - README.md 与 README_EN.md 章节/锚点一一对应，语言导航行在徽章区之后；公开文档只写本项目行为，不写来源归属。
 - 设计笔记、过程规格、调研报告放本地工作区不提交；`docs/` 只放按命名规范格式化的论文 PDF。
+
+### 提交信息（Git）
+
+- 格式：`type(scope): 中文单行主题`，冒号后一个空格。主题说明「改了什么/修了什么」，约 ≤40 汉字，不以句号结尾，**不写 issue 编号、不加英文括注**（issue 归属走正文/PR）。type 沿用历史：`feat`/`fix`/`docs`/`chore`/`add`/`refactor`/`ci`/`perf`；`add` 是仓库既有用法（新增文件/数据/资产），不必为「标准」改成 feat。
+- scope 用模块级小写词，历史常用 `battery`（daemon 业务）、`calib`（电流/容量/电量计校准口径）、`webui`、`ui`、`installer`、`release`、`stats`、`git`、`tooling`、`ci`；跨多处时选改动主体，不要凭空造新 scope。
+- 正文默认要有：用 `-` 列表写 2~6 条，覆盖「根因（现象→机理）、改动要点、测试/回归」，写清楚为什么，而不是罗列文件；发布、元数据、纯文档一句话能说清的可省略正文。
+- 提交前先 `git log --format='%h %s' -10`（需要时加 `%b` 看正文）对齐既有风格；提交/推送后确认 CI（Go / WebUI）通过。
+- 改写已推送提交（amend/rebase/force-push）必须先得到用户明确指示，并用 `--force-with-lease`。
 
 ## 仓库结构
 
@@ -219,6 +228,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ## 提交前检查清单
 
 - [ ] 已读相关源码和 README/AGENTS 约定，没有覆盖用户未提交的改动。
+- [ ] 提交信息符合「提交信息（Git）」：`type(scope): 中文单行主题`，正文写根因/改动/测试（已先看 `git log` 对齐风格）。
 - [ ] Go 改动有测试；`go test ./...`、`go vet ./...` 通过。
 - [ ] shell 改动通过 `bash -n`，并说明无法在真机验证。
 - [ ] WebUI 改动通过 `pnpm run verify` 与 `pnpm run smoke`（或真机/模拟宿主），三页/设置/图表/分页都检查过。
