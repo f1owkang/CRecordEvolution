@@ -104,6 +104,19 @@ jobs:
               git log --pretty='- %s' > changelog.txt
             fi
           fi
+          # 发版后 CI 自己会提交一条 `add: update.json 更新至 vX.Y.Z（含发布基线）`，
+          # 它只改更新源与基线、对用户没有意义；基线机制决定下一版必然把它算进
+          # 区间，不过滤就会原样出现在 KernelSU 更新弹窗里，像一条无关日志。
+          # 全部被过滤（区间只有这条自动化提交）时保留原文件，避免空更新日志。
+          if grep -v '^- add: update\.json' changelog.txt > changelog.filtered; then
+            if [ -s changelog.filtered ]; then
+              mv changelog.filtered changelog.txt
+            else
+              rm -f changelog.filtered
+            fi
+          else
+            rm -f changelog.filtered
+          fi
           # 这份文件同时作为 release notes（KernelSU 模块页/更新弹窗的更新日志）
           # 与 update.json 的 changelog 资产，保持 Markdown 可读
           printf '\n`%s` 为实验通道（在线学习算法），手动刷入，不提供应用内更新。\n' "${ML_ASSET_NAME}" >> changelog.txt

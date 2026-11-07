@@ -1,0 +1,138 @@
+name: Metadata
+
+# 安装器 shell 与模块元数据此前没有任何 CI 守卫：只有打 tag 发版时才被 release.yml
+# 使用（那时已不可回退）。这个工作流在改动这些文件时提前拦住语法错误、CRLF、
+# 缺键与元数据不一致——安装器是最高风险的代码，却最晚才被验证。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'customize.sh'
+      - 'action.sh'
+      - 'service.sh'
+      - 'module.prop'
+      - 'module.yaml'
+      - 'module.json'
+      - 'update.json'
+      - 'package.json'
+      - '.release-baseline'
+      - 'META-INF/**'
+      - '.github/workflows/meta.yml'
+  pull_request:
+    paths:
+      - 'customize.sh'
+      - 'action.sh'
+      - 'service.sh'
+      - 'module.prop'
+      - 'module.yaml'
+      - 'module.json'
+      - 'update.json'
+      - 'package.json'
+      - '.release-baseline'
+      - 'META-INF/**'
+      - '.github/workflows/meta.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 本地只能 bash -n 当语法网（POSIX sh 语义仍需真机验证），但这已能拦住
+      # 引号/循环/if 未闭合这类会让安装器直接报 syntax error 的低级错误。
+      - name: Shell syntax
+        run: |
+          for f in customize.sh action.sh service.sh; do
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash 语法检查失败"
+              exit 1
+            fi
+          done
+
+      # 设备端 mksh 对 CRLF 零容忍：CRLF 的 .sh 会报 ": not found"/"syntax error"，
+      # CRLF 的 module.prop 会让 properties 解析出带 \r 的值。
+      - name: LF line endings
+        run: |
+          files="$(git ls-files '*.sh' 'module.prop' '.release-baseline' 'META-INF/**')"
+          bad=""
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ -f "$f" ] && grep -q $'\r' "$f"; then
+              bad="$bad $f"
+            fi
+          done <<< "$files"
+          if [ -n "$bad" ]; then
+            echo "::error::以下文件含 CRLF（设备端 mksh 会解析失败）：$bad"
+            exit 1
+          fi
+
+      - name: module.prop keys
+        run: |
+          err=0
+          for k in id name version versionCode; do
+            if ! grep -q "^$k=" module.prop; then
+              echo "::error::module.prop 缺少 $k"
+              err=1
+            fi
+          done
+          [ "$err" = 0 ] || exit 1
+
+          version="$(grep '^version=' module.prop | cut -d= -f2-)"
+          code="$(grep '^versionCode=' module.prop | cut -d= -f2-)"
+          id="$(grep '^id=' module.prop | cut -d= -f2-)"
+
+          # 全项目唯一模块 id：写错会让升级变成两个目录、丢掉历史数据
+          if [ "$id" != "CRecordEvolution" ]; then
+            echo "::error::module.prop 的 id 必须是 CRecordEvolution，实际为 '$id'"
+            exit 1
+          fi
+          # 版本号必须单调可读（1.3.7 形式），versionCode 必须是正整数且严格递增
+          # 由发版流程人工保证，这里只拦格式/空值。
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)+$'; then
+            echo "::error::module.prop 的 version 格式非法：'$version'（应为 1.3.7 这类）"
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "::error::module.prop 的 versionCode 必须是正整数：'$code'"
+            exit 1
+          fi
+
+      # 发版提交要求 module.prop 与 package.json 的 version 同步；两边不一致时
+      # tag 会通过校验但 WebUI 关于页/产物命名显示旧版本，只有这里能提前发现。
+      - name: Versions in sync
+        run: |
+          PROP_VERSION="$(grep '^version=' module.prop | cut -d= -f2-)"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PROP_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::module.prop version=$PROP_VERSION 与 package.json version=$PKG_VERSION 不一致"
+            exit 1
+          fi
+
+      # JSON 与 YAML 都必须能被解析器读通；module.yaml 的 id 要与 module.prop 一致，
+      # 否则 KernelSU Modules 展示页与模块本体对不上。
+      - name: Parse metadata
+        run: |
+          node -e '
+            const fs = require("fs");
+            for (const f of ["module.json", "update.json"]) {
+              JSON.parse(fs.readFileSync(f, "utf8"));
+              console.log(f + " OK");
+            }
+          '
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 - <<'PY'
+          import yaml
+
+          with open("module.yaml", encoding="utf-8") as f:
+              doc = yaml.safe_load(f)
+          assert isinstance(doc, dict), "module.yaml 顶层不是映射"
+          assert doc.get("id") == "CRecordEvolution", f'module.yaml id 异常：{doc.get("id")}'
+          assert doc.get("schemaVersion") == 1, f'schemaVersion 异常：{doc.get("schemaVersion")}'
+          print("module.yaml OK")
+          PY
