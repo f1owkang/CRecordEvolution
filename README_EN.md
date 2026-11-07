@@ -33,10 +33,12 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 ## Features
 
 - **Health and capacity at a glance**: the module description shows kernel health, measured health and capacity, cycles and temperature on two icons-and-labels lines, and trims labels by screen width so narrow phones still get two lines — no app needed.
+- **Live charging at a glance**: while charging, the Overview shows live current / power / voltage, this session's progress and the estimated time to full, refreshing every 15 s while charging (60 s otherwise).
 - **Three-page WebUI**: Overview / History / Settings; the Overview shows the current battery temperature, history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap with per-point values.
 - **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
 - **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.
 - **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
+- **Upgrade self-check**: if an older daemon is still running after an upgrade, Settings says "Updated — restart to apply", so old and new data never mix.
 - **Bilingual UI**: Simplified Chinese / English, selectable at install time and switchable any time in the WebUI.
 
 ## Installation
@@ -56,6 +58,7 @@ Pick the zip in your manager and answer two short prompts (the same in-app and i
 
 - Both variants share the same id and name, and are mutually exclusive; the ML build is marked by the `[ML experimental]` prefix on the module description;
 - Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
+- Reboot soon after upgrading: until then the old daemon keeps writing with the old units, and Settings shows "Updated — restart to apply";
 - Older Magisk versions have no Action button; wait for a reboot;
 - Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
 - The language is chosen at install time and can be switched later in the WebUI; the module description refreshes immediately. With no explicit choice it follows the system language;
