@@ -14,6 +14,7 @@
     "check:size": "node scripts/check-size.mjs",
     "verify": "vite build && node scripts/check-offline.mjs && node scripts/check-size.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "shots": "vite build && node scripts/screenshots.mjs",
     "format": "prettier --write \"webui/**/*.{js,jsx,css,html}\" \"scripts/**/*.mjs\" \"vite.config.js\"",
     "format:check": "prettier --check \"webui/**/*.{js,jsx,css,html}\" \"scripts/**/*.mjs\" \"vite.config.js\""
   },
