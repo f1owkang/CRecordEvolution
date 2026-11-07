@@ -46,6 +46,12 @@ const server = createServer((req, res) => {
     );
     return;
   }
+  if (url.pathname === '/internal/colors.css') {
+    // 截图用内置主题：不给 M3 调色板，验证「无取色宿主」时的三档外观。
+    res.writeHead(200, { 'content-type': 'text/css' });
+    res.end(':root{}');
+    return;
+  }
   let rel = decodeURIComponent(url.pathname);
   if (rel.endsWith('/')) rel += 'index.html';
   const file = normalize(join(WEBROOT, rel));

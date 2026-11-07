@@ -26,7 +26,17 @@ function AppShell({ value, topbar, dock, children }) {
 // App 只负责「组合 hooks + 渲染壳」：取数与轮询在 useDocPolling，语言/主题/底栏
 // 与其落盘在 useUiPrefs；这里保留页面切换、滚动位置、标题与 gate 分支。
 function App() {
-  const { lang, themeMode, barMode, setLang, setThemeMode, setBarMode } = useUiPrefs();
+  const {
+    lang,
+    themeMode,
+    amoled,
+    barMode,
+    dynamicColor,
+    setLang,
+    setThemeMode,
+    setAmoled,
+    setBarMode,
+  } = useUiPrefs();
   const { doc, err, busy, histReload, refreshNow } = useDocPolling();
 
   const [page, setPage] = useState(0);
@@ -103,9 +113,12 @@ function App() {
         doc={doc}
         active={page === 2}
         themeMode={themeMode}
+        amoled={amoled}
+        dynamicColor={dynamicColor}
         barMode={barMode}
         busy={busy}
         onThemeChange={setThemeMode}
+        onAmoledChange={setAmoled}
         onLangChange={setLang}
         onBarChange={setBarMode}
         onRefresh={refreshNow}

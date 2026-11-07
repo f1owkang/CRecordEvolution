@@ -58,6 +58,21 @@ button:focus-visible {
   --orange: #ffa657;
   --rest-dot: #e6edf3;
 
+  /* 选中态与底栏的角色 token：内置主题沿用原配色，Material You 下换成
+     M3 规范角色（segmented selected = secondaryContainer，导航栏激活指示器 =
+     secondaryContainer 64×32dp）。 */
+  --sel-bg: var(--card);
+  --sel-fg: var(--fg);
+  --chip-sel-bg: var(--accent-soft-bg);
+  --chip-sel-bd: var(--accent-soft-bd);
+  --chip-sel-fg: var(--accent);
+  --nav-bg: var(--card);
+  --nav-ind-bg: var(--accent-soft-bg);
+  --nav-ind-bd: var(--accent-soft-bd);
+  --nav-ind-fg: var(--accent);
+  --nav-fg: var(--mute);
+  --nav-active-label: var(--fg);
+
   /* 系统栏安全区回退链：新版 KSU 动态注入 --safe-area-inset-*，
      旧版 insets.css 提供 --window-inset-*，浏览器兜底 env()，最后 0 */
   --inset-top: var(--safe-area-inset-top, var(--window-inset-top, env(safe-area-inset-top, 0px)));
@@ -105,6 +120,97 @@ html[data-theme='light'] {
   --purple: #8250df;
   --orange: #bc4c00;
   --rest-dot: #1f2328;
+}
+/* AMOLED 纯黑：独立开关（cre_amoled）只在深色主题上叠底色，
+   浅色与 auto 解析为浅色时保持原样；不重排档位、不新增主题常量。 */
+html[data-theme='dark'][data-black='1'] {
+  --bg: #000000;
+  --card: #0b0b0d;
+  --border: #1f1f24;
+  --border-soft: #151518;
+  --hero-a: #0a140f;
+  --hero-b: #070709;
+  --hero-border: #1d2a24;
+  --chart-base: #1f1f24;
+  --chart-ref: #5f6773;
+}
+/* Material You：宿主（MMRL/WebUI-X）通过 /internal/colors.css 注入 --primary /
+   --background / --surfaceContainer 等 M3 调色板时，把内置 token 映射过去；
+   其他宿主探测不到 --primary，设置里不出现该档，页面仍用内置配色。
+   color-mix 在旧 WebView 不支持，先写 rgba 回退值再在 @supports 里覆盖。 */
+html[data-scheme='light'][data-theme='my'] {
+  color-scheme: light;
+}
+html[data-scheme='dark'][data-theme='my'] {
+  color-scheme: dark;
+}
+html[data-theme='my'] {
+  --bg: var(--background, #0b0e14);
+  --fg: var(--onBackground, #e6edf3);
+  --dim: var(--onSurfaceVariant, #9fb3c8);
+  --mute: var(--onSurfaceVariant, #8b949e);
+  --faint: var(--onSurfaceVariant, #8b949e);
+  --card: var(--surfaceContainer, #151a23);
+  --border: var(--outlineVariant, #232a36);
+  --border-soft: var(--outlineVariant, #1d242f);
+  --hero-a: var(--primaryContainer, #13221a);
+  --hero-b: var(--surfaceContainerHigh, #12161f);
+  --hero-border: var(--outlineVariant, #23303c);
+  --accent: var(--primary, #4ade80);
+  --accent-soft-bg: rgba(74, 222, 128, 0.12);
+  --accent-soft-bd: rgba(74, 222, 128, 0.35);
+  --blue: var(--tertiary, #79c0ff);
+  --blue-soft-bg: rgba(88, 166, 255, 0.12);
+  --blue-soft-bd: rgba(88, 166, 255, 0.35);
+  --badge-bd: var(--outline, #30363d);
+  --err-bg: rgba(248, 113, 113, 0.08);
+  --err-bd: rgba(248, 113, 113, 0.35);
+  --err-fg: var(--error, #fca5a5);
+  --btn: var(--primary, #238636);
+  --btn-hover: var(--primary, #2ea043);
+  --btn-fg: var(--onPrimary, #fff);
+  --chart-base: var(--outlineVariant, #232a36);
+  --chart-ref: var(--outline, #6e7681);
+  --purple: var(--tertiary, #d2a8ff);
+  --orange: var(--secondary, #ffa657);
+  --rest-dot: var(--onSurface, #e6edf3);
+  /* M3 选中态：浅色调色板也是 secondaryContainer，避免用 surfaceContainer
+     当选中底色时与背景太接近（视觉上像没选中）。 */
+  --sel-bg: var(--secondaryContainer, #cce8ea);
+  --sel-fg: var(--onSecondaryContainer, #051f21);
+  --chip-sel-bg: var(--secondaryContainer, #cce8ea);
+  --chip-sel-bd: var(--outlineVariant, #bec8c8);
+  --chip-sel-fg: var(--onSecondaryContainer, #051f21);
+  --nav-bg: var(--surfaceContainer, #e8f0f0);
+  --nav-ind-bg: var(--secondaryContainer, #cce8ea);
+  --nav-ind-bd: transparent;
+  --nav-ind-fg: var(--onSecondaryContainer, #051f21);
+  --nav-fg: var(--onSurfaceVariant, #3f4849);
+  --nav-active-label: var(--onSurface, #161d1d);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  html[data-theme='my'] {
+    --accent-soft-bg: color-mix(in srgb, var(--primary, #4ade80) 12%, transparent);
+    --accent-soft-bd: color-mix(in srgb, var(--primary, #4ade80) 35%, transparent);
+    --blue-soft-bg: color-mix(in srgb, var(--tertiary, #79c0ff) 12%, transparent);
+    --blue-soft-bd: color-mix(in srgb, var(--tertiary, #79c0ff) 35%, transparent);
+    --err-bg: color-mix(in srgb, var(--error, #f87171) 10%, transparent);
+    --err-bd: color-mix(in srgb, var(--error, #f87171) 35%, transparent);
+    --btn-hover: color-mix(in srgb, var(--primary, #238636) 88%, var(--onPrimary, #fff));
+  }
+}
+/* 纯黑开关与取色叠加：主题色仍跟随宿主，只把背景/卡片压到黑。 */
+html[data-theme='my'][data-black='1'] {
+  --bg: #000000;
+  --card: #0b0b0d;
+  --border: #1f1f24;
+  --border-soft: #151518;
+  --hero-a: #0a140f;
+  --hero-b: #070709;
+  --hero-border: #1d2a24;
+  --chart-base: #1f1f24;
+  --chart-ref: #5f6773;
+  --nav-bg: #0b0b0d;
 }
 body {
   background: var(--bg);
@@ -519,9 +625,9 @@ html[data-bar='classic'] body {
   cursor: pointer;
 }
 .chip.is-active {
-  background: var(--accent-soft-bg);
-  border-color: var(--accent-soft-bd);
-  color: var(--accent);
+  background: var(--chip-sel-bg);
+  border-color: var(--chip-sel-bd);
+  color: var(--chip-sel-fg);
 }
 .chip:active {
   transform: scale(0.97);
@@ -954,8 +1060,8 @@ html[data-theme='light'] .pill.warn {
   cursor: pointer;
 }
 .seg-btn.is-active {
-  background: var(--card);
-  color: var(--fg);
+  background: var(--sel-bg);
+  color: var(--sel-fg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 .seg-btn:active {
@@ -994,8 +1100,8 @@ html[data-theme='light'] .pill.warn {
   left: 4px;
   width: calc((100% - 8px) / 3);
   border-radius: 999px;
-  background: var(--accent-soft-bg);
-  border: 1px solid var(--accent-soft-bd);
+  background: var(--nav-ind-bg);
+  border: 1px solid var(--nav-ind-bd);
   transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .navitem {
@@ -1021,27 +1127,33 @@ html[data-theme='light'] .pill.warn {
   height: 22px;
 }
 .navitem.is-active {
-  color: var(--accent);
+  color: var(--nav-ind-fg);
 }
 .navitem:active {
   transform: scale(0.95);
 }
 
-/* 传统底栏：贴底全宽、顶部细分割；悬浮底栏是默认的胶囊 */
+/* 传统底栏：Material 3 Navigation bar 规范（80dp 容器 / 24dp 图标 /
+   12sp label / 64×32dp 激活指示器 = secondaryContainer，图标 onSecondaryContainer，
+   激活 label onSurface、未激活 onSurfaceVariant）。 */
+html[data-bar='classic'] body {
+  padding-bottom: calc(80px + var(--inset-bottom));
+}
 html[data-bar='classic'] .dock {
   left: 0;
   right: 0;
   bottom: 0;
   display: block;
-  background: var(--card);
-  border-top: 1px solid var(--border);
+  background: var(--nav-bg);
+  border-top: 0;
+  box-shadow: none;
   padding-bottom: var(--inset-bottom);
 }
 html[data-bar='classic'] .dock-inner {
   width: 100%;
   max-width: 480px;
+  height: 80px;
   margin: 0 auto;
-  height: 60px;
   padding: 0 8px;
   border: 0;
   border-radius: 0;
@@ -1051,14 +1163,48 @@ html[data-bar='classic'] .dock-inner {
 html[data-bar='classic'] .dock-ind {
   display: none;
 }
+html[data-bar='classic'] .navitem {
+  /* M3 NavigationBarItem 的纵向节奏：12 顶部 + 32 指示器 + 4 + 16 label + 16 底部
+     = 80dp。图标在 32dp 指示器内居中（上下各 4），label 距指示器底 4dp。 */
+  justify-content: flex-start;
+  gap: 0;
+  padding: 12px 0 16px;
+  border-radius: 0;
+  color: var(--nav-fg);
+  font-size: 12px;
+  font-weight: 500;
+}
+html[data-bar='classic'] .navitem .icon {
+  width: 24px;
+  height: 24px;
+  margin-top: 4px;
+}
+html[data-bar='classic'] .navitem > span:last-child {
+  margin-top: 8px;
+  line-height: 16px;
+}
+html[data-bar='classic'] .navitem > * {
+  position: relative;
+  z-index: 1;
+}
+html[data-bar='classic'] .navitem.is-active {
+  color: var(--nav-ind-fg);
+}
+html[data-bar='classic'] .navitem.is-active > span:last-child {
+  color: var(--nav-active-label);
+}
 html[data-bar='classic'] .navitem.is-active::before {
   content: '';
   position: absolute;
-  top: 0;
-  width: 36px;
-  height: 3px;
-  border-radius: 0 0 3px 3px;
-  background: var(--accent);
+  top: 12px;
+  left: 50%;
+  width: 64px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--nav-ind-bg);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* 无宿主 gate 页：没有 ksu/APatch exec 时替代数据页显示 */

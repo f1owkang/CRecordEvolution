@@ -29,11 +29,73 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
 };
 
+// Mock 宿主取色：MMRL/WebUI-X 会注入 /internal/colors.css（M3 调色板）。
+// 通过 /__colors/off|on 开关模拟「不支持取色的管理器」，用于验证优雅降级。
+let colorsMock = true;
+let paletteMode = 'light';
+const COLOR_PALETTE_LIGHT =
+  ':root{--primary:#00696d;--onPrimary:#ffffff;--primaryContainer:#6ff6ff;' +
+  '--onPrimaryContainer:#002022;--secondary:#4a6365;--onSecondary:#ffffff;' +
+  '--secondaryContainer:#cce8ea;--onSecondaryContainer:#051f21;--tertiary:#4f5f7c;' +
+  '--onTertiary:#ffffff;--tertiaryContainer:#d6e3ff;--onTertiaryContainer:#071b35;' +
+  '--error:#ba1a1a;--onError:#ffffff;--errorContainer:#ffdad6;--onErrorContainer:#410002;' +
+  '--background:#f4fbfb;--onBackground:#161d1d;--surface:#f4fbfb;--onSurface:#161d1d;' +
+  '--surfaceVariant:#dae4e5;--onSurfaceVariant:#3f4849;--surfaceContainerLowest:#ffffff;' +
+  '--surfaceContainerLow:#eef5f5;--surfaceContainer:#e8f0f0;--surfaceContainerHigh:#e2eaea;' +
+  '--surfaceContainerHighest:#dce4e5;--outline:#6f7979;--outlineVariant:#bec8c8;' +
+  '--shadow:#000000;--inverseSurface:#2b3232;--inverseOnSurface:#ecf2f2;' +
+  '--inversePrimary:#4cd9e1;--surfaceBright:#f4fbfb;--surfaceDim:#d4dcdc}';
+const COLOR_PALETTE_DARK =
+  ':root{--primary:#b3c5ff;--onPrimary:#002e69;--primaryContainer:#26427f;' +
+  '--onPrimaryContainer:#dae2ff;--secondary:#bfc6dc;--onSecondary:#293042;' +
+  '--secondaryContainer:#3f4759;--onSecondaryContainer:#dbe2f9;--tertiary:#a5cbe9;' +
+  '--onTertiary:#0a344c;--tertiaryContainer:#234b63;--onTertiaryContainer:#c1e7ff;' +
+  '--error:#ffb4ab;--onError:#690005;--errorContainer:#93000a;--onErrorContainer:#ffdad6;' +
+  '--background:#111318;--onBackground:#e2e2e9;--surface:#111318;--onSurface:#e2e2e9;' +
+  '--surfaceVariant:#44474f;--onSurfaceVariant:#c4c6d0;--surfaceContainerLowest:#0c0e13;' +
+  '--surfaceContainerLow:#191c20;--surfaceContainer:#1d2024;--surfaceContainerHigh:#282a2f;' +
+  '--surfaceContainerHighest:#33353a;--outline:#8e9099;--outlineVariant:#44474f;' +
+  '--shadow:#000000;--inverseSurface:#e2e2e9;--inverseOnSurface:#2f3034;' +
+  '--inversePrimary:#425e9a;--surfaceBright:#37393e;--surfaceDim:#111318}';
+
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/favicon.ico') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+  if (url.pathname === '/__colors/off') {
+    colorsMock = false;
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('off');
+    return;
+  }
+  if (url.pathname === '/__colors/on') {
+    colorsMock = true;
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('on');
+    return;
+  }
+  if (url.pathname === '/__colors/dark') {
+    paletteMode = 'dark';
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('dark');
+    return;
+  }
+  if (url.pathname === '/__colors/light') {
+    paletteMode = 'light';
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('light');
+    return;
+  }
+  if (url.pathname === '/internal/colors.css') {
+    res.writeHead(200, { 'content-type': 'text/css' });
+    // 不支持取色的宿主返回空样式而不是 404，避免冒烟把 404 记为 console error；
+    // 真实宿主无该路径时会自然 404，但探测只认 --primary 变量，行为一致。
+    res.end(
+      colorsMock ? (paletteMode === 'dark' ? COLOR_PALETTE_DARK : COLOR_PALETTE_LIGHT) : ':root{}'
+    );
     return;
   }
   if (url.pathname === '/internal/insets.css') {
@@ -305,6 +367,13 @@ async function shot(page, name) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await sleep(250);
   await page.screenshot({ path: join(SHOTS, name), fullPage: true });
+}
+
+// 视口截图：展示固定底栏在 390×844 首屏里的真实观感（不做整页拼接）。
+async function shotView(page, name) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await sleep(250);
+  await page.screenshot({ path: join(SHOTS, name), fullPage: false });
 }
 
 async function launch() {
@@ -682,7 +751,8 @@ try {
 
   await page.click('#nav_settings');
   await page.waitForSelector('#page_settings.is-active');
-  check((await page.locator('#theme_seg .seg-btn').count()) === 3, '设置：主题三档');
+  check((await page.locator('#theme_seg .seg-btn').count()) === 4, '设置：主题四档（含取色）');
+  check((await page.locator('#amoled_seg .seg-btn').count()) === 2, '设置：纯黑背景开关');
   check(
     (await page.locator('#page_settings [data-field="current_node"]').count()) === 1,
     '设置：电流采样节点行'
@@ -744,6 +814,162 @@ try {
   await page.locator('#theme_seg .seg-btn').nth(2).click();
   await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark');
   check(true, '设置：切换深色主题');
+
+  // 宿主取色：切到第 4 档 Material You，data-theme=my + 宿主调色板变量生效。
+  await page.locator('#theme_seg .seg-btn').nth(3).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'my');
+  const myBg = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+  );
+  check(myBg === '#f4fbfb', '设置：取色主题使用宿主 --background', myBg);
+  check(
+    (await page.evaluate(() => document.documentElement.getAttribute('data-scheme'))) === 'light',
+    '设置：取色明暗从浅色调色板推导'
+  );
+  check(
+    (await page.evaluate(() => document.querySelector('meta[name="theme-color"]').content)) ===
+      '#f4fbfb',
+    '设置：取色主题色同步宿主背景'
+  );
+  // 选中段必须用 M3 secondaryContainer/onSecondaryContainer：surfaceContainer
+  // 当选中底色时在浅色板上与背景太接近（实测看起来像没选中）。
+  const segSel = await page.evaluate(() => {
+    const el = document.querySelector('#theme_seg .seg-btn.is-active');
+    const cs = getComputedStyle(el);
+    return { bg: cs.backgroundColor, fg: cs.color };
+  });
+  check(
+    segSel.bg === 'rgb(204, 232, 234)',
+    '设置：取色选中段 background=secondaryContainer',
+    segSel.bg
+  );
+  check(segSel.fg === 'rgb(5, 31, 33)', '设置：取色选中段 color=onSecondaryContainer', segSel.fg);
+  await shotView(page, 'my-light-settings.png');
+
+  // 传统底栏在取色模式下必须是 M3 Navigation bar 角色：
+  // 容器 surfaceContainer、激活指示器 secondaryContainer 64×32dp。
+  await page.locator('#bar_mode_seg .seg-btn').nth(1).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-bar') === 'classic');
+  const myClassic = await page.evaluate(() => {
+    const dock = document.querySelector('.dock');
+    const active = document.querySelector('.navitem.is-active');
+    const before = getComputedStyle(active, '::before');
+    const ar = active.getBoundingClientRect();
+    const icon = active.querySelector('.icon').getBoundingClientRect();
+    const label = active.querySelector('span:last-child').getBoundingClientRect();
+    return {
+      dockBg: getComputedStyle(dock).backgroundColor,
+      indBg: before.backgroundColor,
+      indW: before.width,
+      indH: before.height,
+      pillTop: ar.top + parseFloat(before.top),
+      pillH: parseFloat(before.height),
+      iconTop: icon.top,
+      labelTop: label.top,
+    };
+  });
+  check(
+    myClassic.dockBg === 'rgb(232, 240, 240)',
+    '底栏：取色容器=surfaceContainer',
+    myClassic.dockBg
+  );
+  check(
+    myClassic.indBg === 'rgb(204, 232, 234)',
+    '底栏：取色激活指示器=secondaryContainer',
+    myClassic.indBg
+  );
+  check(
+    myClassic.indW === '64px' && myClassic.indH === '32px',
+    '底栏：M3 激活指示器 64×32',
+    `${myClassic.indW}×${myClassic.indH}`
+  );
+  check(
+    Math.abs(myClassic.pillTop - (myClassic.iconTop - 4)) <= 1,
+    '底栏：指示器与图标垂直居中',
+    `pill=${myClassic.pillTop} icon=${myClassic.iconTop}`
+  );
+  check(
+    Math.abs(myClassic.labelTop - (myClassic.pillTop + myClassic.pillH + 4)) <= 1,
+    '底栏：label 距指示器底 4dp',
+    `label=${myClassic.labelTop} pillBottom=${myClassic.pillTop + myClassic.pillH}`
+  );
+  await shotView(page, 'my-light-classic.png');
+  await page.locator('#bar_mode_seg .seg-btn').nth(0).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute('data-bar') === 'floating'
+  );
+
+  await page.locator('#theme_seg .seg-btn').nth(2).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'dark');
+  check(true, '设置：取色后切回深色');
+
+  // 纯黑开关：仅在深色上把 --bg 压到 #000，关掉立即恢复。
+  await page.locator('#amoled_seg .seg-btn').nth(1).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-black') === '1');
+  const amoledBg = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+  );
+  check(amoledBg === '#000000', '设置：纯黑背景生效（--bg=#000）');
+  check(
+    (await page.evaluate(() => document.querySelector('meta[name="theme-color"]').content)) ===
+      '#000000',
+    '设置：纯黑主题色同步'
+  );
+  await page.locator('#amoled_seg .seg-btn').nth(0).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-black') === '0');
+  check(true, '设置：关闭纯黑背景');
+
+  // 传统底栏：M3 Navigation bar 规范（80dp 容器 / 24dp 图标 / 12sp label /
+  // 64×32dp 激活指示器）。内置主题沿用原配色 token。
+  await page.locator('#bar_mode_seg .seg-btn').nth(1).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-bar') === 'classic');
+  const classic = await page.evaluate(() => {
+    const dock = document.querySelector('.dock');
+    const inner = document.querySelector('.dock-inner');
+    const active = document.querySelector('.navitem.is-active');
+    const before = getComputedStyle(active, '::before');
+    const ar = active.getBoundingClientRect();
+    const icon = active.querySelector('.icon').getBoundingClientRect();
+    const label = active.querySelector('span:last-child').getBoundingClientRect();
+    return {
+      dockBg: getComputedStyle(dock).backgroundColor,
+      h: Math.round(inner.getBoundingClientRect().height),
+      icon: getComputedStyle(active.querySelector('.icon')).width,
+      label: getComputedStyle(active.querySelector('span:last-child')).fontSize,
+      indW: before.width,
+      indH: before.height,
+      indRadius: before.borderRadius,
+      indBg: before.backgroundColor,
+      pillTop: ar.top + parseFloat(before.top),
+      iconTop: icon.top,
+      labelTop: label.top,
+    };
+  });
+  check(classic.dockBg === 'rgb(21, 26, 35)', '底栏：传统模式容器背景', classic.dockBg);
+  check(classic.h === 80, '底栏：M3 高度 80dp', String(classic.h));
+  check(classic.icon === '24px', '底栏：图标 24dp', classic.icon);
+  check(classic.label === '12px', '底栏：label 12sp', classic.label);
+  check(
+    classic.indW === '64px' && classic.indH === '32px' && classic.indRadius === '999px',
+    '底栏：M3 激活指示器 64×32 全圆角',
+    `${classic.indW}×${classic.indH} r=${classic.indRadius}`
+  );
+  check(classic.indBg !== 'rgba(0, 0, 0, 0)', '底栏：激活指示器有底色', classic.indBg);
+  check(
+    Math.abs(classic.pillTop - (classic.iconTop - 4)) <= 1,
+    '底栏：指示器与图标垂直居中',
+    `pill=${classic.pillTop} icon=${classic.iconTop}`
+  );
+  check(
+    Math.abs(classic.labelTop - (classic.pillTop + parseFloat(classic.indH) + 4)) <= 1,
+    '底栏：label 距指示器底 4dp',
+    `label=${classic.labelTop} pillBottom=${classic.pillTop + parseFloat(classic.indH)}`
+  );
+  await shotView(page, 'classic-bar.png');
+  await page.locator('#bar_mode_seg .seg-btn').nth(0).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute('data-bar') === 'floating'
+  );
 
   await page.locator('#lang_seg .seg-btn').nth(0).click();
   await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
@@ -820,6 +1046,76 @@ try {
     '历史：中文记录数文案',
     zhCounts.join(',')
   );
+
+  // 深色调色板：明暗必须从 --background 亮度推导，不能依赖 prefers-color-scheme
+  //（无头浏览器默认 light，但宿主给的是深色板）。
+  await page.request.get(base + '/__colors/dark');
+  await page.evaluate(() => localStorage.setItem('cre_theme', 'my'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#page_overview.is-active', { timeout: 15000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'my');
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute('data-scheme') === 'dark',
+    null,
+    { timeout: 10000 }
+  );
+  check(true, '设置：取色明暗从深色调色板推导（不用 prefers-color-scheme）');
+  const darkMyBg = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()
+  );
+  check(darkMyBg === '#111318', '设置：深色取色主题背景', darkMyBg);
+  check(
+    (await page.evaluate(() => document.querySelector('meta[name="theme-color"]').content)) ===
+      '#111318',
+    '设置：深色取色主题色同步'
+  );
+  await shotView(page, 'my-dark-settings.png');
+  await page.locator('#bar_mode_seg .seg-btn').nth(1).click();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-bar') === 'classic');
+  const myDarkClassic = await page.evaluate(() => {
+    const dock = document.querySelector('.dock');
+    const before = getComputedStyle(document.querySelector('.navitem.is-active'), '::before');
+    return {
+      dockBg: getComputedStyle(dock).backgroundColor,
+      indBg: before.backgroundColor,
+      bgImage: getComputedStyle(dock).backgroundImage,
+    };
+  });
+  check(
+    myDarkClassic.dockBg === 'rgb(29, 32, 36)',
+    '底栏：深色取色容器=surfaceContainer',
+    myDarkClassic.dockBg
+  );
+  check(
+    myDarkClassic.indBg === 'rgb(63, 71, 89)',
+    '底栏：深色取色激活指示器=secondaryContainer',
+    myDarkClassic.indBg
+  );
+  await shotView(page, 'my-dark-classic.png');
+  await page.locator('#bar_mode_seg .seg-btn').nth(0).click();
+  await page.waitForFunction(
+    () => document.documentElement.getAttribute('data-bar') === 'floating'
+  );
+  await page.request.get(base + '/__colors/light');
+
+  // 不支持取色的宿主（旧版本或缺调色板）：隐藏第 4 档，已存取色偏好降级回 auto。
+  await page.request.get(base + '/__colors/off');
+  await page.evaluate(() => localStorage.setItem('cre_theme', 'my'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#page_overview.is-active', { timeout: 15000 });
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  await page.waitForFunction(
+    () => document.querySelectorAll('#theme_seg .seg-btn').length === 3,
+    null,
+    { timeout: 10000 }
+  );
+  check(true, '设置：无取色宿主不显示取色档');
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') !== 'my');
+  check(true, '设置：无取色宿主降级回系统主题');
+  await page.request.get(base + '/__colors/on');
 
   check(consoleErrors.length === 0, '控制台无报错', consoleErrors.join(' | '));
   check(external.length === 0, '无远程网络请求', external.join(' | '));

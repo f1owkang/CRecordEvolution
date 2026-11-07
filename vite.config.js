@@ -8,8 +8,8 @@ export default defineConfig({
   base: './',
   publicDir: 'public',
   plugins: [
-    // /internal/insets.css 是 root manager 的虚拟资源，构建期不能去解析它。
-    // 用占位符骗过 Vite 的 HTML URL 解析，再在产物里换回真正路径。
+    // /internal/insets.css 与 /internal/colors.css 是 root manager 的虚拟资源，
+    // 构建期不能去解析它们。用占位符骗过 Vite 的 HTML URL 解析，再在产物里换回真正路径。
     {
       name: 'cre-insets-css',
       transformIndexHtml: {
@@ -18,6 +18,7 @@ export default defineConfig({
           return (
             html
               .replace('__INSETS_CSS__', '/internal/insets.css')
+              .replace('__COLORS_CSS__', '/internal/colors.css')
               // 部分管理器的 WebView 对 custom scheme 下的 crossorigin 更敏感；
               // 产物同源加载，去掉 Vite 默认的 crossorigin 属性更稳。
               .replace(/\s+crossorigin(?:="")?/g, '')

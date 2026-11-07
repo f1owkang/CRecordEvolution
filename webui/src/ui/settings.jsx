@@ -8,6 +8,11 @@ const THEME_OPTIONS = [
   { value: 'light', key: 'theme_light' },
   { value: 'dark', key: 'theme_dark' },
 ];
+const THEME_DYNAMIC_OPTION = { value: 'my', key: 'theme_my' };
+const AMOLED_OPTIONS = [
+  { value: 'off', key: 'amoled_off' },
+  { value: 'on', key: 'amoled_on' },
+];
 const LANG_OPTIONS = [
   { value: 'zh', key: 'lang_zh' },
   { value: 'en', key: 'lang_en' },
@@ -85,16 +90,31 @@ function diagItem(t, diag, onCopy) {
   };
 }
 
-// 外观分区：主题 / 语言 / 底栏三档分段选择器，只有取值与回调不同。
+// 外观分区：主题 / 纯黑 / 语言 / 底栏四档；纯黑是独立开关，只叠加在深色上。
+// 主题第 4 档「动态取色」仅在宿主注入 Material You 调色板时出现，其余宿主保持三档。
+function themeOptions(dynamicColor) {
+  return dynamicColor ? THEME_OPTIONS.concat([THEME_DYNAMIC_OPTION]) : THEME_OPTIONS;
+}
+
 function appearanceItems(props, t, lang) {
   const rows = [
     {
       id: 'theme_seg',
       label: t('settings_theme'),
-      desc: t('settings_theme_desc'),
-      options: THEME_OPTIONS,
+      desc: t(props.dynamicColor ? 'settings_theme_desc_my' : 'settings_theme_desc'),
+      options: themeOptions(props.dynamicColor),
       value: props.themeMode,
       onChange: props.onThemeChange,
+    },
+    {
+      id: 'amoled_seg',
+      label: t('settings_amoled'),
+      desc: t('settings_amoled_desc'),
+      options: AMOLED_OPTIONS,
+      value: props.amoled ? 'on' : 'off',
+      onChange: function (next) {
+        props.onAmoledChange(next === 'on');
+      },
     },
     {
       id: 'lang_seg',

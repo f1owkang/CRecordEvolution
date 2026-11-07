@@ -72,13 +72,20 @@ const LANGS = {
     page_history: '历史',
     page_settings: '设置',
 
-    // 设置页：外观（主题 / 语言 / 底栏）
+    // 设置页：外观（主题 / 纯黑 / 语言 / 底栏）
     settings_appearance: '外观',
     settings_theme: '主题',
     settings_theme_desc: '跟随系统，或手动选择浅色 / 深色',
+    settings_theme_desc_my:
+      '跟随系统或手动浅色 / 深色；当前管理器已提供主题调色板，可跟随管理器配色',
     theme_auto: '跟随系统',
     theme_light: '浅色',
     theme_dark: '深色',
+    theme_my: '动态取色',
+    settings_amoled: '纯黑背景',
+    settings_amoled_desc: '深色模式下使用纯黑背景，适合 AMOLED 屏幕',
+    amoled_off: '关闭',
+    amoled_on: '开启',
     settings_language: '语言',
     settings_language_desc: '模块描述与 WebUI 共用同一个设置',
     lang_zh: '中文',
@@ -288,13 +295,20 @@ const LANGS = {
     page_history: 'History',
     page_settings: 'Settings',
 
-    // 设置页：外观（主题 / 语言 / 底栏）
+    // 设置页：外观（主题 / 纯黑 / 语言 / 底栏）
     settings_appearance: 'Appearance',
     settings_theme: 'Theme',
     settings_theme_desc: 'Follow the system, or pick light / dark manually',
+    settings_theme_desc_my:
+      'Follow the system or pick light / dark; this manager exposes a theme palette the WebUI can follow',
     theme_auto: 'System',
     theme_light: 'Light',
     theme_dark: 'Dark',
+    theme_my: 'Dynamic',
+    settings_amoled: 'Pure black',
+    settings_amoled_desc: 'Use a pure black background in dark mode for AMOLED screens',
+    amoled_off: 'Off',
+    amoled_on: 'On',
     settings_language: 'Language',
     settings_language_desc: 'Shared by the module description and WebUI',
     lang_zh: '中文',

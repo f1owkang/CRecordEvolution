@@ -6,6 +6,7 @@ const CMD_ONCE = '/data/adb/modules/CRecordEvolution/bin/batteryd once';
 const CMD_DIAG = '/data/adb/modules/CRecordEvolution/bin/batteryd diag';
 const LANG_FILE = '/data/adb/modules/CRecordEvolution/data/lang';
 const THEME_KEY = 'cre_theme';
+const AMOLED_KEY = 'cre_amoled';
 const LANG_KEY = 'cre_lang';
 const BAR_KEY = 'cre_barmode';
 const HIST_MODE_KEY = 'cre_hist_mode';
@@ -442,7 +443,7 @@ function storedThemeMode() {
   try {
     s = localStorage.getItem(THEME_KEY);
   } catch (e) {}
-  return s === 'light' || s === 'dark' ? s : 'auto';
+  return s === 'light' || s === 'dark' || s === 'my' ? s : 'auto';
 }
 
 function systemTheme() {
@@ -457,15 +458,98 @@ function resolvedTheme(mode) {
   return mode === 'auto' ? systemTheme() : mode;
 }
 
-function applyThemeDocument(mode) {
-  const theme = resolvedTheme(mode);
-  document.documentElement.setAttribute('data-theme', theme);
+// 宿主取色能力探测：MMRL/WebUI-X 通过 /internal/colors.css 注入 M3 调色板
+// （--primary/--background 等）；官方 KernelSU/APatch 不提供，探测为空即降级。
+// 必须读 computed style：变量由宿主样式表在 :root 上定义，不是内联声明。
+function hostColorSupported() {
+  try {
+    const cs = getComputedStyle(document.documentElement);
+    const primary = cs.getPropertyValue('--primary').trim();
+    const background = cs.getPropertyValue('--background').trim();
+    return !!(primary && background);
+  } catch (e) {
+    return false;
+  }
+}
+
+function hostPaletteBackground() {
+  try {
+    return getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+// 宿主调色板的明暗方案必须从 --background 亮度推导：KSU/APatch 的 WebView
+// 没有随管理器主题设置 prefers-color-scheme，matchMedia 不可信。
+function cssColorLuminance(css) {
+  const s = String(css || '')
+    .trim()
+    .toLowerCase();
+  let r, g, b;
+  if (s.charAt(0) === '#') {
+    let h = s.slice(1);
+    if (h.length === 3 || h.length === 4)
+      h = h
+        .split('')
+        .map(function (c) {
+          return c + c;
+        })
+        .join('');
+    if (h.length !== 6 && h.length !== 8) return null;
+    r = parseInt(h.slice(0, 2), 16);
+    g = parseInt(h.slice(2, 4), 16);
+    b = parseInt(h.slice(4, 6), 16);
+  } else {
+    const m = s.match(/^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)/);
+    if (!m) return null;
+    r = +m[1];
+    g = +m[2];
+    b = +m[3];
+  }
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+  function lin(v) {
+    v = v / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function paletteScheme() {
+  const lum = cssColorLuminance(hostPaletteBackground());
+  return lum == null ? systemTheme() : lum > 0.5 ? 'light' : 'dark';
+}
+
+// 纯黑背景是独立开关（cre_amoled），只在解析出的深色主题上叠加：
+// 这样 auto 仍跟随系统，浅色不会被压黑，也无需把主题档位扩成四档。
+function storedAmoled() {
+  let s = null;
+  try {
+    s = localStorage.getItem(AMOLED_KEY);
+  } catch (e) {}
+  return s === '1';
+}
+
+// theme: auto|light|dark|my。my = 宿主 Material You 取色，方案从 --background 亮度推导；
+// data-theme 保留 'my' 让 CSS 映射宿主变量，data-scheme 供 color-scheme 与状态栏使用。
+function applyThemeDocument(mode, amoled) {
+  const scheme = mode === 'my' ? paletteScheme() : resolvedTheme(mode);
+  const black = !!amoled && scheme !== 'light';
+  const root = document.documentElement;
+  root.setAttribute('data-theme', mode === 'my' ? 'my' : scheme);
+  root.setAttribute('data-scheme', scheme);
+  root.setAttribute('data-black', black ? '1' : '0');
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#f6f8fa' : '#0b0e14');
+  if (meta) {
+    // 取色模式直接用宿主 --background（可能是 #RRGGBB 或 rgb()），否则用内置底色。
+    const paletteBg = mode === 'my' ? hostPaletteBackground() : '';
+    const builtin = scheme === 'light' ? '#f6f8fa' : '#0b0e14';
+    meta.setAttribute('content', black ? '#000000' : paletteBg || builtin);
+  }
   try {
     const api = window.$CRecordEvolution;
     if (api && typeof api.setLightStatusBars === 'function') {
-      api.setLightStatusBars(theme === 'light');
+      api.setLightStatusBars(scheme === 'light');
     }
   } catch (e) {
     /* 非 MMRL 宿主 */
@@ -543,6 +627,7 @@ export {
   CMD_DIAG,
   LANG_FILE,
   THEME_KEY,
+  AMOLED_KEY,
   LANG_KEY,
   BAR_KEY,
   HIST_MODE_KEY,
@@ -567,6 +652,8 @@ export {
   contentFP,
   chargeActive,
   storedThemeMode,
+  storedAmoled,
+  hostColorSupported,
   applyThemeDocument,
   storedBarMode,
   storedHistMode,
