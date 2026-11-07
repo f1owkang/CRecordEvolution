@@ -10,7 +10,7 @@ function ChartCard(props) {
   const points = props.points || [];
   // 只有「数据窗口本身」变了才清空选中（点数变化或最后一个点的时间戳变化）；
   // 不要依赖整个 doc 引用——温度每变 0.1℃ 都会换一份 doc，那样选中的点会被
-  // 每分钟一次的轮询清掉。
+  // 下一轮轮询清掉。
   const lastTs = points.length ? points[points.length - 1].row.ts : 0;
   useEffect(
     function () {
@@ -56,12 +56,46 @@ function Cell(props) {
       class={'cell' + (props.pt ? ' pt' : '')}
       style={props.style}
       title={props.title == null ? null : props.title}
+      role={props.role || null}
+      tabIndex={props.tabIndex == null ? null : props.tabIndex}
+      aria-expanded={props.expanded == null ? null : props.expanded ? 'true' : 'false'}
       onClick={props.onClick}
+      onKeyDown={props.onKeyDown}
     >
       <div class="label">{props.label}</div>
       <div class="val">{props.value}</div>
       {props.detail || null}
     </div>
+  );
+}
+
+// 充电中实时卡：插在健康度主卡与指标格之间；model 为 null（无 live / 非充电）时整卡不渲染。
+// 各分段（状态/指标/会话/预计）缺失时各自省略，占位符不进入 DOM。
+function ChargeCard(props) {
+  const model = props.model;
+  if (!model) return null;
+  return (
+    <section class="charge-card" data-field="live">
+      <div class="charge-head">
+        <span class="charge-title">{model.title}</span>
+        {model.statusText ? (
+          <span class={'badge ' + model.statusClass}>{model.statusText}</span>
+        ) : null}
+      </div>
+      {model.metrics.length ? (
+        <div class="charge-metrics">
+          {model.metrics.map(function (metric) {
+            return (
+              <div key={metric.key} class="charge-metric">
+                <div class="label">{metric.label}</div>
+                <div class="val">{metric.value}</div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {model.metaText ? <div class="charge-meta">{model.metaText}</div> : null}
+    </section>
   );
 }
 function Overview(props) {
@@ -79,6 +113,7 @@ function Overview(props) {
         <div class="sub">{m.subText}</div>
         {m.tempText ? <div class="hero-temp">{m.tempText}</div> : null}
       </section>
+      <ChargeCard model={m.charge} />
       <section class="grid">
         <Cell label={t('label_design')} value={m.designText} />
         <Cell label={t('label_full')} value={m.fullText} />
@@ -103,6 +138,9 @@ function Overview(props) {
           }}
           pt={m.qualityOk}
           title={m.qualityOk ? m.qualityDetailText : null}
+          role={m.qualityOk ? 'button' : null}
+          tabIndex={m.qualityOk ? 0 : null}
+          expanded={m.qualityOk ? qualOpen : null}
           onClick={
             m.qualityOk
               ? function () {
@@ -110,7 +148,27 @@ function Overview(props) {
                 }
               : null
           }
-          detail={m.qualityOk && qualOpen ? <div class="det">{m.qualityDetailText}</div> : null}
+          onKeyDown={
+            m.qualityOk
+              ? function (e) {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setQualOpen(!qualOpen);
+                  }
+                }
+              : null
+          }
+          detail={
+            m.qualityOk ? (
+              qualOpen ? (
+                <div class="det">{m.qualityDetailText}</div>
+              ) : (
+                <div class="det">
+                  <span class="hint">{t('qual_tap_hint')}</span>
+                </div>
+              )
+            ) : null
+          }
         />
       </section>
       <ChartCard

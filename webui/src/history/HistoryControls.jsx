@@ -37,7 +37,7 @@ function HistoryControls({ mode, days, filter, onMode, onDays, onFilter }) {
         ]}
         onChange={onMode}
       />
-      <div class="hist-chips hist-chips--single" aria-label={t('hist_range_30')}>
+      <div class="hist-chips hist-chips--single" role="group" aria-label={t('hist_range_aria')}>
         {RANGE_DAYS.map((dayCount) => (
           <Chip key={dayCount} active={days === dayCount} onClick={() => onDays(dayCount)}>
             {t('hist_range_' + dayCount)}

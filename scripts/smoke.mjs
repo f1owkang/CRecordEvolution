@@ -89,6 +89,25 @@ const jsonDoc = {
     raw_current: 3000,
     current_ua: 3000000,
   },
+  // 充电中实时数据：概览页实时卡与 15s 轮询都消费这两个字段；
+  // daemon.stale 触发设置页「已升级，重启后生效」行。
+  live: {
+    status: 'Charging',
+    cap: 76,
+    current_ua: 2450000,
+    voltage_uv: 4210000,
+    power_mw: 10314,
+    charging: {
+      start_ts: now - 720,
+      start_cap: 61,
+      cap: 76,
+      acc_uah: 1234000,
+      secs: 720,
+      avg_current_ua: 6170000,
+      eta_min: 42,
+    },
+  },
+  daemon: { version: '1.3.6(35)', ts: now, age_sec: 12, stale: true },
   recent: [
     { ts: now - day * 4, mah: 4620 },
     { ts: now - day * 3, mah: 4560 },
@@ -175,6 +194,35 @@ const events = [
   { kind: 'discharge', ts: discharges[0].ts, discharge: discharges[0] },
   { kind: 'charge', ts: sessions[0].end_ts, charge: sessions[0] },
 ];
+// 游标分页的第二页：比第一页更早的 5 条事件，用于断言「第 2 页记录」在切页后仍在、
+// 以及分页失败/重试恢复；同时把历史页撑高，让滚动位置恢复可被断言。
+const olderEvents = [
+  {
+    kind: 'charge',
+    ts: now - day * 8,
+    charge: { ...sessions[0], start_ts: now - day * 8 - 5400, end_ts: now - day * 8 },
+  },
+  {
+    kind: 'discharge',
+    ts: now - day * 9,
+    discharge: { ...discharges[0], ts: now - day * 9 },
+  },
+  {
+    kind: 'charge',
+    ts: now - day * 10,
+    charge: { ...sessions[1], start_ts: now - day * 10 - 6000, end_ts: now - day * 10 },
+  },
+  {
+    kind: 'discharge',
+    ts: now - day * 11,
+    discharge: { ...discharges[1], ts: now - day * 11 },
+  },
+  {
+    kind: 'charge',
+    ts: now - day * 12,
+    charge: { ...sessions[2], start_ts: now - day * 12 - 4000, end_ts: now - day * 12 },
+  },
+];
 
 const SMOKE_DATA = {
   json: jsonDoc,
@@ -186,6 +234,7 @@ const SMOKE_DATA = {
     'est=5273mAh samples=12 cycleEq=1.42\n' +
     'events7d=cur_cal=1 counter_scale=2 quality_warn=0 tick_error=0\n',
   events,
+  olderEvents,
   summary: {
     days: 30,
     since: now - day * 30,
@@ -209,12 +258,15 @@ const SMOKE_DATA = {
 };
 
 const HOST_STUB = (data) => `
-var D = ${JSON.stringify(data)};
+var D = (window.__crData = ${JSON.stringify(data)});
 window.__crCommands = [];
+window.__crHistoryFail = false;
 function crHistoryDoc(cmd) {
   var type = (/--type\\s+(\\w+)/.exec(cmd) || [])[1] || 'all';
   var before = Number((/--before\\s+(\\d+)/.exec(cmd) || [])[1] || 0);
-  var events = before ? [] : D.events.filter(function (ev) { return type === 'all' || ev.kind === type; });
+  // 第一页返回 D.events，带 before 游标的第二页返回更早的 D.olderEvents。
+  var list = before ? D.olderEvents : D.events;
+  var events = list.filter(function (ev) { return type === 'all' || ev.kind === type; });
   return {
     events: events,
     has_more: !before,
@@ -232,11 +284,15 @@ window.ksu = {
     var errno = 0;
     if (cmd.indexOf('batteryd json') >= 0) out = JSON.stringify(D.json);
     else if (cmd.indexOf('batteryd diag') >= 0) out = D.diag;
-    else if (cmd.indexOf('batteryd history') >= 0) out = JSON.stringify(crHistoryDoc(cmd));
+    else if (cmd.indexOf('batteryd history') >= 0) {
+      // 冒烟可打开 __crHistoryFail 模拟「加载更早」失败，用于错误行与重试断言。
+      if (window.__crHistoryFail) { errno = 1; out = 'history failed'; }
+      else out = JSON.stringify(crHistoryDoc(cmd));
+    }
     else if (cmd.indexOf('cat ') === 0) { errno = 1; }
     setTimeout(function () {
       var fn = typeof cb === 'string' ? window[cb] : (typeof opts === 'function' ? opts : cb);
-      if (typeof fn === 'function') fn(errno, out, errno ? 'no file' : '');
+      if (typeof fn === 'function') fn(errno, out, errno ? (out || 'no file') : '');
     }, 15);
   }
 };
@@ -326,6 +382,49 @@ try {
   check((await page.locator('#page_overview .hero-temp').count()) === 1, '概览：温度行在主卡内');
   const heroTemp = await page.locator('#page_overview .hero-temp').innerText();
   check(heroTemp.includes('31.5') && heroTemp.includes('℃'), '概览：温度数值与单位', heroTemp);
+  // 充电中实时卡：状态 / 电流 / 功率 / 电压 / 会话进度 / 预计充满
+  check(
+    (await page.locator('#page_overview .charge-card').count()) === 1,
+    '概览：充电中实时卡渲染'
+  );
+  const chargeText = await page.locator('#page_overview .charge-card').innerText();
+  check(chargeText.includes('2.45 A'), '概览：实时卡电流与单位', chargeText);
+  check(chargeText.includes('10.3 W'), '概览：实时卡功率与单位');
+  check(chargeText.includes('4.21 V'), '概览：实时卡电压与单位');
+  check(
+    chargeText.includes('61%→76%') &&
+      chargeText.includes('1,234 mAh') &&
+      chargeText.includes('12 min'),
+    '概览：实时卡本次会话进度'
+  );
+  check(chargeText.includes('≈42 min to full'), '概览：实时卡预计充满');
+  // 会话进度与预计充满合并成一行：nowrap + 390 宽下不溢出 + 单行高度
+  const metaFit = await page.evaluate(() => {
+    const el = document.querySelector('#page_overview .charge-meta');
+    if (!el) return null;
+    return {
+      ws: getComputedStyle(el).whiteSpace,
+      overflow: el.scrollWidth - el.clientWidth,
+      height: el.offsetHeight,
+    };
+  });
+  check(
+    metaFit != null && metaFit.ws === 'nowrap' && metaFit.overflow <= 1 && metaFit.height <= 32,
+    '概览：会话信息与预计充满同一行不溢出',
+    JSON.stringify(metaFit)
+  );
+  check(
+    (await page.locator('#page_overview .chart svg[aria-hidden="true"]').count()) === 1,
+    '概览：图表按装饰性处理'
+  );
+  check(
+    (await page.locator('#page_overview .cell[role="button"]').count()) === 1,
+    '概览：可信度格可交互语义'
+  );
+  check(
+    (await page.locator('#page_overview .cell[role="button"] .hint').innerText()).length > 0,
+    '概览：可信度格点按提示'
+  );
   check((await page.locator('#nav_overview').count()) === 1, '底栏：三页导航存在');
   await shot(page, 'overview.png');
 
@@ -335,6 +434,44 @@ try {
   check((await page.locator('#page_history .hist-stat').count()) === 3, '历史：三张摘要卡');
   check((await page.locator('#page_history .tl-item').count()) >= 3, '历史：时间轴记录');
   check((await page.locator('#page_history .hist-chips--single').count()) === 1, '历史：筛选单行');
+  check(
+    (await page.locator('#page_history .hist-chips').getAttribute('aria-label')) ===
+      'Time range and record type',
+    '历史：筛选组 aria-label'
+  );
+  check(
+    (await page.locator('#hist_mode_seg .seg-btn[aria-pressed="true"]').count()) === 1,
+    '历史：分段选中语义 aria-pressed'
+  );
+  const tlCounts = await page.locator('#page_history .tl-count').allInnerTexts();
+  check(
+    !tlCounts.includes('1 records') && tlCounts.includes('1 record'),
+    '历史：记录数英文单复数',
+    tlCounts.join(',')
+  );
+  // 触控目标按布局高度（offsetHeight）量：getBoundingClientRect 会被 :active 的
+  // scale(0.97) 与切页淡入 transform 影响，不能用测量值断言实际布局尺寸。
+  const targets = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        // 等两帧，避开切页淡入动画与 :active 状态的残留
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const chip = document.querySelector('#page_history .chip');
+            const seg = document.querySelector('#hist_mode_seg .seg-btn');
+            resolve({
+              chip: chip ? chip.offsetHeight : 0,
+              seg: seg ? seg.offsetHeight : 0,
+            });
+          })
+        );
+      })
+  );
+  check(
+    targets.chip >= 40 && targets.seg >= 40,
+    '历史：chip 与分段触控目标 ≥40px',
+    JSON.stringify(targets)
+  );
   await page.locator('#page_history .tl-card').first().click();
   await page.waitForSelector('#page_history .tl-det', { timeout: 5000 });
   check(true, '历史：记录展开详情');
@@ -352,19 +489,131 @@ try {
       await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
     ).length;
     check(afterCalls > beforeCalls, '历史：加载更早记录（游标分页）');
+    check((await page.locator('#page_history .tl-item').count()) === 10, '历史：第二页记录已追加');
   } else {
     check(false, '历史：加载更早记录按钮存在');
   }
   await shot(page, 'history.png');
 
+  // ① 切页返回保持分页 / 展开详情 / 滚动位置（不重置、不重新拉第一页）
+  const histCallsBeforeSwitch = (
+    await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
+  ).length;
+  const itemsBeforeSwitch = await page.locator('#page_history .tl-item').count();
+  const detsBeforeSwitch = await page.locator('#page_history .tl-det').count();
+  await page.evaluate(() => window.scrollTo(0, 320));
+  await sleep(120);
+  const scrollBeforeSwitch = await page.evaluate(() => window.scrollY);
+  check(scrollBeforeSwitch > 100, '历史：列表滚动到中部', String(scrollBeforeSwitch));
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  await page.click('#nav_history');
+  await page.waitForSelector('#page_history.is-active');
+  await sleep(400);
+  const itemsAfterSwitch = await page.locator('#page_history .tl-item').count();
+  const detsAfterSwitch = await page.locator('#page_history .tl-det').count();
+  const histCallsAfterSwitch = (
+    await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
+  ).length;
+  const scrollAfterSwitch = await page.evaluate(() => window.scrollY);
+  check(
+    itemsBeforeSwitch === 10 && itemsAfterSwitch === itemsBeforeSwitch,
+    '历史：切页返回保留第 2 页记录',
+    itemsBeforeSwitch + '→' + itemsAfterSwitch
+  );
+  check(detsBeforeSwitch === 1 && detsAfterSwitch === 1, '历史：切页返回保留展开详情');
+  check(histCallsAfterSwitch === histCallsBeforeSwitch, '历史：切页返回不重新加载第一页');
+  check(
+    Math.abs(scrollAfterSwitch - scrollBeforeSwitch) <= 4,
+    '历史：切页返回恢复滚动位置',
+    scrollBeforeSwitch + '→' + scrollAfterSwitch
+  );
+
+  // ②「加载更早」失败：底部错误行 + 重试恢复；切 7 天会重新拉第一页（has_more 恢复）
+  await page.locator('#page_history .hist-chips .chip').first().click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('#page_history .tl-item').length === 5,
+    null,
+    { timeout: 10000 }
+  );
+  await page.evaluate(() => {
+    window.__crHistoryFail = true;
+  });
+  await page.locator('#page_history .hist-foot .load-more').click();
+  await page.waitForSelector('#page_history .hist-more-err', { timeout: 5000 });
+  check(
+    (await page.locator('#page_history .hist-more-err').count()) === 1,
+    '历史：分页失败在列表底部提示'
+  );
+  check(
+    (await page.locator('#page_history .hist-more-err').innerText()).includes('failed'),
+    '历史：分页失败错误文案'
+  );
+  await page.evaluate(() => {
+    window.__crHistoryFail = false;
+  });
+  await page.locator('#page_history .hist-more-err .load-more').click();
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll('#page_history .hist-more-err').length === 0 &&
+      document.querySelectorAll('#page_history .tl-item').length === 10,
+    null,
+    { timeout: 10000 }
+  );
+  check(
+    (await page.locator('#page_history .hist-more-err').count()) === 0,
+    '历史：重试后错误行消失'
+  );
+  check((await page.locator('#page_history .tl-item').count()) === 10, '历史：重试后加载更早成功');
+
+  // 手动刷新（reloadKey）仍必须重载：列表重置回第一页
+  const histCallsBeforeRefresh = (
+    await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
+  ).length;
+  await page.click('#refreshTop');
+  await page.waitForFunction(
+    (n) =>
+      window.__crCommands.filter((c) => c.indexOf('history') >= 0).length > n &&
+      document.querySelectorAll('#page_history .tl-item').length === 5,
+    histCallsBeforeRefresh,
+    { timeout: 10000 }
+  );
+  check(
+    (await page.locator('#page_history .tl-item').count()) === 5,
+    '历史：手动刷新重新加载第一页'
+  );
+
+  // 切换「记录/趋势」会改变查询参数并重新拉一次 history；必须等该响应落地再点图表，
+  // 否则响应替换 data 会清掉刚选中的点，断言会读到空读数。
+  const histCallsBeforeTrends = (
+    await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
+  ).length;
   await page.locator('#hist_mode_seg .seg-btn').nth(1).click();
   await page.waitForSelector('#page_history .trend-wrap', { timeout: 15000 });
+  await page.waitForFunction(
+    (n) => window.__crCommands.filter((c) => c.indexOf('history') >= 0).length > n,
+    histCallsBeforeTrends,
+    { timeout: 10000 }
+  );
+  await sleep(150);
   check((await page.locator('#page_history .trend-hero').count()) === 2, '趋势：两张主卡');
   check((await page.locator('#page_history .trend-tile').count()) === 4, '趋势：四张小图');
 
   // 容量大图：点按数据点出现读数 + 高亮圈；点图表空白处清除选中回到提示文案
   const capHero = page.locator('#page_history .trend-hero').first();
-  await capHero.locator('.chart circle[data-i="2"]').click();
+  // 命中圈是相互重叠的透明圆：真实坐标点击可能落到相邻圈/空白上（选择器与点击之间
+  // 的重排会放大误差）。用 dispatchEvent('click') 验证「选中 → 读数/高亮」渲染链，
+  // 命中测试由下面的空白处真实点击与顶部点点击覆盖。
+  await capHero.locator('.chart circle[data-i="2"]').dispatchEvent('click');
+  // Preact 的 setState 是异步的：派发后立刻读 innerText 会读到上一帧，必须等渲染完成再断言。
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('#page_history .trend-hero .trend-det');
+      return el && /mAh/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
   check(
     (await capHero.locator('.trend-det').innerText()).includes('mAh'),
     '趋势：容量大图点按读数'
@@ -372,9 +621,17 @@ try {
   check((await capHero.locator('circle.pt-sel').count()) === 1, '趋势：容量大图选中高亮');
   await shot(page, 'trends-tap.png');
   await capHero.locator('.chart').click({ position: { x: 4, y: 4 } });
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('#page_history .trend-hero .trend-det');
+      return el && !/mAh/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
   check(!(await capHero.locator('.trend-det').innerText()).includes('mAh'), '趋势：点空白清除选中');
 
-  // 顶部（最高值）点的高亮圈不能被 SVG 视口裁切：真机点选顶部点曾出现半个圈
+  // 顶部（最高值）点的高亮圈不能被 SVG 视口裁切：选中圈半径要按到画布四边的距离收小
   const topPoint = await capHero.evaluate((el) => {
     const circles = [...el.querySelectorAll('.chart circle.pt[data-i]')];
     let best = null;
@@ -384,7 +641,12 @@ try {
     return best ? Number(best.getAttribute('data-i')) : null;
   });
   check(topPoint != null, '趋势：存在可点按数据点');
-  await capHero.locator('.chart circle[data-i="' + topPoint + '"]').click();
+  await capHero.locator('.chart circle[data-i="' + topPoint + '"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => document.querySelectorAll('#page_history .trend-hero circle.pt-sel').length === 1,
+    null,
+    { timeout: 3000 }
+  );
   const ringInside = await capHero.evaluate((el) => {
     const ring = el.querySelector('circle.pt-sel');
     const svg = ring && ring.ownerSVGElement;
@@ -402,7 +664,15 @@ try {
   await page.waitForSelector('#page_history .trend-tile.is-open .trend-big', { timeout: 5000 });
   check(true, '趋势：小图展开大图');
   const openTile = page.locator('#page_history .trend-tile.is-open');
-  await openTile.locator('.trend-big circle[data-i="0"]').click();
+  await openTile.locator('.trend-big circle[data-i="0"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('#page_history .trend-tile.is-open .trend-det');
+      return el && /mAh/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
   check(
     (await openTile.locator('.trend-det').innerText()).includes('mAh'),
     '趋势：展开大图点按读数'
@@ -433,6 +703,14 @@ try {
   check(
     (await page.locator('#page_settings [data-field="sessions"]').innerText()).includes('37'),
     '设置：会话数使用 sessions_n 总数'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="daemon"]').count()) === 1,
+    '设置：daemon 待重启提示行'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="daemon"]').innerText()).includes('restart'),
+    '设置：daemon 待重启文案'
   );
   check((await page.locator('#page_settings #diag').count()) === 1, '设置：诊断复制按钮');
   await page.click('#page_settings #diag');
@@ -474,6 +752,10 @@ try {
     '设置：切换中文'
   );
   check(
+    (await page.locator('#page_settings [data-field="daemon"]').innerText()).includes('重启后生效'),
+    '设置：daemon 待重启中文文案'
+  );
+  check(
     (
       await page.evaluate(() => {
         const el = document.querySelector('#page_overview .hero-temp');
@@ -481,6 +763,14 @@ try {
       })
     ).includes('温度'),
     '概览：温度行中文文案'
+  );
+  const chargeZh = await page.evaluate(() => {
+    const el = document.querySelector('#page_overview .charge-card');
+    return el ? el.textContent : '';
+  });
+  check(
+    chargeZh.includes('充电中') && chargeZh.includes('电流') && chargeZh.includes('分钟充满'),
+    '概览：实时卡中文文案'
   );
   await page.waitForFunction(
     () => window.__crCommands.some((c) => c.indexOf('batteryd once') >= 0),
@@ -492,6 +782,44 @@ try {
     '设置：切换语言后刷新模块描述'
   );
   await shot(page, 'settings.png');
+
+  // 无 live/daemon 场景：同一页面删掉 mock 的实时字段并强制刷新，实时卡与待重启行都必须消失。
+  await page.evaluate(() => {
+    delete window.__crData.json.live;
+    delete window.__crData.json.daemon;
+  });
+  await page.click('#nav_overview');
+  await page.waitForSelector('#page_overview.is-active');
+  await page.click('#refreshTop');
+  await page.waitForFunction(
+    () => document.querySelectorAll('#page_overview .charge-card').length === 0,
+    null,
+    { timeout: 10000 }
+  );
+  check(
+    (await page.locator('#page_overview .charge-card').count()) === 0,
+    '概览：无 live 时充电卡隐藏'
+  );
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  check(
+    (await page.locator('#page_settings [data-field="daemon"]').count()) === 0,
+    '设置：无 daemon 时不显示待重启行'
+  );
+
+  // 中文文案：重新激活历史页后切回记录视图，校验温度单位空格与记录数文案
+  await page.click('#nav_history');
+  await page.waitForSelector('#page_history.is-active');
+  await page.locator('#hist_mode_seg .seg-btn').nth(0).click();
+  await page.waitForSelector('#page_history .tl-item', { timeout: 15000 });
+  const zhSub = await page.locator('#page_history .tl-sub').first().innerText();
+  check(/温度 \d+ ℃/.test(zhSub), '历史：中文温度单位空格', zhSub);
+  const zhCounts = await page.locator('#page_history .tl-count').allInnerTexts();
+  check(
+    zhCounts.every((s) => /^共 \d+ 条$/.test(s)),
+    '历史：中文记录数文案',
+    zhCounts.join(',')
+  );
 
   check(consoleErrors.length === 0, '控制台无报错', consoleErrors.join(' | '));
   check(external.length === 0, '无远程网络请求', external.join(' | '));

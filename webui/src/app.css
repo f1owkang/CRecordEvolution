@@ -32,7 +32,7 @@ button:focus-visible {
   --fg: #e6edf3;
   --dim: #9fb3c8;
   --mute: #8b949e;
-  --faint: #6e7681;
+  --faint: #8b949e;
   --card: #151a23;
   --border: #232a36;
   --border-soft: #1d242f;
@@ -80,7 +80,7 @@ html[data-theme='light'] {
   --fg: #1f2328;
   --dim: #57606a;
   --mute: #656d76;
-  --faint: #8c959f;
+  --faint: #6a737d;
   --card: #ffffff;
   --border: #d0d7de;
   --border-soft: #eaeef2;
@@ -128,7 +128,7 @@ html[data-bar='classic'] body {
 .pagewrap {
   max-width: 480px;
   margin: 0 auto;
-  /* 顶栏与内容之间留出呼吸感（之前 4px 太贴） */
+  /* 顶栏与内容之间留出呼吸感，避免上边距过窄 */
   padding: 14px calc(16px + var(--inset-right)) 8px calc(16px + var(--inset-left));
 }
 
@@ -320,6 +320,54 @@ html[data-bar='classic'] body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 充电中实时卡：插在健康度主卡与指标格之间；无 live / 非充电时整卡不渲染 */
+.charge-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+}
+.charge-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.charge-title {
+  font-size: 13px;
+  color: var(--mute);
+}
+.charge-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+.charge-metric .label {
+  font-size: 12px;
+  color: var(--mute);
+  margin-bottom: 4px;
+}
+.charge-metric .val {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* 本次会话进度与预计充满合并为一行：信息较多，字降到 12px 并禁止换行；
+   超出时省略号兜底（smoke 会断言 390 宽下不溢出）。 */
+.charge-meta {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 指标格 / 面板 / 图表：概览页的 2 列信息卡与下方图表区共用同一套卡片视觉 */
 .grid {
   display: grid;
@@ -459,7 +507,7 @@ html[data-bar='classic'] body {
 }
 .chip {
   flex: 0 0 auto;
-  height: 30px;
+  height: 40px;
   padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -673,6 +721,18 @@ html[data-theme='light'] .pill.warn {
   font-size: 11px;
   color: var(--faint);
 }
+/* 分页失败：列表底部一行错误 + 重试（首屏错误仍用 .hist-empty 样式） */
+.hist-more-err {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.hist-more-err .t {
+  text-align: center;
+  font-size: 12px;
+  color: var(--err-fg);
+  overflow-wrap: anywhere;
+}
 
 /* 历史页趋势视图：两张主卡 + 四张可展开的小多图 */
 .trend-wrap {
@@ -882,6 +942,7 @@ html[data-theme='light'] .pill.warn {
 .seg-btn {
   flex: 1 1 0;
   min-width: 0;
+  min-height: 40px;
   padding: 9px 6px;
   border: 0;
   border-radius: 9px;

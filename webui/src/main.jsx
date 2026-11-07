@@ -47,11 +47,24 @@ function App() {
     [lang, page]
   );
 
+  // 切页后的滚动恢复：等 DOM 提交再等两帧，确保目标页（含历史页的列表/展开详情）
+  // 完成布局后再 scrollTo；否则恢复会被同帧的骨架屏/高度抖动夹回 0。
   useEffect(
     function () {
-      try {
-        window.scrollTo(0, scrollPos.current[page] || 0);
-      } catch (e) {}
+      const y = scrollPos.current[page] || 0;
+      let raf1 = 0,
+        raf2 = 0;
+      raf1 = requestAnimationFrame(function () {
+        raf2 = requestAnimationFrame(function () {
+          try {
+            window.scrollTo(0, y);
+          } catch (e) {}
+        });
+      });
+      return function () {
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+      };
     },
     [page]
   );

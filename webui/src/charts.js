@@ -80,8 +80,12 @@ function smoothPath(pts, w, h) {
   return out;
 }
 
+// 图表统一按装饰性处理：卡片标题/最新值/点按读数文本已承载同一信息，而读屏
+// 无法操作 SVG 数据点；无名称的 role="img" 只会在读屏里留下一个空图噪音。
 function svgOpen(w, h) {
-  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" role="img">';
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true">'
+  );
 }
 
 function chartBase(w, h) {
@@ -111,7 +115,7 @@ function dotEl(x, y, colorVar) {
 // 选中点高亮：只拼内部坐标，颜色引用主题变量。
 // pointer-events 关闭，避免高亮圈盖住下面带 data-i 的透明命中圈。
 // SVG 根节点默认按 viewBox 裁剪，最高/最低点若贴着上下边，固定 r=6.5 的圈会被
-// 切掉一截（真机点选顶部点可见）：按到四条边的距离收小半径，保证整圈都在画布内。
+// 切掉一截：按到四条边的距离收小半径，保证整圈都在画布内。
 function selRing(cx, cy, w, h) {
   const margin = 2; // 预留 stroke-width/2 再加 1px 余量
   const r = Math.max(2.5, Math.min(6.5, Math.min(cx, w - cx, cy, h - cy) - margin)).toFixed(1);

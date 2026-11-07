@@ -1,9 +1,105 @@
 import { plural } from '../i18n.js';
-import { CHART_W, CHART_H, fmtInt, fmtFix } from '../core.js';
+import { CHART_W, CHART_H, chargeActive, fmtGroup, fmtInt, fmtFix } from '../core.js';
 import { ascByTs, pickPairs, svgLine } from '../charts.js';
 
 // 质量哨兵的四路容量口径，数组顺序即详情里的展示顺序
 const QUAL_CHANNELS = ['ema', 'mid', 'dis', 'full'];
+
+// 数值字段可能缺失/为 null：只有有限数才参与展示，其余返回 null 由调用方省略。
+function finiteNumber(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// 充电状态：Charging/Full/Discharging 之外（含未知字符串）统一「未充电」；
+// 只有 charging 会话、没有 status 的旧数据按充电中处理（否则卡片没有状态可显示）。
+function chargeStatusText(live, t) {
+  if (live.status === 'Charging') return t('charge_status_charging');
+  if (live.status === 'Full') return t('charge_status_full');
+  if (live.status === 'Discharging') return t('charge_status_discharging');
+  if (live.status == null && live.charging) return t('charge_status_charging');
+  if (live.status != null) return t('charge_status_idle');
+  return null;
+}
+
+// 实时电流/功率/电压：单位换算只在展示层，数字与单位之间留空格。
+function chargeMetric(t, labelKey, value) {
+  return value == null ? null : { key: labelKey, label: t(labelKey), value };
+}
+
+function chargeCurrent(ua) {
+  const n = finiteNumber(ua);
+  return n == null ? null : fmtFix(n / 1e6, 2) + ' A';
+}
+
+function chargePower(mw) {
+  const n = finiteNumber(mw);
+  return n == null ? null : fmtFix(n / 1000, 1) + ' W';
+}
+
+function chargeVoltage(uv) {
+  const n = finiteNumber(uv);
+  return n == null ? null : fmtFix(n / 1e6, 2) + ' V';
+}
+
+// 本次会话：61% → 76% · 已充 1,234 mAh · 12 分钟；cap 缺失时回退 live.cap，
+// start_cap/acc_uah/secs 各自缺失时只省略对应分段，不输出占位符。
+function chargeSessionText(live, t) {
+  const c = live.charging;
+  if (!c || typeof c !== 'object') return null;
+  const parts = [];
+  const startCap = finiteNumber(c.start_cap);
+  const endCap = finiteNumber(c.cap != null ? c.cap : live.cap);
+  if (startCap != null && endCap != null) {
+    parts.push(t('charge_soc', { a: fmtInt(startCap), b: fmtInt(endCap) }));
+  }
+  const accUah = finiteNumber(c.acc_uah);
+  if (accUah != null) parts.push(t('charge_added', { mah: fmtGroup(accUah / 1000) }));
+  const secs = finiteNumber(c.secs);
+  if (secs != null && secs >= 0) {
+    parts.push(t('charge_duration', { n: fmtInt(Math.round(secs / 60)) }));
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// 预计充满：<60 分钟按分钟，≥60 分钟拆成「x 小时 y 分钟」，整点小时省略分钟。
+function chargeEtaText(live, t) {
+  const c = live.charging;
+  const n = c && typeof c === 'object' ? finiteNumber(c.eta_min) : null;
+  if (n == null || n < 0) return null;
+  const min = Math.round(n);
+  if (min < 60) return t('charge_eta_min', { n: fmtInt(min) });
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m
+    ? t('charge_eta_hm', { h: fmtInt(h), m: fmtInt(m) })
+    : t('charge_eta_h', { h: fmtInt(h) });
+}
+
+// 概览「充电中实时卡」：显隐判定与全部文案都在这层算好，组件只铺 DOM。
+// 旧 daemon 没有 live 或非充电态时整卡返回 null；lang 目前不参与格式化，
+// 保留与 buildOverviewModel 一致的签名，便于按语言分流。
+function buildChargeModel(doc, lang, t) {
+  if (!chargeActive(doc)) return null;
+  const live = doc.live;
+  const metrics = [
+    chargeMetric(t, 'charge_current', chargeCurrent(live.current_ua)),
+    chargeMetric(t, 'charge_power', chargePower(live.power_mw)),
+    chargeMetric(t, 'charge_voltage', chargeVoltage(live.voltage_uv)),
+  ].filter(function (item) {
+    return item != null;
+  });
+  return {
+    title: t('charge_title'),
+    statusText: chargeStatusText(live, t),
+    statusClass: live.status === 'Charging' || !live.status ? 'meas' : 'kernel',
+    metrics,
+    // 会话进度与预计充满合并成一行；任一段缺失时只保留其余段落。
+    metaText:
+      [chargeSessionText(live, t), chargeEtaText(live, t)].filter(Boolean).join(' · ') || null,
+  };
+}
 
 // 主卡副标题：优先「估算 / 设计」，其次内核满充容量，最后用一个不换行空格占位
 function overviewSubText(doc, hasEst, est, design, t) {
@@ -144,7 +240,8 @@ function buildOverviewModel(doc, lang, t) {
     estSvg,
     estPoints,
     estCap,
+    charge: buildChargeModel(doc, lang, t),
   };
 }
 
-export { buildOverviewModel };
+export { buildOverviewModel, buildChargeModel };

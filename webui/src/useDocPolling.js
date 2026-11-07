@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { CMD_JSON, CMD_ONCE, POLL_BASE, POLL_MAX, contentFP, hasExec, run } from './core.js';
+import {
+  CMD_JSON,
+  CMD_ONCE,
+  POLL_BASE,
+  POLL_CHARGE,
+  POLL_MAX,
+  chargeActive,
+  contentFP,
+  hasExec,
+  run,
+} from './core.js';
 
 const HAS_HOST_EXEC = hasExec();
 
@@ -9,6 +19,8 @@ function useDocFetch() {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState(null);
   const lastFP = useRef(null);
+  // 最新一份成功解析的 doc（含被指纹去重跳过的那些）：轮询步长按它判定充电态。
+  const lastDoc = useRef(null);
   const fetchInFlight = useRef(null);
 
   // 所有取数失败分支共用的收尾：置错误并返回 false。
@@ -37,6 +49,7 @@ function useDocFetch() {
           return fail('err_json');
         }
         if (!data || typeof data !== 'object') return fail('err_struct');
+        lastDoc.current = data;
         const fp = contentFP(data);
         if (!force && fp === lastFP.current) {
           // 内容未变 → 不写 state（setDoc 会塞入新对象，等于没去重），避免整树重渲染；
@@ -64,12 +77,12 @@ function useDocFetch() {
     [fail]
   );
 
-  return { doc, err, fetchDoc };
+  return { doc, err, fetchDoc, lastDoc };
 }
 
-// 轮询：成功固定 POLL_BASE，失败按 ×2 退避到 POLL_MAX；页面隐藏时 fetchDoc 直接跳过。
-// resetRef 暴露 reset()，供手动刷新立即重排下一次轮询。
-function usePolling(fetch, resetRef) {
+// 轮询：成功时按最新 doc 判定步长（充电中 15s，其余 60s），失败按 ×2 退避到 POLL_MAX；
+// 页面隐藏时 fetchDoc 直接跳过。resetRef 暴露 reset()，供手动刷新立即重排下一次轮询。
+function usePolling(fetch, resetRef, lastDoc) {
   useEffect(
     function () {
       if (!HAS_HOST_EXEC) return;
@@ -79,7 +92,13 @@ function usePolling(fetch, resetRef) {
         timer = setTimeout(function () {
           timer = null;
           fetch(false).then(function (ok) {
-            delay = ok ? POLL_BASE : Math.min((delay || POLL_BASE) * 2, POLL_MAX);
+            // 每次取数后在「下一次」调度前重算步长：doc 变化（进入/退出充电）
+            // 只要发生在这一轮，下一次等待就按新状态切换。
+            delay = ok
+              ? chargeActive(lastDoc.current)
+                ? POLL_CHARGE
+                : POLL_BASE
+              : Math.min((delay || POLL_BASE) * 2, POLL_MAX);
             tick();
           });
         }, delay);
@@ -104,16 +123,16 @@ function usePolling(fetch, resetRef) {
         resetRef.current = null;
       };
     },
-    [fetch, resetRef]
+    [fetch, resetRef, lastDoc]
   );
 }
 
 // 概览/设置的数据来源：取数 hook + 退避轮询 hook + 手动刷新，本函数只做组合。
-// 保留 App 原有语义：document.hidden 短路、回到前台立即重置轮询、刷新后让历史页重载。
+// 语义：document.hidden 短路、回到前台立即重置轮询、刷新后让历史页重载。
 function useDocPolling() {
   const resetRef = useRef(null);
-  const { doc, err, fetchDoc } = useDocFetch();
-  usePolling(fetchDoc, resetRef);
+  const { doc, err, fetchDoc, lastDoc } = useDocFetch();
+  usePolling(fetchDoc, resetRef, lastDoc);
 
   const [busy, setBusy] = useState(false);
   const [histReload, setHistReload] = useState(0);

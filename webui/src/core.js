@@ -13,6 +13,7 @@ const HIST_DAYS_KEY = 'cre_hist_days';
 const HIST_PAGE_LIMIT = 20;
 
 const POLL_BASE = 60000,
+  POLL_CHARGE = 15000,
   POLL_MAX = 300000,
   TIMEOUT_MS = 15000;
 const CHART_W = 320,
@@ -124,6 +125,13 @@ function fmtInt(v) {
 }
 function fmtFix(v, n) {
   return v == null ? '—' : Number(v).toFixed(n);
+}
+// 千分位整数（1,234）：只用于展示层；采样/契约里仍是原始整数。
+function fmtGroup(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function dayStart(ts) {
@@ -348,17 +356,85 @@ function syncModuleLang(lang) {
   );
 }
 
+// live.charging 存在或 status=Charging 视为处于充电会话：概览实时卡与 15s 轮询共用。
+function chargeActive(doc) {
+  const live = doc && doc.live;
+  return !!(live && typeof live === 'object' && (live.charging || live.status === 'Charging'));
+}
+
+// 内容指纹：updated 是采样时间；calib.raw_current/current_ua 每次 json 都变，
+// 但页面不用它们展示，必须从指纹剔除，否则去重永远失效。
 function contentFP(doc) {
-  return JSON.stringify(doc, function (k, v) {
-    // updated 只是采样时间，内容没变时不重绘；温度变化要重绘，但按 0.1℃ 粒度
-    // 纳入指纹，避免浮点尾数抖动让整棵树每秒重建。
-    if (k === 'updated') return undefined;
-    if (k === 'temp_c') {
-      const n = Number(v);
-      return isFinite(n) ? Math.round(n * 10) / 10 : v;
-    }
-    return v;
+  if (!doc || typeof doc !== 'object') return JSON.stringify(doc);
+  const out = {};
+  Object.keys(doc).forEach(function (k) {
+    // live/daemon/calib 由下面的展示粒度折叠替代，其余字段原样参与指纹
+    if (k === 'updated' || k === 'live' || k === 'daemon' || k === 'calib') return;
+    out[k] = doc[k];
   });
+  if (doc.calib != null) out.calib = fpCalib(doc.calib);
+  if (doc.live != null) out.live = fpLive(doc.live);
+  if (doc.daemon != null) out.daemon = fpDaemon(doc.daemon);
+  // 温度变化要重绘，但按 0.1℃ 粒度纳入指纹，避免浮点尾数抖动让整棵树重建。
+  if (doc.temp_c != null) {
+    const n = Number(doc.temp_c);
+    out.temp_c = isFinite(n) ? Math.round(n * 10) / 10 : doc.temp_c;
+  }
+  return JSON.stringify(out);
+}
+
+function fpRound(v, step) {
+  const n = Number(v);
+  return isFinite(n) ? Math.round(n / step) * step : v;
+}
+
+function fpCopy(obj) {
+  const out = {};
+  Object.keys(obj).forEach(function (k) {
+    out[k] = obj[k];
+  });
+  return out;
+}
+
+// 校准诊断：原始读数与换算电流每轮都不同，且不参与任何展示。
+function fpCalib(calib) {
+  if (!calib || typeof calib !== 'object') return calib;
+  const out = {};
+  Object.keys(calib).forEach(function (k) {
+    if (k === 'raw_current' || k === 'current_ua') return;
+    out[k] = calib[k];
+  });
+  return out;
+}
+
+// 实时值按卡片显示粒度取整（电流 10mA / 功率 0.1W / 电压 0.01V / 电量 1mAh /
+// 会话时长 1 分钟），这样显示不变时指纹也不变；cap/status 原值，充电状态切换必然触发重绘。
+function fpLive(live) {
+  if (!live || typeof live !== 'object') return live;
+  const out = fpCopy(live);
+  if (out.current_ua != null) out.current_ua = fpRound(out.current_ua, 10000);
+  if (out.power_mw != null) out.power_mw = fpRound(out.power_mw, 100);
+  if (out.voltage_uv != null) out.voltage_uv = fpRound(out.voltage_uv, 10000);
+  if (out.charging && typeof out.charging === 'object') {
+    const c = fpCopy(out.charging);
+    if (c.acc_uah != null) c.acc_uah = fpRound(c.acc_uah, 1000);
+    // 平均电流不展示，按与瞬时电流相同的 10mA 粒度折叠，避免尾段漂移导致每轮重绘
+    if (c.avg_current_ua != null) c.avg_current_ua = fpRound(c.avg_current_ua, 10000);
+    if (c.eta_min != null) c.eta_min = Math.round(Number(c.eta_min));
+    // 页面只显示「x 分钟」，secs 取整到 60s 与展示粒度一致
+    if (c.secs != null) c.secs = fpRound(c.secs, 60);
+    out.charging = c;
+  }
+  return out;
+}
+
+// daemon 只关心版本与「待重启」标记；ts/age_sec 每轮都变，不参与指纹。
+function fpDaemon(daemon) {
+  if (!daemon || typeof daemon !== 'object') return daemon;
+  const out = {};
+  if (daemon.version != null) out.version = daemon.version;
+  if (daemon.stale != null) out.stale = daemon.stale;
+  return out;
 }
 
 function storedThemeMode() {
@@ -473,6 +549,7 @@ export {
   HIST_DAYS_KEY,
   HIST_PAGE_LIMIT,
   POLL_BASE,
+  POLL_CHARGE,
   POLL_MAX,
   CHART_W,
   CHART_H,
@@ -482,11 +559,13 @@ export {
   fmtRange,
   fmtInt,
   fmtFix,
+  fmtGroup,
   dayStart,
   fmtClock,
   fmtDayLabel,
   fmtShortDate,
   contentFP,
+  chargeActive,
   storedThemeMode,
   applyThemeDocument,
   storedBarMode,

@@ -52,9 +52,11 @@ function HistoryBody(props) {
       events={events}
       hasMore={data && data.has_more}
       loadingMore={loadingMore}
+      error={err}
       openKey={props.openKey}
       onToggleEvent={props.onToggleEvent}
       onLoadMore={() => props.load(false)}
+      onRetry={() => props.load(err && err.reset ? true : false)}
     />
   );
 }

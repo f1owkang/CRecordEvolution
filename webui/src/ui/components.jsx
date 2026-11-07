@@ -93,6 +93,7 @@ function Seg(props) {
             key={o.value}
             type="button"
             class={'seg-btn' + (o.value === props.value ? ' is-active' : '')}
+            aria-pressed={o.value === props.value ? 'true' : 'false'}
             onClick={function () {
               props.onChange(o.value);
             }}
@@ -138,7 +139,7 @@ function Divider() {
 // SetGroup：设置页的卡片容器。子项之间自动插入 Divider，调用方不再手写 <Divider />。
 // 选择数据驱动而不是 CSS .set-item:not(:last-child) 边框：.set-item 自带 14px/16px 内边距，
 // 边框会横贯整个卡片，而现有 .set-divider 是左右各留 16px 的缩进分隔线，视觉不等价；
-// 补新选择器又需要改 app.css，超出本次改动范围，故仍在 DOM 里保留 .set-divider 节点。
+// 补新选择器需要改 app.css，因此仍在 DOM 里保留 .set-divider 节点。
 function SetGroup(props) {
   const rows = [];
   toChildArray(props.children).forEach(function (child, i) {

@@ -20,6 +20,7 @@ const LANGS = {
     hist_range_7: '7 天',
     hist_range_30: '30 天',
     hist_range_90: '90 天',
+    hist_range_aria: '时间范围与记录类型',
     hist_filter_all: '全部',
     hist_filter_charge: '充电',
     hist_filter_discharge: '放电',
@@ -42,6 +43,7 @@ const LANGS = {
     hist_point_many: '{n} 个点',
     // 历史页：记录行与详情字段
     hist_records_count: '共 {n} 条',
+    hist_records_count_one: '共 1 条',
     hist_status_recorded: '已记录',
     hist_retry: '重试',
     hist_detail_time: '时间',
@@ -58,7 +60,7 @@ const LANGS = {
     hist_session_soc: '电量 {a}% → {b}%',
     hist_sessions_note: '柱高为本次充电提升的电量百分点，不是容量增长',
     hist_session_est: '估算 {n} mAh',
-    hist_session_temp: '温度 {n}℃',
+    hist_session_temp: '温度 {n} ℃',
     hist_duration: '历时 {n} 分钟',
     hist_implied: '隐含 {n} mAh',
 
@@ -84,7 +86,7 @@ const LANGS = {
     // 设置页：手动刷新
     settings_refresh: '刷新',
     settings_manual_refresh: '手动刷新',
-    settings_refresh_desc: '数据每 60 秒自动更新，失败后会退避重试',
+    settings_refresh_desc: '充电时每 15 秒、其余每 60 秒自动更新，失败后会退避重试',
     // 设置页：数据信息
     settings_data: '数据',
     settings_channel: '通道',
@@ -94,6 +96,8 @@ const LANGS = {
     settings_retention: '数据保留',
     settings_retention_value: '最近 90 天',
     settings_storage: '存储目录',
+    settings_daemon: '运行状态',
+    settings_daemon_stale: '已升级，重启后生效',
     // 设置页：电流刻度校准诊断
     settings_current_node: '采样节点',
     settings_current_calib: '电流刻度',
@@ -121,6 +125,22 @@ const LANGS = {
     settings_webui: '界面',
     settings_webui_value: '管理器内置 WebUI',
 
+    // 概览页：充电中实时卡（字段缺失时对应项不渲染）
+    charge_title: '充电实时',
+    charge_status_charging: '充电中',
+    charge_status_full: '已充满',
+    charge_status_discharging: '放电中',
+    charge_status_idle: '未充电',
+    charge_current: '电流',
+    charge_power: '功率',
+    charge_voltage: '电压',
+    charge_soc: '{a}%→{b}%',
+    charge_added: '+{mah} mAh',
+    charge_duration: '{n} 分钟',
+    charge_eta_min: '≈{n} 分钟充满',
+    charge_eta_h: '≈{h} 小时充满',
+    charge_eta_hm: '≈{h} 小时 {m} 分钟充满',
+
     // 概览页：指标格（设计容量 / 满充 / 循环 / 估算 / 内阻）
     label_temp: '温度',
     label_design: '设计容量',
@@ -146,9 +166,9 @@ const LANGS = {
     badge_measured: '实测',
     badge_kernel: '内核',
     sub_full: '满充容量 {mah} mAh',
-    est_learning_zero: '学习中 · 暂未采样',
-    est_learning_one: '学习中 · 已采集 1 次',
-    est_learning_many: '学习中 · 已采集 {n} 次',
+    est_learning_zero: '学习中 · 还没有有效会话',
+    est_learning_one: '学习中 · 已结算 1 次有效会话',
+    est_learning_many: '学习中 · 已结算 {n} 次有效会话',
     rmoh_collecting: '采集中',
     // 概览页：容量趋势文案
     trend_stable: '无显著变化',
@@ -162,6 +182,7 @@ const LANGS = {
     qual_bad: '存疑',
     qual_summary: '{state} · 误差 {n}%',
     qual_detail: '四条独立测量的容量对照：{list}',
+    qual_tap_hint: '点按查看四路对照',
     qual_insufficient: '数据不足',
     ch_ema: '实测',
     ch_mid: '中段',
@@ -215,6 +236,7 @@ const LANGS = {
     hist_range_7: '7 d',
     hist_range_30: '30 d',
     hist_range_90: '90 d',
+    hist_range_aria: 'Time range and record type',
     hist_filter_all: 'All',
     hist_filter_charge: 'Charge',
     hist_filter_discharge: 'Discharge',
@@ -237,6 +259,7 @@ const LANGS = {
     hist_point_many: '{n} points',
     // 历史页：记录行与详情字段
     hist_records_count: '{n} records',
+    hist_records_count_one: '1 record',
     hist_status_recorded: 'Recorded',
     hist_retry: 'Retry',
     hist_detail_time: 'Time',
@@ -279,7 +302,8 @@ const LANGS = {
     // 设置页：手动刷新
     settings_refresh: 'Refresh',
     settings_manual_refresh: 'Manual refresh',
-    settings_refresh_desc: 'Data refreshes every 60 seconds, backing off on failure',
+    settings_refresh_desc:
+      'Refreshes every 15 seconds while charging, otherwise every 60 seconds; backs off on failure',
     // 设置页：数据信息
     settings_data: 'Data',
     settings_channel: 'Channel',
@@ -289,6 +313,8 @@ const LANGS = {
     settings_retention: 'Retention',
     settings_retention_value: 'Last 90 days',
     settings_storage: 'Data directory',
+    settings_daemon: 'Daemon status',
+    settings_daemon_stale: 'Updated — restart to apply',
     // 设置页：电流刻度校准诊断
     settings_current_node: 'Current node',
     settings_current_calib: 'Current scaling',
@@ -316,6 +342,22 @@ const LANGS = {
     about_third_party_value: 'Preact (MIT)',
     settings_webui: 'Interface',
     settings_webui_value: 'Built-in manager WebUI',
+
+    // 概览页：充电中实时卡（字段缺失时对应项不渲染）
+    charge_title: 'Live charging',
+    charge_status_charging: 'Charging',
+    charge_status_full: 'Fully charged',
+    charge_status_discharging: 'Discharging',
+    charge_status_idle: 'Not charging',
+    charge_current: 'Current',
+    charge_power: 'Power',
+    charge_voltage: 'Voltage',
+    charge_soc: '{a}%→{b}%',
+    charge_added: '+{mah} mAh',
+    charge_duration: '{n} min',
+    charge_eta_min: '≈{n} min to full',
+    charge_eta_h: '≈{h} h to full',
+    charge_eta_hm: '≈{h} h {m} min to full',
 
     // 概览页：指标格（设计容量 / 满充 / 循环 / 估算 / 内阻）
     label_temp: 'Temp',
@@ -358,6 +400,7 @@ const LANGS = {
     qual_bad: 'Questionable',
     qual_summary: '{state} · spread {n}%',
     qual_detail: 'Four independent capacity measurements: {list}',
+    qual_tap_hint: 'Tap to compare the four sources',
     qual_insufficient: 'Not enough data',
     ch_ema: 'Measured',
     ch_mid: 'Mid-range',

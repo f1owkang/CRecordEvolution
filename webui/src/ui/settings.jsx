@@ -143,6 +143,18 @@ function dataItems(doc, channel, t) {
       value: doc.updated || '—',
       field: 'updated',
     },
+  ];
+  // 升级后旧 daemon 仍在内存里跑：只有 daemon.stale 时提示「重启后生效」，其余不出现。
+  if (doc.daemon && doc.daemon.stale) {
+    rows.push({
+      key: 'daemon',
+      kind: 'row',
+      label: t('settings_daemon'),
+      value: t('settings_daemon_stale'),
+      field: 'daemon',
+    });
+  }
+  rows.push(
     {
       key: 'samples',
       kind: 'row',
@@ -177,8 +189,8 @@ function dataItems(doc, channel, t) {
       label: t('settings_storage'),
       value: STORAGE_PATH,
       cls: 'set-value--path',
-    },
-  ];
+    }
+  );
   return rows.concat(calibItems(doc, t));
 }
 
