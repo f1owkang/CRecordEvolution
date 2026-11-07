@@ -10,7 +10,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Magisk%20%7C%20KernelSU%20%7C%20APatch%20%7C%20MMRL-blue?style=flat-square)](#安装)
 [![License](https://img.shields.io/github/license/f1owkang/CRecordEvolution?style=flat-square&label=License&color=orange)](LICENSE)
 
-[English](README_EN.md) | 简体中文
+[English](README.md) | 简体中文
 
 [特性](#特性) ｜ [界面预览](#界面预览) ｜ [安装](#安装) ｜ [工作原理](#工作原理) ｜ [常见问题](#常见问题) ｜ [从源码构建](#从源码构建) ｜ [致谢](#致谢)
 
@@ -38,8 +38,10 @@ WebUI 三页（概览 / 历史 / 设置）一览。截图中的电池数据为**
 - **多路容量互检**：内核满充、中段校准、放电差分与有效会话各算一路，差异明显时提示，避免单一口径带偏。
 - **完全离线**：没有网络权限、没有遥测，数据只写入本机 `data/battery.db`，保留 90 天。
 - **多管理器支持**：Magisk v20.4+ / KernelSU / APatch / MMRL，仅 arm64；升级自动保留旧学习记录。
+- **主题选项**：跟随系统 / 浅色 / 深色，另有独立的 AMOLED 纯黑背景开关（仅深色模式生效）；底栏支持悬浮胶囊或 Material 3 导航栏。
+- **管理器取色 / Material You**：管理器提供 WebUI 调色板时（KernelSU v3.0.0+ 开启 Monet 配色或 Material 界面、APatch build 11219+、MMRL / WebUI-X v212+），设置里多出「动态取色」主题并跟随管理器配色；不提供调色板的管理器自动隐藏该档。
 - **升级自检**：升级后若旧的守护进程仍在运行，设置页会提示「已升级，重启后生效」，避免新旧口径混写数据。
-- **双语界面**：简体中文 / English，安装时可选，之后可在 WebUI 随时切换。
+- **双语界面**：简体中文 / English，自动跟随手机语言，之后可在 WebUI 随时切换。
 
 ## 安装
 
@@ -52,7 +54,7 @@ WebUI 三页（概览 / 历史 / 设置）一览。截图中的电池数据为**
 
 ### 刷入流程
 
-管理器选 zip 后只需两步按键（App 内安装与 Magisk 恢复模式一致）：选语言（音量+ 中文 / 音量- English，12 秒后跟随系统）→ 确认安装（音量+ 安装 / 音量- 取消，30 秒后取消），然后重启。
+管理器选 zip 后用音量键确认安装（音量+ 安装 / 音量- 取消，30 秒后取消）；界面语言自动跟随手机语言。安装完成后重启。
 
 ### 注意事项
 

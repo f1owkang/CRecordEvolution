@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件面向在本仓库工作的编码代理，说明项目目标、构建/测试方式、代码约定、领域不变量和发布流程。面向用户的介绍、安装步骤和功能说明在 [README.md](README.md) / [README_EN.md](README_EN.md)，不在这里重复。
+本文件面向在本仓库工作的编码代理，说明项目目标、构建/测试方式、代码约定、领域不变量和发布流程。面向用户的介绍、安装步骤和功能说明在 [README.md](README.md) / [README_ZH.md](README_ZH.md)，不在这里重复。
 
 ## 项目概览
 
@@ -44,14 +44,14 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 ### WebUI 冒烟检查
 
-改 `webui/` 后先 `pnpm run build`，再 `pnpm run smoke`（起静态服务、注入 mock `ksu.exec`、截图写到 `artifacts/smoke/`），或 `pnpm run dev` 手测。至少检查：三页切换且无 console 报错、`assets/*` 与 `boot.js` 无 404；设置页主题/语言/底栏；历史页 7/30/90 天与筛选、滚动加载、详情与趋势小图展开；无 `ksu` 时显示 gate 页而非白屏。
+改 `webui/` 后先 `pnpm run build`，再 `pnpm run smoke`（起静态服务、注入 mock `ksu.exec`、截图写到 `artifacts/smoke/`），或 `pnpm run dev` 手测。至少检查：三页切换且无 console 报错、`assets/*` 与 `boot.js` 无 404；设置页主题/纯黑/取色/语言/底栏（悬浮与经典两种，经典需断言 M3 80dp/24dp/12sp/64×32 指示器）；历史页 7/30/90 天与筛选、滚动加载、详情与趋势小图展开；无 `ksu` 时显示 gate 页而非白屏。
 
 ### 不能本地验证与测试要求
 
 无 Android 真机：root 管理器执行脚本、KSU/APatch/MMRL WebView 的 `exec`/edge-to-edge/CSP、Magisk 安装升级流程只能通读推演；涉及这些路径必须声明「未在真机验证」并给最小验证步骤。
 
 - 改 Go 逻辑必须补/改测试，`go test ./...` 全绿、`go vet ./...` 通过。
-- 改 shell 至少 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义「修正」POSIX sh，不在 Windows 跑安装流程。改安装器要推演「应用内安装与恢复模式同样读音量键」两步按键，以及读不到 `getevent`/`timeout` 时自动安装、不能误取消。
+- 改 shell 至少 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义「修正」POSIX sh，不在 Windows 跑安装流程。安装器**不选语言**（跟随系统/旧偏好），保留一步音量键确认安装；读不到 `getevent`/`timeout` 时自动安装、不能误取消。
 - 改 shell/元数据（三个 `.sh`、`module.prop`、`module.yaml`、`module.json`、`update.json`、`package.json`）会触发 CI 的 `meta` 工作流：bash 语法、CRLF、module.prop 必填键与 id/version/versionCode 格式、`package.json` 与 `module.prop` 版本一致、JSON/YAML 可解析。本地可照 `meta.yml` 的步骤自查；**改版本号必须同时改 `package.json`**，否则 CI 直接失败。
 - 改 `module.yaml`/`module.json` 后用 YAML/JSON 解析器校验；改 README 任一侧同步另一侧并检查标题锚点。
 - 本地打包确认 `.sh`、`module.prop`、`META-INF` 文本是 LF（CRLF 会让 mksh 报 `: not found`/`syntax error`）。
@@ -77,12 +77,11 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - shebang 固定 `#!/system/bin/sh`；不用数组、`[[`、`local` 等 bash 特性；变量加引号，路径用 `$MODPATH`/`$MODDIR`。
 - 输出走 `ui_print`（缺失回退 `echo`），取消用 `abort`（缺失才 `exit 1`）；安装器总输出约 8~14 行。
-- 语言选择步固定中英双语、一行一项（标题、音量+、音量-、超时说明）；选定语言后其余步骤用该语言渲染。
-- 应用内安装与恢复模式用同一套两步按键（选语言 → 确认安装）；**不按 BOOTMODE/管理器类型跳过**（2026-10 实机确认 LSPosed/Zygisk 系在 App 内也能读音量键）。只有读不到 `getevent`/`timeout` 时才自动安装，绝不能误取消。
-- `read_key` 只采纳 `DOWN`，忽略 `UP`/`SYN`（否则一次按键被当成两次）。回归：按一次取消、按两次才安装。
+- 安装器不再选择语言（2026-11 按 issue #9 定稿）：语言跟随系统/旧 `data/lang`（探测不到回退英文），安装器不写 `data/lang`；**保留一步安装确认**（音量+ 安装 / 音量- 取消，30 秒超时取消）。应用内安装与恢复模式用同一套按键，**不按 BOOTMODE/管理器类型跳过**（2026-10 实机确认 LSPosed/Zygisk 系在 App 内也能读音量键）。只有读不到 `getevent`/`timeout` 时才自动安装，绝不能误取消。
+- `read_key` 只采纳 `DOWN`，忽略 `UP`/`SYN`（否则一次按键的抬起会被当成两次）。回归：按一次取消。
 - `SKIPUNZIP=0` 时已解压到 `$MODPATH`，不要重复 `unzip`，仅缺 `module.prop` 时兜底一次。
 - 只发 arm64：用 `$ARCH` 门控（缺失跳过），非 arm64 直接失败。
-- 交互文案走 `T`/`L`，语言探测顺序与 `i18n.go` 一致；不把逻辑改动混进文案替换。
+- 交互文案走 `T`/`L`，语言探测顺序与 `i18n.go` 一致（升级沿用 `data/lang`，否则系统语言，探测不到回退英文）；不把逻辑改动混进文案替换。
 - 只给 `bin/batteryd` 设权限，**不要给 webroot 加 chmod/set_perm**。
 
 ### WebUI
@@ -108,7 +107,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 ### 文档
 
-- README.md 与 README_EN.md 章节/锚点一一对应，语言导航行在徽章区之后；公开文档只写本项目行为，不写来源归属。
+- README.md（英文，GitHub 默认首页）与 README_ZH.md（中文）章节/锚点一一对应，语言导航行在徽章区之后；英文首页保留明确的中文入口；公开文档只写本项目行为，不写来源归属。
 - 设计笔记、过程规格、调研报告放本地工作区不提交；`docs/` 只放按命名规范格式化的论文 PDF。
 
 ### 提交信息（Git）
@@ -124,14 +123,14 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | 路径 | 用途 |
 | :-- | :-- |
 | `cmd/batteryd/` | Go daemon：采样、结算、容量估计、SQLite、description、各子命令 |
-| `service.sh` / `action.sh` / `customize.sh` | 启动壳 / Action 跑一次 `once` / 刷入两步按键交互 |
+| `service.sh` / `action.sh` / `customize.sh` | 启动壳 / Action 跑一次 `once` / 安装确认（音量键）安装器 |
 | `webui/` → `webroot/` | WebUI 源码（Vite）→ 构建产物（进 zip，不提交） |
 | `scripts/` | 离线扫描、gzip 体积检查、无头冒烟（`smoke.mjs`）、README 截图（`screenshots.mjs`） |
 | `module.prop` / `module.yaml` / `module.json` / `update.json` | 模块元数据与 KernelSU 展示/更新（`assetPattern` 只匹配 stable） |
 | `META-INF/...` / `THIRD_PARTY_NOTICES.txt` | Magisk 刷入桩 / 随包第三方许可（Preact MIT） |
 | `.github/workflows/` | release（双变体发布）/ webui（守卫+冒烟）/ go（gofmt+vet+test）/ meta（安装器 shell 与模块元数据守卫） |
 | `.release-baseline` | 更新日志基线（上一版发布内容 commit），CI 回写，勿手改 |
-| `README.md` / `README_EN.md` / `docs/` | 中英文档必须同步 / 论文 PDF 库 |
+| `README.md` / `README_ZH.md` / `docs/` | 中英文档必须同步 / 论文 PDF 库 |
 
 运行时数据只在 `$MODDIR/data/` 内；历史查询按 90 天窗口取数，趋势点 ≤120 个/类，事件正文游标分页。
 
@@ -148,6 +147,16 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### Edge-to-edge / 系统栏
 
 - `<head>` 用根相对路径请求 `/internal/insets.css`；KSU/APatch WebView 会拦截并铺满系统栏、下发 `--window-inset-*`（新版 KSU 另有 `--safe-area-inset-*`）。
+- `<head>` 同时用根相对路径请求 `/internal/colors.css`（KernelSU / APatch / MMRL 等宿主注入 M3 调色板）：没有提供时样式为空/404，靠 `--primary`/`--background` 探测降级，设置里不出现取色档；**不能改成远程 URL**（离线约束）。
+- 宿主源码依据（均为 2026-11 核对，变量名统一 camelCase，来自 Compose `ColorScheme` 成员名，不需要按管理器分支）：
+  - KernelSU（tiann/KernelSU `730f644`）：`manager/app/.../ui/webui/SuFilePathHandler.java` 处理 `internal/colors.css`——**v3.0.0（2025-11-29）起**提供；仅当 `color_mode` 为 3~6（MONET_SYSTEM/LIGHT/DARK、DARK_AMOLED）或 `ui_mode=material` 时返回 `MonetColorsProvider` 的 CSS（v3.2.0 前只认 3~5），否则返回 **200 空 body**；`WebViewAssetLoader` 域名 `mui.kernelsu.org`、路径处理器挂在 `/`，根相对请求全被拦截，不会走网络（虽然 App 声明了 INTERNET 权限）；更老版本是 404。
+  - KernelSU-Next（`035dbae`）：同文件，仅 Android 12+ 提供，`MonetColorsProvider.getColorsCss(context)` 始终返回系统动态色。
+  - SukiSU-Ultra（`fae5788`）：同文件，门控与 KernelSU 相同（Monet 配色或 Material 界面）。
+  - APatch（bmax121/APatch `e8e4651`）：`app/.../ui/webui/SuFilePathHandler.java` + `MonetColorsProvider.kt`，**build 11219（2026-08-02）起**提供，无开关门槛；`WebUIActivity` 组合 `APatchTheme` 后始终有 `MaterialTheme.colorScheme`（Android 12+ 且开启动态色才是壁纸色，否则为内置主题色）；组合完成前为空，前端用「重试 + 重挂 stylesheet（`?retry=N`，宿主按路径拦截）」兜底晚生成；更老版本 404。
+  - MMRL / WebUI-X（MMRLApp/WebUI-X-Portable `3d87c20`）：`InternalPathHandler.kt` 的 `route("/internal/colors.css")` + `WebColors.kt`，**v212（2025-08-08）起**始终由 App 主题生成；当前 WebUI 引擎 `dev.mmrlx:webui.core` 闭源，拦截按旧版开源实现与 API 推断，未真机抓包。
+  - Magisk（topjohnwu/Magisk `33bfff7`）：App **没有模块 WebUI 宿主**（无 `webroot`/`internal/insets.css`/`internal/colors.css` 处理），Magisk 只负责刷入；`webroot/` 只能被上述管理器打开。
+- 宿主的 `colors.css` 变量集合覆盖 `--primary/--onPrimary/--surfaceContainer*/--outlineVariant/--background/--onBackground/--error` 等（KSU/APatch 硬编码 45 个；MMRL 反射 `ColorScheme`，可能多 `--primaryFixed*`；`--shadow` 实际不存在，文档有笔误）；缺失时前端退回内置三套主题，设置里不显示取色档。
+- **明暗方案必须从宿主 `--background` 的相对亮度推导**，不能用 `prefers-color-scheme`：KSU/APatch 的 WebView 没有随管理器 `color_mode` 设置 dark 标志，`matchMedia` 不可信。`data-scheme`、`color-scheme`、`setLightStatusBars`、AMOLED 是否生效都跟随推导结果。
 - head 里尽早 `ksu.enableEdgeToEdge(true)`，旧接口 `enableInsets(true)` 兜底；挂载时、350ms、`load` 各再调一次。
 - 回退链：`--safe-area-inset-*` → `--window-inset-*` → `env(safe-area-inset-*)` → 0。**不删 insets.css 请求，不写死 inset**。
 - 宿主没 edge-to-edge 不是 bug（KSU ≤2.1.2 / APatch ≤11142 本就内缩），页面不要再加 padding。
@@ -157,12 +166,12 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - 概览：健康度主卡（容量行下方温度行 `temp_c`，缺失整行省略）、充电中实时卡（`live`）、容量/循环/估算/内阻/趋势/可信度、估算趋势图。充电实时卡只在 `live.charging` 存在或 `status=Charging` 时渲染，显示实时电流/功率/电压、本次会话进度与预计充满，字段缺失逐段省略；电流/功率符号按上面的「充电正、放电负」约定显示（放电中不显示预计充满）；会话进度与预计充满**合并为一行**（`.charge-meta`，`nowrap`，390dp 不溢出，smoke 断言 `scrollWidth` 与单行高度）。充电期轮询 15s、其余 60s（`POLL_CHARGE`/`POLL_BASE`），`chargeActive()` 是两处共用的唯一判据。`contentFP` 按 0.1℃ 纳入 `temp_c`，剔除 `calib.raw_current`/`current_ua`（每次 json 都变、不展示），并把 `live` 按显示粒度取整（电流 10mA、功率 0.1W、电压 0.01V、会话 1mAh/60s），否则实时值会被去重冻结；`recent` 与 `trend_mah_per_week` 共用最近 200 点窗口；趋势显著时 JSON 给 `trend_from_mah`/`trend_to_mah`（窗口首/末点容量），前端直接连两端点画虚线，不要下发斜率让前端外推。
 - 历史：摘要统计；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；趋势视图为容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
-- 设置：外观（主题/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`，末尾「复制诊断」）、关于（品牌卡 + 版本/通道/许可/第三方）。`json` 的 `sessions` 只有最近 10 条，「会话数」必须用顶层 `sessions_n`；会话条目 `start_cap`/`end_cap`，趋势卡与时间轴百分比是 **SOC 百分点变化**（70%→97% 是 27 个点），不是容量增长。`daemon.stale` 为 true 时数据区追加一行「已升级，重启后生效」（`data-field="daemon"`），不 stale 时该行不出现。
-- 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；`cre_theme` 为 `auto|light|dark`；`cre_lang`。切页保存/恢复滚动；设置页隐藏顶栏刷新，用页内「立即刷新」。
+- 设置：外观（主题/纯黑/取色/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`，末尾「复制诊断」）、关于（品牌卡 + 版本/通道/许可/第三方）。`json` 的 `sessions` 只有最近 10 条，「会话数」必须用顶层 `sessions_n`；会话条目 `start_cap`/`end_cap`，趋势卡与时间轴百分比是 **SOC 百分点变化**（70%→97% 是 27 个点），不是容量增长。`daemon.stale` 为 true 时数据区追加一行「已升级，重启后生效」（`data-field="daemon"`），不 stale 时该行不出现。
+- 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；**`classic` 按 Material 3 Navigation bar 规范**：容器 `--nav-bg`（内置=卡片色，取色=`surfaceContainer`）、高 80dp、图标 24dp、label 12sp/500、激活指示器 64×32dp 全圆角 `--nav-ind-bg`（取色=`secondaryContainer`）、激活图标 `onSecondaryContainer`、激活 label `onSurface`、未激活 `onSurfaceVariant`；悬浮态沿用原胶囊但选中底/字改用同一组 token。`cre_theme` 为 `auto|light|dark|my`（`my` 仅宿主提供 M3 调色板时可选中，明暗从调色板 `--background` 亮度推导，`data-scheme` 承载方案）；`cre_amoled` 为独立纯黑开关（只在解析为深色时把底色压到 `#000`，浅色不受影响；`data-black` 属性承载）；`cre_lang`。切页保存/恢复滚动；设置页隐藏顶栏刷新，用页内「立即刷新」。
 
 ### 语言文件
 
-- 优先级：`data/lang`（安装器/WebUI 写入，启动读取并覆盖自动检测）> localStorage `cre_lang` > `navigator.languages`。
+- 优先级：`data/lang`（WebUI 写入，旧安装器遗留）> localStorage `cre_lang` > `navigator.languages`；探测不到回退英文（`i18n.go`/安装器/`boot.js` 三处一致）。
 - 切换语言时原子写 `data/lang`（临时文件 + `mv`），再跑一次 `batteryd once`；连续切换要排队，避免旧写入覆盖新选择。
 
 ## 领域不变量与已知坑
@@ -210,6 +219,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 电流单位启发式在涓流 <10mA 可能误判；RLS 无遗忘因子、P 矩阵长期膨胀是潜伏项；`FindNode` 全树兜底只在缺节点时触发。
 - `charge_counter` 的 mAh 判定需要显示电量做交叉校验：显示电量为 0/不可读时读时归一不缩放、历史迁移本次不判定（下次启动重试）；`charge_full` 缺失或本身以 mAh 计时不归一（保持既有设备口径）。升级后旧 daemon 仍在内存里跑、继续按旧口径写库：心跳只能**提示**（`daemon.stale` → 设置页「已升级，重启后生效」），不会自动重启/替换守护进程，**升级后需要重启**；重启前旧 daemon 写的行仍可能带旧量纲且不会被迁移（`counter_unit_epoch` 之后的行按已归一口径处理）。
 - 充电实时卡的 ETA 用「本次会话平均电流」估算，CV 尾段电流自然衰减，估计值会偏乐观；旁路供电/极涓流或 `charge_full` 缺失时可能不显示，仅作参考，不参与任何结算。
+- Material You 调色板由宿主在**页面加载/主题组合时**生成并随 CSS 一起下发：WebUI 打开期间切换系统明暗或更换管理器配色不会重新取色（取色模式下的 `data-scheme` 也按加载时调色板的背景亮度固定，配色自洽）；重开 WebUI 即刷新（重挂 stylesheet 加 query 可重取，KSU/APatch 忽略 query）。KernelSU/SukiSU 未开启 Monet（`color_mode` 0~2 且非 Material 界面）时 `colors.css` 为空 → 取色档不出现，属于预期。不要为此引入远程请求。
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
 - 放电会话只在 `status=Discharging` 时累计；旁路供电机型（Full 但实际放电）会漏记。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。

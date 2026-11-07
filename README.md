@@ -10,7 +10,9 @@
 [![Platform](https://img.shields.io/badge/Platform-Magisk%20%7C%20KernelSU%20%7C%20APatch%20%7C%20MMRL-blue?style=flat-square)](#installation)
 [![License](https://img.shields.io/github/license/f1owkang/CRecordEvolution?style=flat-square&label=License&color=orange)](LICENSE)
 
-English | [简体中文](README.md)
+English | [简体中文（中文说明）](README_ZH.md)
+
+> 中文用户请阅读 [README_ZH.md](README_ZH.md)（Chinese users: see the [Chinese documentation](README_ZH.md)）。
 
 [Features](#features) | [Screenshots](#screenshots) | [Installation](#installation) | [How it works](#how-it-works) | [FAQ](#faq) | [Build from source](#build-from-source) | [Acknowledgements](#acknowledgements)
 
@@ -38,8 +40,10 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 - **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
 - **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.
 - **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
+- **Theme options**: follow the system, or pick light / dark, plus an independent pure-black background switch for AMOLED screens (dark mode only); the bottom bar supports a floating pill or a Material 3 navigation bar.
+- **Manager palette / Material You**: when the manager exposes a WebUI palette (KernelSU v3.0.0+ with a Monet color mode or Material UI, APatch build 11219+, MMRL / WebUI-X v212+), an extra "Dynamic" theme option follows the manager theme; managers without a palette simply hide it.
 - **Upgrade self-check**: if an older daemon is still running after an upgrade, Settings says "Updated — restart to apply", so old and new data never mix.
-- **Bilingual UI**: Simplified Chinese / English, selectable at install time and switchable any time in the WebUI.
+- **Bilingual UI**: Simplified Chinese / English, following the phone language automatically and switchable any time in the WebUI.
 
 ## Installation
 
@@ -52,7 +56,7 @@ Requires Magisk v20.4+, KernelSU, or APatch (arm64 only). Download from [Release
 
 ### Flashing
 
-Pick the zip in your manager and answer two short prompts (the same in-app and in Magisk recovery): language (Volume Up = Chinese, Volume Down = English, 12 s timeout = follow system), then confirm (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel), then reboot.
+Pick the zip in your manager and confirm the install with the volume keys (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel); the UI language follows the phone language automatically. Reboot when done.
 
 ### Notes
 
