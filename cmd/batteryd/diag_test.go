@@ -139,6 +139,7 @@ func TestRenderDiag(t *testing.T) {
 		LastEvent:    &diagEvent{Kind: "counter_scale", Detail: "counter=3850011µAh 积分=3966µAh 保留电量计", TS: 1_760_002_000},
 		LastSampleTS: 1_760_002_000,
 		Now:          1_760_002_000 + 3*86400 + 120,
+		Daemon:       &daemonInfo{Version: "1.3.6(35)", TS: &est, AgeSec: intPtr(12), Stale: true},
 		LogTail:      []string{"[10-28 20:05:12] [结算] 采信 cap=20→93 dur=34m0s avgI=7000mA 口径=电量计 估算=5273mAh"},
 		Loc:          time.UTC,
 	}
@@ -146,6 +147,7 @@ func TestRenderDiag(t *testing.T) {
 	for _, want := range []string{
 		"CRecordEvolution diag", "已脱敏",
 		"module=1.3.6(35) channel=stable root=KernelSU android=16(sdk36) abi=arm64",
+		"daemon=1.3.6(35) age=12s stale=1",
 		"device=OnePlus PJE110 (aston)",
 		"calib=x1000 ma anchor=x1 I_node=",
 		"est=5273mAh samples=12 last_tick=",
@@ -185,6 +187,18 @@ func TestRenderDiag(t *testing.T) {
 	}}
 	if got := renderDiag(zeroCC); !strings.Contains(got, "cc=—") {
 		t.Fatalf("cc=0 应显示 —:\n%s", got)
+	}
+}
+
+// 心跳缺失时诊断不输出 daemon 行（旧版兼容）；ts 缺失时 age 显示 —，不冒充 0。
+func TestRenderDiagDaemonLine(t *testing.T) {
+	base := diagInput{Version: "1.3.8(37)", Loc: time.UTC}
+	if out := renderDiag(base); strings.Contains(out, "daemon=") {
+		t.Fatalf("心跳缺失不应输出 daemon 行:\n%s", out)
+	}
+	base.Daemon = &daemonInfo{Version: "1.3.8(37)"}
+	if out := renderDiag(base); !strings.Contains(out, "daemon=1.3.8(37) age=— stale=0") {
+		t.Fatalf("缺 ts 的 daemon 行不符:\n%s", out)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	// 内嵌 IANA 时区库：Android 上无系统 tzdata 可读（实测 /etc/localtime、
+	// 内嵌 IANA 时区库：Android 上无系统 tzdata 可读（/etc/localtime、
 	// /data/misc/zoneinfo 均不存在），不内嵌则 LoadLocation 必然失败。
 	_ "time/tzdata"
 )
@@ -23,7 +23,7 @@ import (
 // 本地时区解析：守护进程以 root 运行，Go 运行时读不到系统时区（TZ 未导出、
 // 无 tzdata 路径），time.Now() 回退 UTC，导致日志与 JSON 的时间戳慢 8 小时。
 // 解析顺序：① getprop persist.sys.timezone（Android 权威源，任何 ROM 均可，
-// 属性服务数据源即 /dev/__properties__ 的 timezone_prop 上下文，真机已验证）
+// 属性服务数据源即 /dev/__properties__ 的 timezone_prop 上下文）
 // ② /data/property/persist.sys.timezone 文件直读（AOSP 系兜底，MIUI 等无此
 // 文件）③ 保持 time.Local（UTC）——宁可诚实显示 UTC，也不硬编码某个时区。
 var (
@@ -31,7 +31,7 @@ var (
 	localZone     *time.Location
 )
 
-// tzPropSource / tzFileSource 可注入，供单元测试替换；默认走真机路径。
+// tzPropSource / tzFileSource 可注入，供单元测试替换；默认读设备节点。
 var (
 	tzPropSource = func() (string, bool) {
 		out, err := exec.Command("/system/bin/getprop", "persist.sys.timezone").Output()
@@ -83,8 +83,8 @@ const (
 	refreshRetryMax  = 10
 	refreshRetryWait = 30 * time.Second
 	tickInterval     = 60 * time.Second
-	// chargeSampleStep 充电期采样步长：快充电压每 60s 可爬 ~350mV（实测
-	// 3835→4189mV/拍），60s 步长会整段跳过 4.20→4.30V 观察窗，CCCT 永远
+	// chargeSampleStep 充电期采样步长：快充电压每 60s 可爬 ~350mV
+	// （3835→4189mV/拍），60s 步长会整段跳过 4.20→4.30V 观察窗，CCCT 永远
 	// 采不到跨窗点；15s 步长下窗内必有 1~2 个样本。
 	chargeSampleStep  = 15 * time.Second
 	refreshEveryTicks = 1440
@@ -196,8 +196,8 @@ func newApp() (*app, error) {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
 	}
 	fs := SysFS{}
-	// 历史数据量纲修复：charge_counter 按 mAh 报数的机型（issue #7）升级后把旧库
-	// 的 cc 列一次性迁移到 µAh；节点读数不齐时不做猜测，留待下次启动再判。
+	// 历史数据量纲修复：charge_counter 按 mAh 报数的机型升级后把旧库的 cc 列
+	// 一次性迁移到 µAh；节点读数不齐时不做猜测，留待下次启动再判。
 	repairCounterUnitsOnUpgrade(st, fs)
 	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
 	// 设计容量窗口而保持「学习期」，但内核读数（满充容量/循环次数）仍可正常展示。
@@ -298,9 +298,10 @@ func readRawNodeValue(fs SysFS, name string) (int64, bool) {
 }
 
 // repairCounterUnitsOnUpgrade 判定 charge_counter 的原始单位，并在需要时把历史
-// cc 数据从 mAh 迁移到 µAh（issue #7）。三个读数缺失或量纲无法确定时本次不迁移、
-// 也不落终态标记：下次启动再判。迁移按 kv `counter_unit_epoch`（新代码首次启动
-// 时刻）截断，只处理该时刻之前的行，所以重试永远不会把已归一的新行二次 ×1000。
+// cc 数据从 mAh 迁移到 µAh（部分机型不守 ABI）。三个读数缺失或量纲无法确定时
+// 本次不迁移、也不落终态标记：下次启动再判。迁移按 kv `counter_unit_epoch`
+// （新代码首次启动时刻）截断，只处理该时刻之前的行，所以重试永远不会把已归一
+// 的新行二次 ×1000。
 func repairCounterUnitsOnUpgrade(st *Store, fs SysFS) {
 	if v, ok := st.KVGet(kvCounterUnitRepair); ok && v == "1" {
 		return
@@ -379,10 +380,10 @@ func cycleEquiv(totalUAs, designUAh int64) float64 {
 
 func (a *app) basics() Design {
 	// 内核 charge_full / charge_full_design 按原值展示，不乘电芯数：
-	// charge_full 在双电芯机上已是整包值（真机以 charge_counter/charge_full
-	// ≈ capacity% 验证过），再乘会翻倍；而 healthPct 两侧同乘 cellCount 属分子分母
+	// charge_full 在双电芯机上已是整包值（以 charge_counter/charge_full ≈
+	// capacity% 校验），再乘会翻倍；而 healthPct 两侧同乘 cellCount 属分子分母
 	// 约掉、结果不变（no-op），并不能修 200% 之类口径不一致。双电芯口径差异
-	// 需真机实测后再单独处理，此处保持原值最稳妥。
+	// 需单独处理，此处保持原值。
 	d := Design{DesignMah: a.designUAh / 1000, HasDesign: a.designUAh > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
 		d.FullMah = full / 1000
@@ -533,7 +534,7 @@ func (a *app) estimate() (int64, int64, bool) {
 }
 
 // resDisplayN 内阻显示取最近 N 条样本的中位数：单窗回归值受电流阶跃污染可达
-// 真值的 5~10 倍，在线 EMA（α=0.2、无稳健机制）实测被持续踢高 7 倍，中位数口径
+// 真值的 5~10 倍，在线 EMA（α=0.2、无稳健机制）会被持续踢高，中位数口径
 // 无状态且自愈；样本不足（含 90 天清理后无近期充电）按缺失省略。
 const resDisplayN = 16
 
@@ -604,6 +605,9 @@ func runDaemon() error {
 		return fmt.Errorf("找不到 status 节点：%w", err)
 	}
 
+	// 心跳进入循环前先写一次，让升级后旧 daemon 立即暴露版本落后（stale 提示）
+	a.persistHeartbeat(time.Now().Unix())
+
 	// 注入 localNow 而非 time.Now：Pipeline 用 p.now().Format 打决策点日志
 	// （如「[会话] 开始于」），time.Now 在设备上返回 UTC，会与 appendLog 的
 	// 本地时间戳差 8 小时；p.now().Unix() 取值不受影响
@@ -616,6 +620,7 @@ func runDaemon() error {
 	defer ticker.Stop()
 	chargingStep := false // 当前 ticker 是否处于充电期 15s 快步长
 	for range ticker.C {
+		a.persistHeartbeat(time.Now().Unix())
 		raw, err := os.ReadFile(statusNode)
 		if err != nil {
 			// status 读取抖动属于瞬态故障，走连败计数而非直接退出
@@ -898,7 +903,11 @@ func runJson() error {
 		return err
 	}
 	snap.SessionsN = sessN
-	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, disch, n, localNow())
+	now := localNow()
+	// live：实时节点 + 进行中会话；daemon：守护进程心跳。两者读不到时各自省略
+	live := a.buildLiveInfo(now.Unix())
+	daemon := a.daemonStatus(now.Unix())
+	b, err := RenderJSON(channel, d, snap, recent, sess, rests, ccct, icaPeaks, disch, live, daemon, n, now)
 	if err != nil {
 		return err
 	}

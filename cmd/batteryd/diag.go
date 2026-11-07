@@ -1,12 +1,12 @@
 // 诊断信息导出（`batteryd diag`）：给 WebUI 设置页的「复制诊断」按钮用，
-// 生成一段**短、可脱敏、可直接贴进 issue** 的环境与结算摘要。
+// 生成一段**短、可脱敏、便于粘贴分享**的环境与结算摘要。
 //
 // 设计约束：
 //   - 只读取固定的设备属性与电池 sysfs 节点，不读序列号 / IMEI / MAC / 账号等
 //     任何唯一标识；输出里只有设备型号、系统版本、root 管理器、节点路径、
 //     校准/估算/会话摘要与日志尾部。
-//   - 长度上限 diagMaxChars：日志行按剩余空间追加，超限截断，保证粘贴到 issue
-//     不会被折叠或刷屏。
+//   - 长度上限 diagMaxChars：日志行按剩余空间追加，超限截断，保证粘贴后不会被
+//     折叠或刷屏。
 //   - 数值全部复用已有口径函数（stats / convSession / calibInfo），不另算一套。
 
 package main
@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	// diagMaxChars 诊断文本字符上限（rune）：约 30~40 行，贴 issue 足够。
+	// diagMaxChars 诊断文本字符上限（rune）：约 30~40 行，粘贴分享足够。
 	diagMaxChars = 1800
 	// diagLogLines 日志尾部最多带几行（按剩余空间再裁剪）。
 	diagLogLines = 5
@@ -62,7 +62,9 @@ type diagInput struct {
 	LastEvent    *diagEvent
 	LastSampleTS int64
 	Now          int64
-	LogTail      []string
+	// Daemon 守护进程心跳；文件缺失/损坏时为 nil，诊断里整行省略
+	Daemon  *daemonInfo
+	LogTail []string
 
 	Loc *time.Location
 }
@@ -102,7 +104,7 @@ func (a *app) diagInput() diagInput {
 	in.Cap = a.diagReadInt("capacity")
 	in.VoltageUV = a.diagReadInt("voltage_now")
 	in.CounterUAh = a.diagReadInt("charge_counter")
-	// charge_counter 与 current_now 一样可能不守 ABI 的 µAh（issue #7：mAh 报数），
+	// charge_counter 与 current_now 一样可能不守 ABI 的 µAh（按 mAh 报数），
 	// 展示前按 charge_full 量纲归一，否则 diag 会把 1874mAh 的读数 /1000 打成
 	// 3mAh，反而误导排查。归一需要显示电量做交叉校验，随 in.Cap 一起传。
 	if in.CounterUAh != nil {
@@ -138,6 +140,7 @@ func (a *app) diagInput() diagInput {
 		in.LastEvent = &diagEvent{Kind: kind, Detail: diagClean(detail, diagEventDetailMax), TS: ts}
 	}
 	in.LogTail = readLogTail(filepath.Join(a.moddir, "data", logFile), diagLogLines)
+	in.Daemon = a.daemonStatus(in.Now)
 	return in
 }
 
@@ -313,6 +316,10 @@ func renderDiag(in diagInput) string {
 	line("CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）")
 	line("module=%s channel=%s root=%s android=%s(sdk%s) abi=%s",
 		orDash(in.Version), orDash(in.Channel), orDash(in.Root), orDash(in.Android), orDash(in.SDK), orDash(in.ABI))
+	if in.Daemon != nil {
+		line("daemon=%s age=%s stale=%d",
+			orDash(in.Daemon.Version), optAgeSec(in.Daemon.AgeSec), boolInt(in.Daemon.Stale))
+	}
 	line("device=%s %s (%s)", orDash(in.Manufacturer), orDash(in.Model), orDash(in.Device))
 	line("calib=%s", diagCalibLine(in.Snap.Calib))
 	lastTick := "—"
@@ -387,8 +394,8 @@ func diagSessionLine(s Session, loc *time.Location) string {
 	delta := s.EndCap - s.StartCap
 	when := diagTime(s.EndTs, loc)
 	cc := "—"
-	// 旧行（升级前）的 cc 列默认 0，无法区分“当时用积分”与“当时用了电量计但未
-	// 落库”，因此无 cc 数据时只能标 ?，不能冒充 int。
+	// 旧行（升级前）的 cc 列默认 0，无法区分「用积分」与「用了电量计但未
+	// 落库」，因此无 cc 数据时只能标 ?，不能冒充 int。
 	src := "?"
 	if s.CounterUAh > 0 {
 		cc = strconv.FormatInt(s.CounterUAh, 10)
@@ -512,7 +519,23 @@ func optMah(uah *int64) string {
 	return fmt.Sprintf("%dmAh", *uah/1000)
 }
 
-// optQualityMah 通道互检字段本身已是 mAh，不能再 /1000（真机曾显示 5mAh/6mAh）。
+// optAgeSec 心跳年龄（秒）；ts 缺失时显示 —，不冒充 0。
+func optAgeSec(age *int64) string {
+	if age == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%ds", *age)
+}
+
+// boolInt 把布尔标记翻成 1/0，便于诊断行紧凑输出（stale=1）。
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// optQualityMah 通道互检字段本身已是 mAh，不能再 /1000（否则会显示成 5mAh/6mAh）。
 func optQualityMah(mah *int64) string {
 	if mah == nil {
 		return "—"

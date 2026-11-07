@@ -61,9 +61,9 @@ func TestFindPeakSmoothRampNoPeak(t *testing.T) {
 	}
 }
 
-// 均值口径回归：稀疏覆盖（每 5 桶才有一行）时，滑动平均会把非零值泄漏进空洞桶；
-// 若均值分子错把全部平滑值（含泄漏）累加而分母只数非空桶，均值被抬高到约 5×，
-// 2× 主峰过不了 1.2×mean 门槛而漏检。修复后分子只累加轨迹覆盖桶，峰值可通过。
+// 均值口径：稀疏覆盖（每 5 桶才有一行）时，滑动平均会把非零值泄漏进空洞桶；
+// 若均值分子把全部平滑值（含泄漏）累加而分母只数非空桶，均值会被抬高约 5×，
+// 2× 主峰过不了 1.2×mean 门槛而漏检。分子必须只累加轨迹覆盖桶，峰值才可通过。
 func TestFindPeakSparseCoverageMeanGauge(t *testing.T) {
 	var rows []SampleRow
 	for i := int64(0); i <= 12; i++ {
@@ -372,14 +372,14 @@ func TestSettleSkipsICAWhenRateExceedsDesign(t *testing.T) {
 func TestJSONIncludesIcaPeaksEntries(t *testing.T) {
 	v1, v2 := 1.0, 0.97
 	ica := []icaEntry{{TS: 900, PeakUV: 3_950_000, PeakHRel: &v1}, {TS: 1500, PeakUV: 3_960_000, PeakHRel: &v2}}
-	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, ica, nil, 0, time.Unix(0, 0))
+	b, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, ica, nil, nil, nil, 0, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := `"ica_peaks":[{"ts":900,"peak_uv":3950000,"peak_h_rel":1},{"ts":1500,"peak_uv":3960000,"peak_h_rel":0.97}]`; !strings.Contains(string(b), want) {
 		t.Fatalf("ica_peaks 序列化不符, got %s", b)
 	}
-	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, []icaEntry{}, nil, 0, time.Unix(0, 0))
+	b2, _ := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, []icaEntry{}, nil, nil, nil, 0, time.Unix(0, 0))
 	if !strings.Contains(string(b2), `"ica_peaks":[]`) {
 		t.Fatalf("空切片应输出 [] 而非 null: %s", b2)
 	}

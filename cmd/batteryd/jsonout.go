@@ -99,7 +99,11 @@ type jsonDoc struct {
 	// 旧前端忽略未知字段，缺失即省略纪律不破坏
 	Quality *Quality `json:"quality,omitempty"`
 	// Calib 电流刻度校准诊断（采样节点 / 学习刻度 / 当前读数）；节点全缺失时省略
-	Calib      *CalibInfo     `json:"calib,omitempty"`
+	Calib *CalibInfo `json:"calib,omitempty"`
+	// Live 实时节点与进行中充电会话；四个实时节点全读不到时省略
+	Live *liveInfo `json:"live,omitempty"`
+	// Daemon 守护进程心跳（version/ts/age_sec/stale）；心跳文件缺失/损坏时省略
+	Daemon     *daemonInfo    `json:"daemon,omitempty"`
 	Updated    string         `json:"updated"`
 	Recent     []recentEntry  `json:"recent"`
 	Sessions   []sessionEntry `json:"sessions"`
@@ -184,7 +188,9 @@ func convDischarge(r DischargeRow) dischargeEntry {
 }
 
 // RenderJSON 把概览数据渲染为 `batteryd json` 的 JSON 输出。
-func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, disch []dischargeEntry, samplesN int64, now time.Time) ([]byte, error) {
+// live/daemon 可为 nil（对应字段整体省略）：live 由构建实时节点得到，daemon 由
+// 心跳文件解析得到。
+func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessionEntry, rests []restEntry, ccct []ccctEntry, icaPeaks []icaEntry, disch []dischargeEntry, live *liveInfo, daemon *daemonInfo, samplesN int64, now time.Time) ([]byte, error) {
 	doc := jsonDoc{
 		Channel:         ch,
 		Version:         snap.Version,
@@ -221,6 +227,8 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	}
 	doc.Quality = snap.Quality
 	doc.Calib = snap.Calib
+	doc.Live = live
+	doc.Daemon = daemon
 	// estimates 表存 µAh，此处换算为 mAh 展示
 	for _, tv := range recent {
 		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
