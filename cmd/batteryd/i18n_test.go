@@ -203,13 +203,13 @@ func TestResolveUILangPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("全部来源失败默认中文", func(t *testing.T) {
+	t.Run("全部来源失败默认英文", func(t *testing.T) {
 		withLocaleSources(t,
 			func() string { return "" },
 			func(string) (string, bool) { return "", false },
 			func() (string, bool) { return "", false })
-		if got := resolveUILang(); got != langZh {
-			t.Fatalf("resolveUILang = %q, want %q", got, langZh)
+		if got := resolveUILang(); got != langEn {
+			t.Fatalf("resolveUILang = %q, want %q", got, langEn)
 		}
 	})
 }
@@ -308,8 +308,8 @@ func TestUILangCachedOnce(t *testing.T) {
 		func(string) (string, bool) { propCalls++; return "", false },
 		func() (string, bool) { fileCalls++; return "", false })
 	first := uiLang()
-	if first != langZh {
-		t.Fatalf("全部来源失败应默认中文, got %q", first)
+	if first != langEn {
+		t.Fatalf("全部来源失败应默认英文, got %q", first)
 	}
 	if propCalls != 3 || fileCalls != 1 {
 		t.Fatalf("首次系统探测应为 3 个属性 + 1 次文件, got prop=%d file=%d", propCalls, fileCalls)

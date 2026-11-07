@@ -2,7 +2,7 @@
 # 脚本编写感谢 酷安@阿巴酱
 SKIPUNZIP=0
 
-# 安装器输出控制在 8~14 行：标题/说明、设备、语言选择四行、确认提示两行、结果、一条提示。
+# 安装器输出控制在 8~14 行：标题/说明、设备、自动安装说明、结果、一条提示。
 # 管理器提供 ui_print（recovery 控制台可见）时优先使用，否则退回 echo。
 say()
 {
@@ -49,8 +49,9 @@ android=`getprop ro.build.version.release 2>/dev/null`
 [ -n "$android" ] && android="Android $android"
 oldlang=`cat "/data/adb/modules/$modid/data/lang" 2>/dev/null | tr -d '\r\n'`
 
-# 文案语言：升级沿用旧 data/lang，否则跟随系统（顺序与 i18n.go 一致），默认中文。
-T=zh
+# 文案语言：升级沿用旧 data/lang，否则跟随系统（顺序与 i18n.go 一致），
+# 探测不到时回退英文（与 i18n.go / boot.js 的兜底一致）。
+T=en
 case "$oldlang" in
 zh*) T=zh ;;
 en*) T=en ;;
@@ -62,6 +63,12 @@ en*) T=en ;;
 			break
 		fi
 	done
+	if [ -z "$v" ]; then
+		v=`cat /data/property/persist.sys.locale 2>/dev/null | tr -d '\r\n'`
+		if [ -n "$v" ]; then
+			case "$v" in zh*) T=zh ;; *) T=en ;; esac
+		fi
+	fi
 	;;
 esac
 L()
@@ -73,8 +80,7 @@ rule()
 	say "------------------------------------------------"
 }
 
-# 读一次音量键：UP / DOWN / 空。只采纳按下事件（DOWN），忽略抬起/同步事件，
-# 否则第一次按键的抬起会被下一步确认当成第二次按键。
+# 读一次音量键：UP / DOWN / 空。只采纳按下事件（DOWN），忽略抬起/同步事件。
 read_key()
 {
 	_rk_limit=${1:-10}
@@ -107,27 +113,17 @@ say "$(L "用充电会话估算电池健康与容量" "Battery health & capacity
 rule
 say "$(L "设备：" "Device: ")${device:-unknown}${android:+ · $android}"
 
-# 两步按键：选语言（12s 超时跟随系统）→ 确认安装（30s 超时取消）。
-# 选语言时偏好尚未确定，固定中英双语、一行一个选项，避免控制台折行挤在一起。
-lang_chosen=0
+# 语言跟随系统/旧偏好，不再单独选择；只保留一步安装确认。
+# 应用内安装与恢复模式用同一套按键，不按 BOOTMODE/管理器类型跳过。
 if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-	say "[1/2] 选择语言 / Choose language"
-	say "    音量+  中文 / Volume+ Chinese"
-	say "    音量-  English / Volume- English"
-	say "    12 秒后跟随系统 / follows system after 12s"
-	case `read_key 4` in
-	UP)   T=zh; lang_chosen=1 ;;
-	DOWN) T=en; lang_chosen=1 ;;
-	esac
-	say "$(L "[2/2] 确认安装（30 秒后取消）" "[2/2] Confirm install (30s → cancel)")"
+	say "$(L "确认安装（30 秒后取消）" "Confirm install (30s → cancel)")"
 	say "$(L "    音量+ 安装 / 音量- 取消" "    Volume+ install / Volume- cancel")"
 	case `read_key 10` in
 	UP) ;;
 	*) die "$(L "已取消安装" "Installation cancelled")" ;;
 	esac
 else
-	say "    未检测到按键工具，自动安装（语言跟随系统）"
-	say "    No key tools detected; installing with the system language"
+	say "$(L "未检测到按键工具，自动安装" "No key tools detected; installing automatically")"
 fi
 
 say "$(L "正在写入模块…" "Installing module...")"
@@ -138,11 +134,6 @@ oldmod="/data/adb/modules/$modid"
 if [ "$oldmod" != "$MODPATH" ] && [ -d "$oldmod/data" ]; then
 	mkdir -p "$MODPATH/data"
 	cp -a "$oldmod/data/." "$MODPATH/data/" 2>/dev/null && kept=1
-fi
-# 显式选了语言才写偏好，覆盖升级带过来的旧值；未选则沿用旧偏好/系统。
-if [ "$lang_chosen" = 1 ]; then
-	mkdir -p "$MODPATH/data"
-	printf '%s\n' "$T" > "$MODPATH/data/lang"
 fi
 
 # 只给二进制设权限；不要给 webroot 加 chmod/set_perm。

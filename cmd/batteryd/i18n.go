@@ -3,14 +3,14 @@ package main
 // 界面文案双语（zh/en）：只影响「面向用户」的出口——module.prop 描述行与
 // `batteryd once` 输出；内部日志、events 表、stderr 错误一律保持中文。
 //
-// 默认中文：探测不到语言时回退 zh，保证既有中文用户零行为变化。
+// 默认英文：探测不到语言时回退 en（与安装器、WebUI boot.js 的兜底一致）。
 // 语言探测顺序（Android 权威源在前的理由见各来源注释）：
 //  1. 环境变量 CRECORD_LANG（zh/en，调试用，可带地区后缀）
 //  2. getprop persist.sys.locale   —— 当前用户语言（如 en-US），最权威
 //  3. getprop ro.product.locale    —— 出厂/系统语言（旧机与部分 ROM）
 //  4. getprop persist.sys.language —— 更老的 API（值如 zh/en）
 //  5. /data/property/persist.sys.locale 文件直读 —— getprop 不可用时兜底
-//  6. 兜底 zh
+//  6. 兜底 en
 //
 // 探测结果进程内缓存一次：getprop 是 fork+exec，daemon 每次刷新描述都重复探测
 // 没有意义。所有读取函数做成可注入的 package var（同 main.go 里
@@ -114,7 +114,7 @@ func resolveUILang() string {
 }
 
 // resolveSystemUILang 只按系统语言来源探测：属性（persist.sys.locale →
-// ro.product.locale → persist.sys.language）→ 属性文件 → 兜底中文。
+// ro.product.locale → persist.sys.language）→ 属性文件 → 兜底英文。
 // 与语言偏好文件分开，便于 uiLang 只缓存这一层（偏好文件要实时读）。
 func resolveSystemUILang() string {
 	for _, prop := range localeProps {
@@ -129,7 +129,7 @@ func resolveSystemUILang() string {
 			return lang
 		}
 	}
-	return langZh
+	return langEn
 }
 
 // uiLangPrefFile 模块语言偏好文件（安装器与 WebUI 写入，内容 zh/en）。
@@ -191,7 +191,7 @@ func resetUILangCache() {
 	uiLangCached = ""
 }
 
-// uiText 按当前界面语言二选一：默认中文。
+// uiText 按当前界面语言二选一：默认英文。
 func uiText(zh, en string) string {
 	if uiLang() == langEn {
 		return en
