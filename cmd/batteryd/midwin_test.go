@@ -84,9 +84,8 @@ func TestMidImpliedCoverageGates(t *testing.T) {
 	}
 }
 
-// 环境变量 CRE_MIDWIN_DB 指向真机 battery.db 时回放；CI 无此文件自动跳过。
-// 2026-10-18 实测（stable v1.3.4，cc 覆盖最近 9 天）：[30,90) pass 归一 ≈5747 mAh；
-// 修复前旧行回退电流积分只有 5381 mAh。
+// 环境变量 CRE_MIDWIN_DB 指向已导出的 battery.db 时回放；CI 无此文件自动跳过。
+// 基准：[30,90) pass 归一约 5747 mAh；回退电流积分时约 5381 mAh。
 func TestMidImpliedReplayRealDeviceData(t *testing.T) {
 	path := os.Getenv("CRE_MIDWIN_DB")
 	if path == "" {
@@ -159,8 +158,8 @@ func TestMidImpliedPrefersCounterDeltas(t *testing.T) {
 }
 
 // 有电量计时，缺 cc 的旧区间必须跳过而不是回退积分：构造 3 段 cc（5000mAh）
-// + 3 段无 cc 旧行（积分口径 3000mAh）。修复前按 pass 混合会得到 ≈4000mAh，
-// 修复后只采信 cc 段（≈5000mAh）。
+// + 3 段无 cc 旧行（积分口径 3000mAh）。若按 pass 混合会得到 ≈4000mAh，
+// 只采信 cc 段则为 ≈5000mAh。
 func TestMidImpliedSkipsLegacyRowsWhenCounterAvailable(t *testing.T) {
 	var rows []SampleRow
 	ts := int64(1_700_000_000)

@@ -45,7 +45,7 @@ var localeProps = []string{
 const localeFilePath = "/data/property/persist.sys.locale"
 
 // localeEnvSource / localePropSource / localeFileSource 可注入，供单元测试替换；
-// 默认走真机路径。
+// 默认读设备属性/文件。
 var (
 	localeEnvSource  = func() string { return os.Getenv(crLangEnv) }
 	localePropSource = func(prop string) (string, bool) {

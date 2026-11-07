@@ -23,9 +23,9 @@ func TestLearnCurrentScale(t *testing.T) {
 	}{
 		// 原始读数已是 µA：原始积分=电量计
 		{"uA 直通", rawUAs, 5_000_000, 1, true},
-		// 原始积分相对电量计偏低 15%（正常设备实测范围），仍应吸附到 ×1
+		// 原始积分相对电量计偏低 15%（正常设备的积分偏差范围），仍应吸附到 ×1
 		{"uA 偏低 15%", rawUAs, 5_750_000, 1, true},
-		// issue #6：原始读数是 mA（5000 表示 5A），电量计差分是 µAh
+		// 原始读数是 mA（5000 表示 5A），电量计差分是 µAh
 		{"mA 原始读数", 5000 * 3600, 5_000_000, 1000, true},
 		// 电量计差分远大于原始积分（比值约 1.93×10³）：双电芯等效容量口径下
 		// 积分只有电量计的一半，仍需吸附到 ×1000
@@ -134,7 +134,7 @@ func TestNormalizeCurrentUA(t *testing.T) {
 		scale float64
 		want  int64
 	}{
-		// 未校准：旧逻辑把 mA 读数当 µA 直通（issue #6 的根因，保留作回归锚点）
+		// 未校准：mA 读数按 µA 直通（既有锚点行为，这里锁定该口径）
 		{"未校准 mA 直通", 3000, fullUAh, 0, 3000},
 		{"学习刻度 mA→µA", 3000, fullUAh, 1000, 3_000_000},
 		{"学习刻度负值", -3000, fullUAh, 1000, -3_000_000},
@@ -175,8 +175,8 @@ func TestCurrentUnitLabel(t *testing.T) {
 	}
 }
 
-// 口径裁决：只有「电量计隐含容量在窗内、积分在窗外」才翻转旧行为；其余情况
-// （积分可信、双方都不可信、掉幅不足、无参考容量）都维持旧口径。
+// 口径裁决：只有「电量计隐含容量在窗内、积分在窗外」才保留电量计；其余情况
+// （积分可信、双方都不可信、掉幅不足、无参考容量）都沿用既有口径。
 func TestResolveCounterSource(t *testing.T) {
 	const ref = int64(4_000_000)
 	cases := []struct {
@@ -191,13 +191,13 @@ func TestResolveCounterSource(t *testing.T) {
 		{"issue6 保留电量计", 3_000_000, 3000 * 3600, 60, ref, true, "counter_plausible"},
 		// 电量计 30mAh ⇒ 隐含 50mAh（窗外）；积分 2.4Ah ⇒ 隐含 4000mAh（窗内）
 		{"积分可信回退积分", 30_000, 2_400_000 * 3600, 60, ref, false, "integral_plausible"},
-		// 两路都不可信：沿用旧行为（回退积分）
+		// 两路都不可信：沿用既有口径（回退积分）
 		{"双方不可信", 30_000, 3000 * 3600, 60, ref, false, "ambiguous"},
-		// 相差不足 3 倍：直接采信电量计（旧行为）
+		// 相差不足 3 倍：直接采信电量计（既有口径）
 		{"相差 2 倍", 2_000_000, 1_000_000 * 3600, 60, ref, true, "within_3x"},
-		// 无掉幅：无法折算隐含容量，沿用旧行为
+		// 无掉幅：无法折算隐含容量，沿用既有口径
 		{"无掉幅", 3_000_000, 3000 * 3600, 0, ref, false, "ambiguous"},
-		// 无参考容量：沿用旧行为
+		// 无参考容量：沿用既有口径
 		{"无参考容量", 3_000_000, 3000 * 3600, 60, 0, false, "ambiguous"},
 		// 无电量计/无积分
 		{"无电量计", 0, 3000 * 3600, 60, ref, false, "no_counter"},
@@ -227,10 +227,10 @@ func TestParseCurrentScale(t *testing.T) {
 	}
 }
 
-// issue #6 回归：一加 Ace 3 的 current_now 报 mA（原始 3000 被当 µA 直通），
-// 同节点 charge_full / charge_counter 报 µAh。旧逻辑积分低估 1000 倍、结算时
-// 把正确的电量计口径判成异常丢弃 ⇒ 估算 2mAh 且 out_of_window 拒收。修复后：
-// 采信电量计、sessions.cc 落库、学习到 ×1000 刻度，且下一会话的采样电流正确。
+// 用例口径：current_now 报 mA（原始 3000 被当 µA 直通），同节点 charge_full /
+// charge_counter 报 µAh。若积分低估 1000 倍，结算会把正确的电量计口径判成异常
+// 丢弃 ⇒ 估算 2mAh 且 out_of_window 拒收。这里断言：采信电量计、sessions.cc
+// 落库、学习到 ×1000 刻度，且下一会话的采样电流正确。
 func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 	r := newPipeRig(t)
 	// 模拟该机型：charge_full 5.5Ah（µAh 量纲）⇒ 旧锚点认定 current_now 为 µA
@@ -381,7 +381,7 @@ func TestIssue6MilliampCurrentCalibration(t *testing.T) {
 		r.step("Charging")
 	}
 	// 已校准后 raw 0 才走去抖结算：raw 20 会被 ×1000 归一成 20A，tailCurrent
-	// 误判成尾段充电（真机上满电停流读数为 0/极小值，不触发该分支）。
+	// 误判成尾段充电（满电停流时读数为 0/极小值，不触发该分支）。
 	r.put(80, 0, 4_100_000)
 	for k := 0; k < 3; k++ {
 		if out := r.step("Full"); out.SessionSettled {
@@ -554,7 +554,7 @@ func TestNormalMicroampDeviceStaysCalibratedToOne(t *testing.T) {
 }
 
 // 系统 OTA 改变 current_now 单位后，旧刻度必须能被下一个采信会话覆盖（否则会
-// 永久按旧量纲放大/缩小 1000 倍）。这里模拟「已存 ×1000，但节点已改回 µA」。
+// 永久按旧量纲放大/缩小 1000 倍）。这里模拟「已存 ×1000，但节点报 µA」。
 func TestCurrentScaleRecalibratesAfterUnitChange(t *testing.T) {
 	r := newPipeRig(t)
 	writeFile(t, filepath.Join(r.fs.Base, "battery", "charge_full"), fmtNode(5_500_000))
@@ -595,8 +595,8 @@ func TestCurrentScaleRecalibratesAfterUnitChange(t *testing.T) {
 	}
 }
 
-// 展示口径回归：历史页会话「估算」优先由 sessions.cc（电量计）折算，不再用被
-// 低估的电流积分显示 2mAh；旧行 cc=0 保留积分口径显示。
+// 展示口径：历史页会话「估算」优先由 sessions.cc（电量计）折算，避免用被低估的
+// 电流积分显示 2mAh；旧行 cc=0 保留积分口径显示。
 func TestConvSessionUsesCounterForDisplay(t *testing.T) {
 	cc := int64(3_000_000)
 	got := convSession(Session{StartCap: 20, EndCap: 80, CounterUAh: cc})
@@ -607,8 +607,8 @@ func TestConvSessionUsesCounterForDisplay(t *testing.T) {
 	if old.EstMah == nil || *old.EstMah != 5000 {
 		t.Fatalf("旧行积分口径 EstMah = %v, want 5000", old.EstMah)
 	}
-	// issue #6 设备上的旧行：电流被当 µA 直通（3000µA×3600s）⇒ 显示 2~5mAh。
-	// 历史行无法反推电量计口径，保持原值（只修新行），属有意取舍。
+	// 旧行若电流被当 µA 直通（3000µA×3600s）⇒ 显示 2~5mAh。历史行无法反推
+	// 电量计口径，保持原值（只修新行），属有意取舍。
 	bad := convSession(Session{StartCap: 20, EndCap: 80, AccUAs: 3_000 * 3600})
 	if bad.EstMah == nil || *bad.EstMah != 5 {
 		t.Fatalf("旧行低估口径 EstMah = %v, want 5（历史行不改写）", bad.EstMah)
@@ -643,7 +643,7 @@ func TestSessionRawUAsPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-// calibInfo 是 WebUI 设置页/issue 排障的 JSON 出口：节点齐全时给出路径、当前
+// calibInfo 是 WebUI 设置页/问题排障的 JSON 出口：节点齐全时给出路径、当前
 // 原始/归一读数与单位标签，学到刻度后 current_scale/current_unit 同步变化；
 // 节点全缺失且未校准时返回 nil（JSON 省略 calib）。
 func TestCalibInfo(t *testing.T) {

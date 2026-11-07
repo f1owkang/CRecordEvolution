@@ -28,7 +28,7 @@ const (
 	learningSamples = 30
 )
 
-// Learning 是 ML 实验版估算器：RLS 拟合会话特征到容量比，σ 由 P 矩阵与实测散布给出。
+// Learning 是 ML 实验版估算器：RLS 拟合会话特征到容量比，σ 由 P 矩阵与样本散布给出。
 type Learning struct {
 	kv        KVStore
 	cellCount int
@@ -79,8 +79,8 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	theta, p = rlsUpdate(theta, p, phi, r)
 
 	// 学习期（samples ≤ 30）θ 不参与输出，但基线经 emaBlend 随会话移动
-	// （满充 3/10、未满充降权 1/10）：旧实现整段冻结在种子值，实测设备 5 个
-	// 采信会话输出一字不变，学习期长达 1~2 个月，显示信息量反而少于 stable。
+	// （满充 3/10、未满充降权 1/10）：若整段冻结在种子值，输出在 5 个采信会话
+	// 内一字不变，学习期可长达 1~2 个月，显示信息量反而少于 stable。
 	// 正式期维持渐进混合。
 	var est int64
 	corrected := float64(ema) * clipRatio(dot4(phi, theta))
@@ -105,8 +105,8 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	// ratio_hist——基线随会话移动后 ratio-to-ema 的散布虚假收窄，原始容量的
 	// 散布才是估算值不确定度的诚实度量。散布不足 8 个样本时 σ=0，由 main.go
 	// 现有 ≤0 → nil 降级隐藏 ±。
-	// - 学习期（samples ≤ 30）：φᵀPφ 无预测意义，直接用实测散布；
-	// - 正式期：σ_rel = √(φᵀPφ)，保持 0.005 下限，再用实测散布封顶，
+	// - 学习期（samples ≤ 30）：φᵀPφ 无预测意义，直接用样本散布；
+	// - 正式期：σ_rel = √(φᵀPφ)，保持 0.005 下限，再用样本散布封顶，
 	//   避免 P0 与激励不足导致 σ 长期虚高。
 	spread, hasSpread := histRelStd(sfullHist)
 	var sigmaMah float64
@@ -312,7 +312,7 @@ func symToP(sym []float64) [4][4]float64 {
 }
 
 // histRelStd 计算比值历史的总体相对标准差（std/均值，除以 N），
-// 作为 σ 的实测散布封顶。样本不足 iqrMinSamples 个或均值非正时 ok=false 表示不可用
+// 作为 σ 的样本散布封顶。样本不足 iqrMinSamples 个或均值非正时 ok=false 表示不可用
 func histRelStd(hist []float64) (rel float64, ok bool) {
 	if len(hist) < iqrMinSamples {
 		return 0, false

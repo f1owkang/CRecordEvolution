@@ -67,9 +67,9 @@ func TestDischargeCalibrationGates(t *testing.T) {
 	}
 }
 
-// 真机回放（CRE_MIDWIN_DB 指向真实 battery.db）：把历史放电会话逐条过校准通道，
+// 回放（CRE_MIDWIN_DB 指向已导出的 battery.db）：把历史放电会话逐条过校准通道，
 // EMA 应从偏低的会话积分基线收敛到放电差分口径。放电差分不经 current_now，
-// 与内核 charge_full 同源，实测该设备 11 条门控样本均值 6004mAh、内核 6050mAh。
+// 与内核 charge_full 同源（门控样本均值与内核值量级一致）。
 func TestDischargeCalibrationReplayRealDeviceData(t *testing.T) {
 	path := os.Getenv("CRE_MIDWIN_DB")
 	if path == "" {
@@ -93,7 +93,7 @@ func TestDischargeCalibrationReplayRealDeviceData(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &Pipeline{st: st, designUAh: 6_300_000, now: time.Now}
-	// 实机「实测」基线量级：修复量纲回归后会话积分通道稳定在 5100mAh 上下
+	// 「实测」基线量级：量纲正确时会话积分通道稳定在 5100mAh 上下
 	if err := st.KVSet(kvKeyEmaUAh, "5100000"); err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +103,8 @@ func TestDischargeCalibrationReplayRealDeviceData(t *testing.T) {
 	ema := kvInt(st, kvKeyEmaUAh)
 	t.Logf("真机回放: %d 条放电会话 → EMA 5100 → %.0f mAh", len(rows), float64(ema)/1000)
 	// 应收敛到放电差分口径（门控样本均值 ~6000mAh）附近，而非停在会话积分基线。
-	// 下界放宽到 5400：库中含修复前的坏行（如 10-09 那条隐含 3306mAh 的部分覆盖
-	// 行），新口径不会再产生它，但回放仍会吃到这段历史噪声。
+	// 下界放宽到 5400：库中含历史坏行（如隐含 3306mAh 的部分覆盖行），当前
+	// 口径不会再产生它，但回放仍会吃到这段历史噪声。
 	if ema < 5_400_000 || ema > 6_300_000 {
 		t.Fatalf("校准后 EMA 应落在 5400~6300 mAh，got %.0f", float64(ema)/1000)
 	}
@@ -176,7 +176,7 @@ func TestDischargeResyncSkipped(t *testing.T) {
 }
 
 // 重启续记：跨死亡间隙的真实放电照常计入——Δ/Δt 反推电流合理的长间隙不丢电量
-// （旧实现按单拍阈值筛会整段漏掉休眠间隙，实测使放电行隐含值塌到 3306mAh）。
+// （按单拍阈值筛会整段漏掉休眠间隙，放电行隐含值会明显偏低）。
 func TestDischargeCountsRealGapAcrossRestart(t *testing.T) {
 	r := newPipeRig(t)
 	putCounter(t, r, 5_000_000)

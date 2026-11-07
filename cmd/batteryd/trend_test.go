@@ -69,7 +69,7 @@ func TestFitTrendStableNoise(t *testing.T) {
 	}
 }
 
-// 真实信噪比回归：以实测设备量级（µAh 值 + 百 mAh 级噪声）验证健康电池
+// 真实信噪比：以真实设备量级（µAh 值 + 百 mAh 级噪声）验证健康电池
 // 不应被判为显著趋势——R² 门控时代这类数据是永久拒绝，现应落为 flat。
 func TestFitTrendRealisticNoiseIsFlat(t *testing.T) {
 	vals := []int64{5031321, 5248992, 5390526, 5187214, 5194461, 5128611,

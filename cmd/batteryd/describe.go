@@ -56,7 +56,7 @@ type Snapshot struct {
 //   - KernelSU（ksud）与 APatch（apd）都用 java-properties 的 PropertiesIter，
 //     "\n" 会被还原成真实 LF；Android 的 PrecomputedText.createMeasuredParagraphs
 //     只按 '\n'（LINE_FEED）切段，Minikin 的贪心断行也只按宽度断行，所以只有
-//     转义的 \n 能稳定分成两行（U+2028 不切段，实测就是一条长行）。
+//     转义的 \n 能稳定分成两行（U+2028 不切段）。
 //   - Magisk 用 line.split("=", 2).map { it.trim() }，不还原转义，写成 \n 会
 //     原样显示两个字符，因此退化为单行，用「 · 」连接后交给自然折行。
 //
@@ -120,7 +120,7 @@ func descLetterEm() int {
 	return int(math.Round(lsSp / fontSp * 1000))
 }
 
-// descEm* 是对齐补位用的字宽（em 千分位）。Roboto Regular 实测：空格 248、
+// descEm* 是对齐补位用的字宽（em 千分位）。Roboto Regular：空格 248、
 // 数字 562、% 732；CJK/全角/emoji 按 1000。补位空格数按整套字宽换算，
 // 所以同一列的数值起点能在不同数字位数下对齐。
 const (
@@ -133,7 +133,7 @@ func descSpaceEm() int {
 	return descTextEm(" ")
 }
 
-// descRuneEm 是 Roboto Regular 下 ASCII 与描述常用符号的字宽（em 千分位，实测）。
+// descRuneEm 是 Roboto Regular 下 ASCII 与描述常用符号的字宽（em 千分位）。
 // 只影响补位空格数，不追求像素级排版；不在表里的字符按 500 估算。
 var descRuneEm = map[rune]int{
 	' ': 248, '!': 257, '"': 320, '#': 616, '$': 562, '%': 732, '&': 622,
@@ -419,7 +419,7 @@ func descAvailableEm() int {
 }
 
 // descLabelMode 决定描述里保留多少文字标签：宽度不够时逐级裁剪，
-// 保证两行仍能放下、不回归成折行。
+// 保证两行仍能放下、不发生折行。
 type descLabelMode int
 
 const (

@@ -136,8 +136,8 @@ func TestSysFSNormCurrentUA(t *testing.T) {
 	if got := NormCurrentUA(1500000); got != 1500000 {
 		t.Fatalf("NormCurrentUA(1500000) = %d, want 1500000", got)
 	}
-	// 负值（放电方向）与正值同口径：旧实现写的是 raw > 10000，负值一律落进
-	// ×1000 分支，-1.5A 会被放大成 -1500A。
+	// 负值（放电方向）与正值同口径：判据必须取绝对值——写 raw > 10000 会让
+	// 负值一律落进 ×1000 分支，-1.5A 被放大成 -1500A。
 	if got := NormCurrentUA(-1500000); got != -1500000 {
 		t.Fatalf("NormCurrentUA(-1500000) = %d, want -1500000", got)
 	}
@@ -153,9 +153,9 @@ func TestSysFSNormTempC(t *testing.T) {
 }
 
 // 单位交叉校验：以 charge_full 的量纲为锚点区分 mA / µA。
-// 用例取自实机回归（6050mAh 手机，current_now 报 µA）：旧口径拿 charge_full/10
-// 当幅值阈值，把 0.6A 以下的读数整批判成 mA 再 ×1000，采样库里因此每天多出
-// 200+ 条百安级电流，充电积分与中段校准全线失真。
+// 用例覆盖 µA 机型（6050mAh 手机，current_now 报 µA）：拿 charge_full/10
+// 当幅值阈值会把 0.6A 以下的读数整批判成 mA 再 ×1000，读数被放成百安级，
+// 充电积分与中段校准全线失真。
 func TestNormCurrentUAWithFull(t *testing.T) {
 	const fullUAh = 6_050_000 // 6050mAh 以 µAh 计 ⇒ 同驱动的 current_now 是 µA
 	const fullMah = 6_050     // 同容量以 mAh 计 ⇒ current_now 是 mA
@@ -197,8 +197,8 @@ func TestNormCurrentUAWithFullUnitAnchorBoundary(t *testing.T) {
 }
 
 // charge_counter 量纲归一：以 charge_full（µAh）+ 显示电量双锚点判定。mAh 机型的
-// 绝对读数比满容量小三个数量级（issue #7：37% 时 1874 vs charge_full 5,226,000µAh
-// 且 1874×1000≈37%×full）；µAh 机型即使低电量也在阈值之上（1% ≈ full/100），
+// 绝对读数比满容量小三个数量级（如 37% 时 1874，charge_full=5,226,000µAh，且
+// 1874×1000≈37%×full）；µAh 机型即使低电量也在阈值之上（1% ≈ full/100），
 // 显示电量为 0/缺失时一律不判，避免把低电量边缘的 µAh 读数放大 1000 倍。
 func TestNormCounterUAh(t *testing.T) {
 	const fullUAh = 5_226_000

@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// issue #7 回归：荣耀 Magic7（HONOR PTP-AN00）内核上 charge_counter 按 mAh 报数、
-// current_now 按 mA 报数，而 charge_full / charge_full_design 仍是 ABI 的 µAh。
-// 旧实现把 counter 当 µAh 直通：会话隐含容量只有 5mAh 被 out_of_window 拒收，
-// 电流自校准的比值又因两路同时 milli 化而相消（≈1.4）学成 ×1，估算永远 learning。
-// 修复后 counter 按 charge_full 锚点归一為 µAh，会话采信，且电流刻度自动学到 ×1000。
+// 用例口径：charge_counter 按 mAh 报数、current_now 按 mA 报数，而 charge_full /
+// charge_full_design 仍是 ABI 的 µAh。若把 counter 当 µAh 直通：会话隐含容量只有
+// 5mAh 会被 out_of_window 拒收，电流自校准的比值又因两路同时 milli 化而相消
+// （≈1.4）学成 ×1，估算永远 learning。这里断言 counter 按 charge_full 锚点归一为
+// µAh、会话采信，且电流刻度自动学到 ×1000。
 func TestIssue7CounterMilliampDevice(t *testing.T) {
 	r := newPipeRig(t)
 	// charge_full 4Ah（µAh 量纲）；counter 以 mAh 报数（满充约 4000）
@@ -26,7 +26,7 @@ func TestIssue7CounterMilliampDevice(t *testing.T) {
 	cc := int64(800) // 20% × 4000mAh
 	putCounter(t, r, cc)
 	// 61 拍 cap 20→80：counter 每拍 +40mAh（=40000µAh），合计 2400mAh ⇒ 隐含
-	// 4000mAh 落在设计容量窗口；电流原始 3000（mA）被旧锚点当 µA 直通 ⇒ 积分
+	// 4000mAh 落在设计容量窗口；电流原始 3000（mA）被锚点当 µA 直通 ⇒ 积分
 	// 隐含只有约 3mAh，口径裁决应判 counter_plausible。
 	for i := int64(0); i <= 60; i++ {
 		r.put(20+i, 3_000, 4_100_000)
@@ -79,7 +79,7 @@ func TestIssue7CounterMilliampDevice(t *testing.T) {
 	}
 }
 
-// issue #7 放电侧同源回归：放电差分读的是同一个 mAh 报数的 charge_counter，
+// 放电侧同源用例：放电差分读的是同一个 mAh 报数的 charge_counter，
 // 不归一的话放出电量、samples.cc、放电差分校准都会小 1000 倍。
 func TestIssue7DischargeCounterMilliampDevice(t *testing.T) {
 	r := newPipeRig(t)

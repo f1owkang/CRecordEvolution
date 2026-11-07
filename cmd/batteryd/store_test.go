@@ -159,7 +159,7 @@ func TestSampleRoundtripAndPrune(t *testing.T) {
 	}
 }
 
-// samples.cc 列往返 + 旧库补列迁移：v1.3.3 前的库没有该列，OpenStore 应幂等
+// samples.cc 列往返 + 旧库补列迁移：旧库没有该列，OpenStore 应幂等
 // 补列，历史行 cc=0（有电量计时消费方跳过，仅整批无 cc 才回退积分）。
 func TestSamplesCounterColumnRoundtripAndMigration(t *testing.T) {
 	dir := t.TempDir()
@@ -294,7 +294,7 @@ func TestSamplesRangeInclusiveAscending(t *testing.T) {
 	}
 }
 
-// legacySessionsDDL 为不含 invalid_reason 列的旧版 sessions 表结构，
+// legacySessionsDDL 为不含 invalid_reason 列的旧库 sessions 表结构，
 // 用于构造升级前旧库、验证 OpenStore 的在线迁移。
 const legacySessionsDDL = `
 CREATE TABLE IF NOT EXISTS sessions(

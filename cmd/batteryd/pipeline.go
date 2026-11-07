@@ -15,7 +15,7 @@ const (
 	kvChargedTotal = "charged_ua_total"
 
 	restQuietUA int64 = 100000
-	// 100mA 门限：20mA 在实机（灭屏底耗 20~80mA 且周期性唤醒）9 天零触发，
+	// 100mA 门限：灭屏底耗 20~80mA 且周期性唤醒，20mA 门限长期零触发会让
 	// rest_points 全空；100mA 下的 IR 压降（~30mΩ × 100mA = 3mV）低于去重
 	// 漂移门限 5mV，不破坏静置电压指纹语义。
 	restMinTicks            = 3
@@ -24,14 +24,14 @@ const (
 	restRelaxTicks          = 10 // e-Energy '23：静置约 10 分钟电压收敛，可作 SoH 指纹
 
 	// tailQuietUA CV 尾段电流门限：内核电量计报 100% 时真实充电常仍以 ~1A
-	// 持续数分钟（实测显示 100% 后电流自 1.4A 缓降再入涓流），首拍封账会
+	// 持续数分钟（显示 100% 后电流自 ~1.4A 缓降再入涓流），首拍封账会
 	// 系统性少计电量、估算偏低。非 Discharging 状态下正向电流高于此值视为
 	// 充电延续。
 	tailQuietUA int64 = 100000
 
 	// tailDropUV 满电后电压回落门控（µV/电芯）：满电后内核仍可能报 Charging
 	// 且电流为正，但那是充电器直供系统的电流——端电压会较充电峰值显著回落
-	// （实测 -66~-93mV），而真实 CV 尾段紧贴峰值（-1~-3mV）。7A 若真充入电池，
+	// （典型 -66~-93mV），而真实 CV 尾段紧贴峰值（-1~-3mV）。7A 若真充入电池，
 	// 端电压不可能反而下降，故以「满电后电压较峰值低过此阈值」判为假电流，
 	// 不计入会话电量与循环吞吐。按电芯数缩放（双电芯串联压降成比例）。
 	tailDropUV int64 = 30_000
@@ -39,8 +39,8 @@ const (
 	resWindowMax  int = 30
 	resMinSamples int = 20
 	// resMinStdUA 150mA：50mA 门限下电流近乎平稳的窗靠测量噪声凑方差，
-	// 回归斜率被 OCV 漂移主导（实测单值可达真值 5~10 倍，246/281 mΩ）；
-	// 收紧后两台实测设备 p99 从 181/259 降到 49/232 mΩ。
+	// 回归斜率被 OCV 漂移主导（单值可达真值 5~10 倍，200~280mΩ）；
+	// 收紧到 150mA 才能把这类窗挡在回归之外。
 	resMinStdUA float64 = 150000
 	resMinMOhm  float64 = 0.5
 	resMaxMOhm  float64 = 200
@@ -67,7 +67,7 @@ const (
 
 // plausibleDelta 判「真实电量变化」与「电量计跳变/回修」：用 Δ/Δt 反推电流，
 // 超出物理上界（maxCurrentUA）判为跳变，跳过不计。长间隙的 Δ 虽大但 Δt 也大，
-// 反推电流合理、照常计入——这正是逐拍按阈值筛的旧实现漏掉休眠间隙电量的原因。
+// 反推电流合理、照常计入；逐拍按 Δ 绝对值阈值筛会漏掉休眠间隙电量。
 func plausibleDelta(d, dt int64) bool {
 	if dt <= 0 {
 		return false
@@ -115,7 +115,7 @@ type sessionState struct {
 	lastCap    int64
 	// counterAccUAh/counterLastUAh/counterTs 为会话期电量计口径（charge_counter，
 	// µAh）：逐拍把「物理可信」的增量（含负增量）累进 counterAccUAh——零/负增量是
-	// 电量计正常抖动（实测零增量 96 次、负增量 26 次，只累加正增量会高估约 21%），
+	// 电量计正常抖动（只累加正增量会系统性高估充入电量），
 	// 必须正负都记；单拍巨幅跳变（Δ/Δt 反推电流超 maxCurrentUA）判为回修，跳过不计。
 	// 结算取 counterAccUAh 作为本会话净充入电量，与放电侧、内核 charge_full 同源，
 	// 免疫 current_now 刻度偏差与满电假电流。counterHole 标记电量计在开账后才可用
@@ -354,7 +354,7 @@ func (p *Pipeline) readChargeCounterRaw() (int64, bool) {
 }
 
 // readChargeCounter 读 charge_counter 并归一为 µAh（见 normCounterUAh）：个别内核
-// 该节点按 mAh 报数（issue #7），不归一会让会话/放电/中段校准整体小 1000 倍。
+// 该节点按 mAh 报数（部分机型不守 ABI），不归一会让会话/放电/中段校准整体小 1000 倍。
 // capPct 为本拍显示电量，用于区分「mAh 机正常读数」与「µAh 机低电量边缘读数」。
 func (p *Pipeline) readChargeCounter(capPct int64) (int64, bool) {
 	raw, ok := p.readChargeCounterRaw()
@@ -372,7 +372,7 @@ func (p *Pipeline) readChargeCounter(capPct int64) (int64, bool) {
 // notChargDebounce 非充电状态去抖：status 连续非 Charging 达到该拍数才真正
 // 结算会话。米系满电保护/优化充电会让 status 在充电过程中间歇抖为
 // Not charging/Full，单拍即断会把同一晚充电切碎成一串涨幅不足的废会话
-// （实测：4 条 delta=0 垃圾行全部源于连续 2 拍抖动）。3 拍≈3 分钟，与
+// （status 连续 2 拍抖动会切出 delta=0 的废会话）。3 拍≈3 分钟，与
 // ACC「多次采样确认、不信单拍 status」的策略同源。
 const notChargDebounce = 3
 
@@ -561,7 +561,7 @@ func (p *Pipeline) tickTailCharge(iUA, rawAbs int64) error {
 		vUV = 0
 	}
 	// 尾段同样受峰值回落门控：满电后系统高负载下，本路径也会读到充电器
-	// 直供系统的假电流（实测该场景持续 30+ 分钟、虚增可达 1.1Ah）
+	// 直供系统的假电流（该场景可持续数十分钟、虚增可达 1Ah 量级）
 	suppressed := p.chargeSuppressed(capVal, vUV)
 	if !suppressed {
 		if err := p.chargeThroughput(iUA); err != nil {
@@ -766,7 +766,7 @@ func (p *Pipeline) settle() error {
 		Valid:    false,
 	}
 	counterUAh, counterSrc := p.adjudicateCounter(s, &row)
-	// 电流刻度自校准（第一次有效会话起生效）：本次会话的估算已由上面的口径裁决
+	// 电流刻度自校准（从第一个有效会话起生效）：本次会话的估算已由上面的口径裁决
 	// 兜住，校准用于之后的采样/积分/倍率门控。必须用「原始读数·秒」而不是
 	// accUAs（已被当前刻度/锚点缩放），否则已学刻度会在下一会话被反推回 ×1。
 	// 学到新刻度时本会话已累计的积分电量按新刻度重算（avgI/倍率同步），否则
@@ -1013,8 +1013,8 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 	var loS, hiS SampleRow
 	var gatedRows []SampleRow
 	for _, g := range segs {
-		// 倍率门控 ≤1C：按本机实测数据定标（正常快充恒流段均值 0.9~1.25C，
-		// 旧 ≤C/2 门限把合法快充一票否决）。Fly & Chen 2020 表明高倍率下
+		// 倍率门控 ≤1C：按正常快充恒流段定标（均值 0.9~1.25C；
+		// ≤C/2 门限会把合法快充一票否决）。Fly & Chen 2020 表明高倍率下
 		// ICA 峰显著退化（文献推荐 C/24~C/25），1C 属工程折衷，同源特征
 		// 只按趋势方向采信。
 		if g.MeanUA > p.designUAh {
@@ -1036,8 +1036,8 @@ func (p *Pipeline) recordCCCT(startTs, end int64) []SampleRow {
 			ev("ccct_skip", ierr.Error())
 		}
 	case crossings == 0:
-		// 归因全量明细：恒流段总数、过门/超限分布、跨窗数。旧文案只报
-		// 「倍率超限」，实测掩盖主根因（过门段未跨整窗 / 会话起点高于窗）。
+		// 归因全量明细：恒流段总数、过门/超限分布、跨窗数。只报
+		// 「倍率超限」会掩盖真正原因（过门段未跨整窗 / 会话起点高于窗）。
 		if gateRejected > 0 {
 			ev("ccct_skip", fmt.Sprintf("恒流段 %d 个(过门 %d/超限 %d)，均未跨越整窗，未采信",
 				len(segs), len(segs)-gateRejected, gateRejected))

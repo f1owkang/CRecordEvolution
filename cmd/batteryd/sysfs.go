@@ -142,10 +142,9 @@ func NormCurrentUA(raw int64) int64 {
 //
 // 最后用 maxCurrentUA 兜底：折算结果超过物理上界即回退原值。
 //
-// 实测教训（回归）：旧实现按 |current_now| < charge_full/10 判成 mA，把所有
-// < 0.6A 的真实 µA 读数 ×1000（40mA 变 40A）。实机采样库显示换上该实现当天起
-// 每天 200+ 条百安级电流，充电积分、中段校准、CCCT/ICA 倍率门控全线失真，
-// 「实测」估算被推到设计容量的 114%。
+// 不要按幅值比例判单位：|current_now| < charge_full/10 判成 mA 会把所有 <0.6A
+// 的真实 µA 读数 ×1000（40mA 变 40A），使充电积分、中段校准、CCCT/ICA 倍率
+// 门控全线失真，实测估算被推到设计容量的 114%。
 func NormCurrentUAWithFull(raw, chargeFullUAh int64) int64 {
 	var ua int64
 	switch {
@@ -190,12 +189,12 @@ func counterMahPlausible(raw, chargeFullUAh, capPct int64) bool {
 
 // normCounterUAh 把 charge_counter 原始读数折算成 µAh（无法确认时原样返回）。
 //
-// power_supply ABI 规定 charge_* 用 µAh，但个别内核（issue #7：荣耀 Magic7 /
-// Android 17）的 charge_counter 按 mAh 报数，同一驱动的 current_now 也按 mA 报，
-// 而 charge_full / charge_full_design 仍守 ABI 的 µAh。旧实现把 counter 读数当
-// µAh 直通，会话隐含容量、放电增量、中段校准全部小 1000 倍，被设计容量窗口判为
-// out_of_window，估算永远停在 learning；更糟的是电流自校准的比值由 counter/积分
-// 反推，两个量同时 milli 化时比值相消（≈1.4），把错误刻度固化成 ×1。
+// power_supply ABI 规定 charge_* 用 µAh，但个别内核（如部分荣耀机型）的
+// charge_counter 按 mAh 报数，同一驱动的 current_now 也按 mA 报，而 charge_full /
+// charge_full_design 仍守 ABI 的 µAh。把 counter 读数当 µAh 直通会让会话隐含容量、
+// 放电增量、中段校准全部小 1000 倍，被设计容量窗口判为 out_of_window，估算永远
+// 停在 learning；更糟的是电流自校准的比值由 counter/积分反推，两个量同时 milli
+// 化时比值相消（≈1.4），会把错误刻度固化成 ×1。
 //
 // capPct 为同一拍的显示电量（读不到时传 0）：只有它能区分「mAh 机的正常读数」和
 // 「µAh 机在 0.2% 以下的读数」。所有生产读取都必须带上，不能只传幅值。

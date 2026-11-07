@@ -125,8 +125,7 @@ func TestSigmaMahRejectsNonFinite(t *testing.T) {
 
 func TestCycleEquivUsesHoursBase(t *testing.T) {
 	// charged_ua_total 单位 µA·s，除以 designUAh(µAh) 前必须 ÷3600 折算小时：
-	// 设备实测值 109516965000 µA·s ÷ 8600000 µAh ≈ 3.54 循环，
-	// 旧实现漏 ÷3600 会显示 12734.53
+	// 例：109516965000 µA·s ÷ 8600000 µAh ≈ 3.54 循环，漏 ÷3600 会显示 12734.53
 	got := cycleEquiv(109516965000, 8600000)
 	want := 109516965000.0 / (8600000.0 * 3600)
 	if math.Abs(got-want) > 1e-9 {
@@ -141,7 +140,7 @@ func TestCycleEquivUsesHoursBase(t *testing.T) {
 }
 
 func TestMedianMohRobust(t *testing.T) {
-	// 中位数口径：单个 5~10 倍离群值不得拉动显示值（旧 EMA 实测被踢高 7 倍）
+	// 中位数口径：单个 5~10 倍离群值不得拉动显示值（在线 EMA 会被离群值持续踢高）
 	mos := []float64{11.9, 12.4, 11.1, 246.3, 12.8, 11.5, 12.1}
 	got := medianMoh(mos)
 	if got == nil || math.Abs(*got-12.1) > 1e-9 {

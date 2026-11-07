@@ -1,9 +1,9 @@
 // 趋势外推采用日级容量稳健线性拟合（Theil-Sen，点对斜率中位数，抗离群），
 // 对模块自身的历史估算点外推每周衰减量，属通用稳健统计。
 //
-// 显著性判定用 Mann-Kendall 点对符号检验替代早先的 R²≥0.5 门控：单次会话
+// 显著性判定用 Mann-Kendall 点对符号检验，不用 R²≥0.5 门控：单次会话
 // 估算噪声（健康电池 ±2~3%，百 mAh 级）远大于真实周衰减（1~2 mAh 量级），
-// 实测数据上 R² 长期为负值，该门控等于趋势永远不可达。Mann-Kendall 只问
+// 真实数据上 R² 长期为负值，该门控等于趋势永远不可达。Mann-Kendall 只问
 // 「序关系是否显著单调」，与斜率估计（同为点对统计）天然同源。
 //
 // 结果分三态上报：insufficient（点数/跨度不足，尚无法判定）、stable（数据
@@ -122,8 +122,8 @@ func FitTrend(pts []TsVal) (TrendResult, bool) {
 		r2 = 1 - sse/sst
 	}
 
-	// Mann-Kendall 显著性：Var(S) 取无并列近似（实测并列对结果只有保守方向的
-	// 影响），|S| 超过双侧 5% 临界值才认定趋势成立。
+	// Mann-Kendall 显著性：Var(S) 取无并列近似（并列只带来保守方向的偏差），
+	// |S| 超过双侧 5% 临界值才认定趋势成立。
 	state := TrendStable
 	mkVar := float64(n*(n-1)*(2*n+5)) / 18
 	if float64(absI64(int64(mkS))) > trendMKZ*math.Sqrt(mkVar) {

@@ -98,8 +98,8 @@ func TestLearningSeedsFirstSessionAndConverges(t *testing.T) {
 	kvFloats(t, st, kvKeyRlsPSym, 10)
 	hist := kvFloats(t, st, kvKeyRatioHist, 40)
 
-	// P0 从 1e4 收紧到 100 后 RLS 每步增益变小，60 会话对常数 y=1 的
-	// 收敛精度由 1e-6 量级放宽到 1e-4 量级（实测偏差 ≈ 4.7e-5）
+	// P0 取 100 时 RLS 每步增益较小，60 会话对常数 y=1 的收敛精度按 1e-4
+	// 量级断言（实际偏差约 4.7e-5）
 	if got := dot4(mlPhi(lastSess, 1), theta); math.Abs(got-1) > 1e-4 {
 		t.Fatalf("θᵀφ = %.12f, 与常数 y=1 的偏差超过 1e-4", got)
 	}
@@ -151,8 +151,8 @@ func TestLearningClipsCorrectionAtUpperBound(t *testing.T) {
 }
 
 func TestLearningBaselineMovesDuringLearning(t *testing.T) {
-	// 旧实现学习期（samples≤30）基线冻结在种子值：实测设备 5 个采信会话
-	// 输出一字不变，显示信息量反而少于 stable。新实现按 stable 同式 EMA 移动。
+	// 学习期（samples≤30）基线必须按 stable 同式 EMA 移动：冻结在种子值会让
+	// 前 5 个采信会话输出一字不变，显示信息量反而少于 stable。
 	est, st := newTestLearning(t)
 	seedML(t, est) // ema=3000000
 
@@ -290,7 +290,7 @@ func TestLearningSigma(t *testing.T) {
 	}
 
 	// 种子后首批会话仍处学习期（samples≤30）且 sfull_hist 不足 8 个：
-	// φᵀPφ 尚无意义、实测散布也不可用，σ 应为 0（由上层 ≤0→nil 降级隐藏 ±）
+	// φᵀPφ 尚无意义、样本散布也不可用，σ 应为 0（由上层 ≤0→nil 降级隐藏 ±）
 	upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000})
 	if err != nil {
 		t.Fatalf("会话应被接受: %v", err)
@@ -343,7 +343,7 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 	est, st := newTestLearning(t)
 	seedML(t, est)
 
-	// 学习期（samples≤30）内、hist 长度 1..7 不足 8：实测散布不可用，σ 恒为 0
+	// 学习期（samples≤30）内、hist 长度 1..7 不足 8：样本散布不可用，σ 恒为 0
 	for i := 0; i < 7; i++ {
 		upd, err := est.OnSession(SettledSession{Session: baseSession(), AccUAs: 6480000000, DesignUAh: 4000000})
 		if err != nil {
@@ -355,7 +355,7 @@ func TestLearningSigmaZeroUntilSpreadReady(t *testing.T) {
 	}
 
 	// 第 8 条会话构造微散布（sFull/ema=1.02）：sfull_hist 恰满 8 个，学习期
-	// 出口应给出 σ = sfull_hist 实测相对散布 × est/1000（est 为移动后的基线）
+	// 出口应给出 σ = sfull_hist 样本相对散布 × est/1000（est 为移动后的基线）
 	sess := baseSession()
 	emaBefore := kvInt(st, kvKeyEmaUAh)
 	sr := SettledSession{Session: sess, AccUAs: 6609600000, DesignUAh: 4000000}
@@ -400,7 +400,7 @@ func TestLearningSigmaCappedByEmpiricalSpread(t *testing.T) {
 		t.Fatalf("会话应被接受: %v", err)
 	}
 
-	// σ 不得超过 sfull_hist 实测相对散布对应的 mAh 上界
+	// σ 不得超过 sfull_hist 样本相对散布对应的 mAh 上界
 	sfull := kvFloats(t, st, kvKeySFullHist, 13)
 	corrected := correctedFromKV(t, st, sess, emaBefore)
 	upper := popRelStd(sfull) * corrected / 1000
@@ -421,9 +421,9 @@ func TestLearningSigmaConvergesWithTighterP0(t *testing.T) {
 	est, st := newTestLearning(t)
 	seedML(t, est)
 
-	// 正常收敛场景：r 围绕 1.0 以 ±2% 真实感噪声波动（固定 5 点循环，
-	// 实测相对散布 ≈ 0.014）。旧实现（P0=1e4 且无封顶）60 次后 σ_rel ≈ 0.15；
-	// P0 收紧 + 实测散布封顶后应明显小于 0.05
+	// 正常收敛场景：r 围绕 1.0 以 ±2% 噪声波动（固定 5 点循环，样本相对散布
+	// ≈ 0.014）。P0 收紧 + 样本散布封顶后，60 次迭代的 σ_rel 应明显小于 0.05
+	// （P0=1e4 且无封顶时会到 0.15 量级）。
 	pattern := []float64{1.000, 1.020, 0.980, 1.010, 0.990}
 	var sess Session
 	var upd EstUpdate

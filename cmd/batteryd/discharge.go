@@ -1,7 +1,7 @@
 // 放电会话记录（初步）：读电量计硬件库仑计 charge_counter（µAh）做差分累计，
 // 转入充电时结算一条放电会话。与 current_now 积分不同，差分口径的采样在
 // 芯片内完成，不受负载电流毫秒级突变混叠影响——这也是 AccuBattery 类应用
-// 的取数路径（本机已验证节点存在）。
+// 的取数路径。
 //
 // 已知取舍（初步版）：
 //   - 只在 status=Discharging 的拍累计：旁路供电机型（status=Full 但电池
@@ -32,10 +32,10 @@ const (
 	disMinRowCap = 5       // 显示掉幅 <5 个百分点不落行
 	disMinEstCap = 10      // 显示掉幅 <10 个百分点不给隐含容量
 	// disCalMinCap 校准用掉幅门限：显示百分比→mAh 映射非线性，掉幅越大越把
-	// 局部非线性平滑掉（实测同区间配对下 30 点以上掉幅的行隐含值离散 ±5%）。
+	// 局部非线性平滑掉（同区间配对下 30 点以上掉幅的行隐含值离散约 ±5%）。
 	disCalMinCap = 30
 	// disCalMaxStart 校准用起始百分比上限：从满电起步的行隐含值系统性偏高
-	// （实测 from_full 均值 6320 vs from_mid 6013，差约 5%），顶部区间显示被
+	// （from_full 均值比 from_mid 高约 5%），顶部区间显示被
 	// 压缩所致，校准只取中段起步的行，观测行不受此限。
 	disCalMaxStart = 95
 	// disSampleGapSecs 放电样本落库间隔：放电期 tick 为 60s，逐拍落样本
@@ -87,7 +87,7 @@ func (p *Pipeline) trackDischarge(status string) {
 		}
 		return
 	}
-	// 与充电侧同口径：mAh 报数的机型（issue #7）先归一成 µAh，否则放出电量、
+	// 与充电侧同口径：mAh 报数的机型先归一成 µAh，否则放出电量、
 	// samples.cc、放电差分校准全部小 1000 倍。
 	counterUAh := normCounterUAh(raw, p.fullUAh, capVal)
 	now := p.now().Unix()
@@ -171,7 +171,7 @@ func (p *Pipeline) settleDischarge() {
 
 // calibrateDischarge 放电结算后的容量校准：以 charge_counter 差分隐含容量为低权
 // 校准量并入 EMA。放电差分的积分在电量计芯片内完成，是各路容量口径里唯一不经
-// current_now 的通道——实测同区间配对下其离散 ±5%，充电积分通道则 ±48%，且后者
+// current_now 的通道——同区间配对下其离散约 ±5%，充电积分通道则 ±48%，且后者
 // 会连带吃到 current_now 的量纲误判与瞬态。门控从严（见 disCalMinCap/
 // disCalMaxStart 注），不满足只落 events 留痕，绝不影响放电结算主链路。
 func (p *Pipeline) calibrateDischarge(row DischargeRow) {

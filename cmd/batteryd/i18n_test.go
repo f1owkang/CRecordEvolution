@@ -27,7 +27,7 @@ func withUILang(t *testing.T, lang string) {
 }
 
 // withLocaleSources 替换三个语言探测来源（环境变量/getprop/属性文件），
-// cleanup 还原默认真机路径。
+// cleanup 还原默认设备来源。
 func withLocaleSources(t *testing.T, env func() string, prop func(string) (string, bool), file func() (string, bool)) {
 	t.Helper()
 	oldEnv, oldProp, oldFile := localeEnvSource, localePropSource, localeFileSource
@@ -553,8 +553,8 @@ func TestOnceTextEnglish(t *testing.T) {
 	}
 }
 
-// TestOnceTextEnglishSingularSession 锁定英文 once 单复数：1 次有效会话不能写
-// "1 valid sessions"（首装后第一次采信即会遇到）。
+// TestOnceTextEnglishSingularSession 锁定英文 once 单复数：1 次有效会话必须用
+// 单数 "1 valid session"，不能写成 "1 valid sessions"。
 func TestOnceTextEnglishSingularSession(t *testing.T) {
 	withUILang(t, langEn)
 	estUAh := int64(3_600_000)

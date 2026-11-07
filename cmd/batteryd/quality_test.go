@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// 实机口径（2026-09 设备 b，单位 µAh）：ema 5108 / mid 5324 / dis 6004 / full 6050 mAh，
-// 四路互差 18% 属正常系统性偏差；量纲误判期中段口径被推到 15592mAh（互差 160%）。
+// 典型设备口径（单位 µAh）：ema 5108 / mid 5324 / dis 6004 / full 6050 mAh，
+// 四路互差 18% 属正常系统性偏差；量纲误判时中段口径被推到 15592mAh（互差 160%）。
 func TestCapacityQualityNormalSpread(t *testing.T) {
 	q := CapacityQuality(5_108_000, 5_324_000, 6_004_000, 6_050_000)
 	if q == nil {
@@ -29,7 +29,7 @@ func TestCapacityQualityNormalSpread(t *testing.T) {
 }
 
 func TestCapacityQualityFlagsCorruptedChannel(t *testing.T) {
-	// 量纲误判实测值：中段 15592mAh 对内核 6050mAh
+	// 量纲误判后的典型值：中段 15592mAh 对内核 6050mAh
 	q := CapacityQuality(7_189_122, 15_592_000, 6_004_000, 6_050_000)
 	if q == nil || q.OK {
 		t.Fatalf("量纲误判应判不一致, got %+v", q)

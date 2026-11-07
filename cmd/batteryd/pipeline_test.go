@@ -790,9 +790,9 @@ func TestEvaluateStableAcceptsZeroDesignUAh(t *testing.T) {
 }
 
 // 满电后电压回落 ⇒ 判为充电器供系统，假电流不计入会话电量与循环吞吐。
-// 真机证据（2026-09-15）：满电后系统高负载，内核报 Charging 且电流 3~7A，
-// 但端电压较峰值回落 66~93mV（7A 若真充入电池端电压不可能反而下降），
-// 持续 30+ 分钟虚增约 1.1Ah，把会话估算从 ~5080 抬到 6842mAh。
+// 机制：满电后系统高负载，内核报 Charging 且电流 3~7A，但端电压较峰值回落
+// 66~93mV（7A 若真充入电池端电压不可能反而下降）；这类假电流可持续数十分钟、
+// 虚增 1Ah 量级，会把会话估算明显抬高。
 func TestChargeSuppressedOnVoltageSag(t *testing.T) {
 	r := newPipeRig(t)
 	// 充电至满电：峰值电压 4.40V
@@ -898,8 +898,8 @@ func TestRestoredSessionKeepsCounterAccumulation(t *testing.T) {
 	}
 }
 
-// 电量计抖动回归：零增量与负增量是正常抖动（实机实测零增量 96 次、负增量 26
-// 次），净增量口径必须正负都记——只累加正增量会高估约 21%，把「实测」顶高。
+// 电量计抖动：零增量与负增量是正常抖动，净增量口径必须正负都记——只累加正
+// 增量会系统性高估充入电量，把「实测」顶高。
 func TestCounterDeltaToleratesGaugeJitter(t *testing.T) {
 	r := newPipeRig(t)
 	r.st.KVSet(kvKeyEmaUAh, "5000000")

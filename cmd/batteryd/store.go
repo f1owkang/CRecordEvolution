@@ -200,13 +200,12 @@ func OpenStore(path string) (*Store, error) {
 // kvSamplesUnitRepair 一次性数据修复标记：历史样本的电流量纲误判遗留已修正。
 const kvSamplesUnitRepair = "samples_unit_repair"
 
-// repairSampleUnits 修正历史样本里被量纲误判放大的电流行。旧版
-// NormCurrentUAWithFull 拿 charge_full/10 当幅值阈值，把 0.6A 以下的真实 µA 读数
-// ×1000 落库（实机自换版当天起每天 200+ 条 |UA| 数百安的行）；这些行会一路污染
-// 中段校准与 CCCT/ICA 倍率门控——真机回放里中段隐含值被推到 15075mAh，基准应为
-// 5289mAh。手机电池瞬时电流不可能超过 maxCurrentUA，越界行必是 1000 倍误乘，
-// 除以 1000 即原值；以 charge_counter 差分为真值校验，修正后积分误差 < 6%。
-// 幂等：修正后的行不再越界，重复执行不产生二次改写。
+// repairSampleUnits 修正历史样本里被量纲误判放大的电流行：按
+// |current_now| < charge_full/10 判成 mA 的阈值会把 0.6A 以下的真实 µA 读数
+// ×1000 落库；这些行会一路污染中段校准与 CCCT/ICA 倍率门控（中段隐含值可被推到
+// 15075mAh，基准应为 5289mAh）。手机电池瞬时电流不可能超过 maxCurrentUA，越界行
+// 必是 1000 倍误乘，除以 1000 即原值；以 charge_counter 差分为真值校验，修正后
+// 积分误差 < 6%。幂等：修正后的行不再越界，重复执行不产生二次改写。
 func (s *Store) repairSampleUnits() error {
 	if v, ok := s.KVGet(kvSamplesUnitRepair); ok && v == "1" {
 		return nil
@@ -254,14 +253,14 @@ func txScaleKV(tx *sql.Tx, key string) error {
 }
 
 // RepairCounterUnits 按 charge_counter 的原始单位迁移历史 cc 数据。scale=1000
-// 表示该机 charge_counter 以 mAh 报数（issue #7）：旧版把读数当 µAh 直落库，
+// 表示该机 charge_counter 以 mAh 报数（不守 ABI）：历史数据把读数当 µAh 直落库，
 // samples.cc / sessions.cc / discharge.uah / discharge.implied 与进行中会话的 kv
 // 全都小 1000 倍，此处换算；scale=1 表示本机口径正常，只落标记不动数据。
 // epoch 为「新代码首次启动」时刻：只迁移 epoch 之前写入的行，之后的行已归一。
 //
 // 只迁移「电量计专用」数据：estimates / ema_ua / mid_implied_ua 可能来自电流
-// 积分通道（口径不同，同机也出现过电流与电量计不同步缩小的组合），按 1000 倍
-// 改会制造新的口径错误，宁可保留旧值。
+// 积分通道（口径不同，电流与电量计可能不同步缩小），按 1000 倍改会制造新的
+// 口径错误，宁可保留旧值。
 //
 // 幂等与并发：daemon 启动与 WebUI 的 json/diag 子进程都会走这里，迁移不是幂等
 // 乘法（重复执行会连乘 1000），因此标记检查、数据迁移与标记写入放在同一个写事务
