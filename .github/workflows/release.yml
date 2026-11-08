@@ -79,8 +79,10 @@ jobs:
           cp -r module.prop customize.sh service.sh action.sh bin webroot META-INF THIRD_PARTY_NOTICES.txt mlstage/
           mv bin/batteryd.ml mlstage/bin/batteryd
           rm -f mlstage/bin/batteryd.ml
-          # ML 与 stable 同 id、同 name，仅靠 description 前缀与资产名区分
-          sed -i 's/^description=/description=[ML实验版]/' mlstage/module.prop
+          VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
+          # ML 与 stable 同 id、同 name：通道标识放在 module.prop 的 Version 字段
+          # （1.3.8-ML），不再污染模块描述；updateJson 只给 stable。
+          sed -i "s/^version=.*/version=${VERSION}-ML/" mlstage/module.prop
           sed -i '/^updateJson=/d' mlstage/module.prop
           cd mlstage && zip -r "../${ML_ASSET_NAME}" . && cd ..
 

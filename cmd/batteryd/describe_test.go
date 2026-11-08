@@ -124,11 +124,11 @@ func TestBuildDescriptionContent(t *testing.T) {
 			want:   "🌡️ 温度 : 31.5℃",
 		},
 		{
-			name:   "ML 前缀 + 区间",
+			name:   "ML 通道描述不带前缀 + 区间",
 			design: fullDesign(),
 			snap:   Snapshot{EstUAh: &estUAh, SigmaMah: &sigma},
 			ml:     true,
-			want: "[ML实验版]" + descJoin(
+			want: descJoin(
 				"💚 内核 : 96% - 3850 mAh • ♻️ 循环 : 210次",
 				"📏 实测 : 90% - 3600±16 mAh",
 			),
@@ -138,7 +138,7 @@ func TestBuildDescriptionContent(t *testing.T) {
 			design: fullDesign(),
 			snap:   Snapshot{EstUAh: &estUAh, SigmaMah: &zero},
 			ml:     true,
-			want: "[ML实验版]" + descJoin(
+			want: descJoin(
 				"💚 内核 : 96% - 3850 mAh • ♻️ 循环 : 210次",
 				"📏 实测 : 90% - 3600 mAh",
 			),

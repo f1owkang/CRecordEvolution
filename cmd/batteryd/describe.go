@@ -453,7 +453,7 @@ func joinDescRows(rows ...descRow) string {
 			}
 			texts[i] = strings.Join(parts, cellSep)
 		}
-		return withMLPrefix(strings.Join(texts, uiText(" · ", " · ")))
+		return strings.Join(texts, uiText(" · ", " · "))
 	}
 	avail := descAvailableEm()
 	for _, mode := range []descLabelMode{descLabelsFull, descLabelsCompact, descLabelsNone} {
@@ -466,7 +466,7 @@ func joinDescRows(rows ...descRow) string {
 }
 
 // layoutDescRows 按标签模式渲染并对齐，返回各行文本与最大行宽
-// （em 千分位，含 ML 前缀与行尾补位）。补位只加普通空格，不写真实换行。
+// （em 千分位，含行尾补位）。补位只加普通空格，不写真实换行。
 func layoutDescRows(rows []descRow, mode descLabelMode) ([]string, int) {
 	cellSep := uiText(" • ", " • ")
 	type renderedCell struct {
@@ -552,23 +552,9 @@ func layoutDescRows(rows []descRow, mode descLabelMode) ([]string, int) {
 			ems[i] += add * descSpaceEm()
 		}
 	}
-	if channel == "ml" {
-		prefix := uiText("[ML实验版]", "[ML experimental] ")
-		texts[0] = prefix + texts[0]
-		ems[0] += descTextEm(prefix)
-		if ems[0] > maxTotal {
-			maxTotal = ems[0]
-		}
-	}
+	// ML 实验通道不再往描述前缀加文字：通道标识放在 module.prop 的 version
+	// 后缀（X.Y.Z-ML）里，模块描述始终是纯状态卡，和 stable 保持一致。
 	return texts, maxTotal
-}
-
-// withMLPrefix 给描述加 ML 通道前缀（中文紧贴，英文补一个空格更自然）。
-func withMLPrefix(desc string) string {
-	if channel != "ml" {
-		return desc
-	}
-	return uiText("[ML实验版]", "[ML experimental] ") + desc
 }
 
 // isFullWidth 判断 rune 是否占一个整 em（East Asian Width 的 W/F 与 emoji）。

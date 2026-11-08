@@ -441,7 +441,7 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		}
 	})
 
-	t.Run("ML 前缀与区间", func(t *testing.T) {
+	t.Run("ML 通道描述不带前缀与区间", func(t *testing.T) {
 		withUILang(t, langEn)
 		old := channel
 		channel = "ml"
@@ -452,7 +452,7 @@ func TestBuildDescriptionEnglish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildDescription: %v", err)
 		}
-		want := "[ML experimental] " + descJoin(
+		want := descJoin(
 			"💚 Kernel : 96% - 3850 mAh • ♻️ Cycles : 210",
 			"📏 Actual : 90% - 3600±16 mAh",
 		)
@@ -492,12 +492,12 @@ func TestBuildDescriptionChineseDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDescription: %v", err)
 	}
-	want = "[ML实验版]" + descJoin(
+	want = descJoin(
 		"💚 内核 : 96% - 3850 mAh • ♻️ 循环 : 210次",
 		"📏 实测 : 90% - 3600 mAh",
 	)
 	if canonicalDesc(got) != canonicalDesc(want) {
-		t.Fatalf("got %q, want %q", got, want)
+		t.Fatalf("ML 通道描述不应带前缀: got %q, want %q", got, want)
 	}
 }
 
