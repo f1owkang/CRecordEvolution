@@ -62,7 +62,7 @@ If you flashed the wrong build but have not rebooted yet, simply flash the corre
 
 ### Notes
 
-- Both variants share the same id and name, and are mutually exclusive; the ML build is marked by the `[ML experimental]` prefix on the module description;
+- Both variants share the same id and name, and are mutually exclusive; the ML build is marked by the `-ML` suffix in the module **Version** field (and by the asset name), so the module description stays identical to the stable build;
 - Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
 - Reboot soon after upgrading: until then the old daemon keeps writing with the old units, and Settings shows "Updated — restart to apply";
 - Older Magisk versions have no Action button; wait for a reboot;

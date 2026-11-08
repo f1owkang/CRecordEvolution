@@ -6,7 +6,7 @@
 
 ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），用 Go 二进制 `batteryd` 读取电池 sysfs、结合充电会话估算健康度与容量，并把结果写入管理器的模块描述；模块自带一个三页 WebUI（概览 / 历史 / 设置），数据保存在本机 SQLite。
 
-**全项目有且仅有两种叫法**：`CRecordEvolution`（模块 id、安装路径与数据目录、资产名前缀、代码标识符）与 `ChargingRecord Evolution`（展示名：`module.prop`/`module.yaml` 的 `name`、README 标题、WebUI 标题与关于卡、发布标题）。文档、UI、工作流新增文案只能用这两种，不要写 `ChargingRecord`、`Charging Record`、`ChargingRecord Evolution ML` 之类的变体；ML 变体与 stable 同名，只靠 description 前缀 `[ML实验版]` 和资产名区分，**不改 `name`**。不属于展示名的历史遗留保持原样：旧模块 id `Charging_Record`（README 升级提示、`describe_test.go` 夹具）与 `go.mod` 的模块路径 `charging_record`。
+**全项目有且仅有两种叫法**：`CRecordEvolution`（模块 id、安装路径与数据目录、资产名前缀、代码标识符）与 `ChargingRecord Evolution`（展示名：`module.prop`/`module.yaml` 的 `name`、README 标题、WebUI 标题与关于卡、发布标题）。文档、UI、工作流新增文案只能用这两种，不要写 `ChargingRecord`、`Charging Record`、`ChargingRecord Evolution ML` 之类的变体；ML 变体与 stable 同名，只靠 `version` 后缀 `-ML`（模块 Version 字段）和资产名区分，**不改 `name`**，模块描述保持与 stable 一致的纯状态卡。不属于展示名的历史遗留保持原样：旧模块 id `Charging_Record`（README 升级提示、`describe_test.go` 夹具）与 `go.mod` 的模块路径 `charging_record`。
 
 - 业务逻辑全部在 `cmd/batteryd/`；`service.sh`、`action.sh`、`customize.sh` 只是 POSIX sh 引导/交互壳，由 root 管理器执行。
 - WebUI 源码在 `webui/`（Preact + Vite，ES module/JSX），构建到 `webroot/`（生成目录，不提交）。
@@ -18,7 +18,7 @@ ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），�
 | 变体 | 构建差异 | 产物 |
 | :-- | :-- | :-- |
 | stable | 默认构建（`channel=stable`） | `CRecordEvolution-{versionCode}-{version}.zip` |
-| ML 实验版 | 注入 `-X main.channel=ml`；CI 只在 description 前加 `[ML实验版]`、删 `updateJson`，`name` 不变 | `CRecordEvolution_ML-{versionCode}-{version}.zip` |
+| ML 实验版 | 注入 `-X main.channel=ml`；CI 把 `version` 改成 `{version}-ML`、删 `updateJson`，`name`/`versionCode` 不变 | `CRecordEvolution_ML-{versionCode}-{version}.zip` |
 
 两个变体 id、名称相同，互斥安装；`updateJson` 只指向 stable，ML 只能手动刷入。
 
@@ -106,7 +106,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - Go 用 `uiText`/`uiKV`；WebUI 用 `LANGS` + `LangCtx` 的 `t()`/`plural()`（两份字典同时补 key，组件禁止硬编码中文）；shell 用 `L()`/`T`。内部日志、events、stderr 保持中文。
 - 数字与复合单位留空格（`%d mAh`、`%d ℃`）；中文百分号/量词紧跟数字（`健康 92%`、`循环 210次`）。英文描述用 ` | `、中文用「｜」；日期按语言分流（`fmtTs`/`fmtRange`）。
 - 英文单复数必须走 `plural(lang, n, oneKey, manyKey)`（如 `hist_records_count_one` + `hist_records_count`），不要手写 `{n} records` 让 1 条显示成 "1 records"。
-- 模块描述是两行状态卡：`💚 内核 : 92% - 6700 mAh • ♻️ 循环 : 301次` / `📏 实测 : 90% - 6300 mAh • 🌡️ 温度 : 41.1℃`（英文 `Kernel`/`Cycles`/`Actual`/`Temp`；`Kernel` 与 `Actual` 同为 6 字符、字宽几乎相等，所以第一列数值不靠字体相关的补位也能对齐；其余标签 `满充`/`设计`/`Full charge`/`Design`）。分段固定为「图标 标签 : 数值」，格间中文/英文都用 ` • `，数值内 `% - mAh`。**对齐靠 `descRuneEm`（Roboto Regular 实测字宽，em 千分位）＋ Compose 字距 `descLetterEm`（KSU/Magisk bodyMedium 0.25sp/14sp、APatch bodySmall 0.4sp/12sp，每字符都加）**：同列标签补空格让数值同列、第一格补到等宽让 ` • ` 同列、行尾补到等宽；中文标签等宽天然对齐，英文 `Kernel`/`Measured`、`Cycles`/`Temp` 靠字宽差补位（残差 <1 空格 ≈1.5dp，OEM 字体可能略差）。KernelSU/APatch 写**转义 `\n`**（java-properties 会还原成真实 LF，Android 的 `PrecomputedText` 只按 `\n` 切段，U+2028 不换行）；Magisk 不还原转义，退化成单行「行1 · 行2」且不补位。管理器按 `/data/adb/ksu`、`/data/adb/apatch`、`/data/adb/magisk` 探测（测试用 `managerKindForDesc` 覆盖）。**宽度自适应**：`descAvailableEm()` 读 `wm size`（优先 Override size）、`wm density`（优先 Override density）与 `settings get system font_scale`，按 `(dp−64)/font_scale/14sp` 折成可用 em（进程内缓存一次；读不到按 360dp）。标签逐级裁剪：全标签 → 紧凑（去掉循环/温度标签，只留图标）→ 仅图标。实测阈值（em 千分位，中文/英文）：全标签 19569/21656、紧凑 16669/17696、仅图标 13877/13956；即 393dp 屏两者全标签，360dp 屏中文全标签、英文紧凑，360dp+1.15× 字体中文紧凑、英文仅图标。`[ML实验版]` 前缀计入宽度。**`module.prop` 不得写真实 CR/LF**（`WriteModuleProp` 负责清洗）。
+- 模块描述是两行状态卡：`💚 内核 : 92% - 6700 mAh • ♻️ 循环 : 301次` / `📏 实测 : 90% - 6300 mAh • 🌡️ 温度 : 41.1℃`（英文 `Kernel`/`Cycles`/`Actual`/`Temp`；`Kernel` 与 `Actual` 同为 6 字符、字宽几乎相等，所以第一列数值不靠字体相关的补位也能对齐；其余标签 `满充`/`设计`/`Full charge`/`Design`）。分段固定为「图标 标签 : 数值」，格间中文/英文都用 ` • `，数值内 `% - mAh`。**对齐靠 `descRuneEm`（Roboto Regular 实测字宽，em 千分位）＋ Compose 字距 `descLetterEm`（KSU/Magisk bodyMedium 0.25sp/14sp、APatch bodySmall 0.4sp/12sp，每字符都加）**：同列标签补空格让数值同列、第一格补到等宽让 ` • ` 同列、行尾补到等宽；中文标签等宽天然对齐，英文 `Kernel`/`Measured`、`Cycles`/`Temp` 靠字宽差补位（残差 <1 空格 ≈1.5dp，OEM 字体可能略差）。KernelSU/APatch 写**转义 `\n`**（java-properties 会还原成真实 LF，Android 的 `PrecomputedText` 只按 `\n` 切段，U+2028 不换行）；Magisk 不还原转义，退化成单行「行1 · 行2」且不补位。管理器按 `/data/adb/ksu`、`/data/adb/apatch`、`/data/adb/magisk` 探测（测试用 `managerKindForDesc` 覆盖）。**宽度自适应**：`descAvailableEm()` 读 `wm size`（优先 Override size）、`wm density`（优先 Override density）与 `settings get system font_scale`，按 `(dp−64)/font_scale/14sp` 折成可用 em（进程内缓存一次；读不到按 360dp）。标签逐级裁剪：全标签 → 紧凑（去掉循环/温度标签，只留图标）→ 仅图标。实测阈值（em 千分位，中文/英文）：全标签 19569/21656、紧凑 16669/17696、仅图标 13877/13956；即 393dp 屏两者全标签，360dp 屏中文全标签、英文紧凑，360dp+1.15× 字体中文紧凑、英文仅图标。描述不再带 ML 前缀（通道见 Version 字段的 `-ML` 后缀），宽度只按状态卡计算。**`module.prop` 不得写真实 CR/LF**（`WriteModuleProp` 负责清洗）。
 
 ### 文档
 
