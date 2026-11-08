@@ -51,7 +51,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 无 Android 真机：root 管理器执行脚本、KSU/APatch/MMRL WebView 的 `exec`/edge-to-edge/CSP、Magisk 安装升级流程只能通读推演；涉及这些路径必须声明「未在真机验证」并给最小验证步骤。
 
 - 改 Go 逻辑必须补/改测试，`go test ./...` 全绿、`go vet ./...` 通过。
-- 改 shell 至少 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义「修正」POSIX sh，不在 Windows 跑安装流程。安装器**不选语言**（跟随系统/旧偏好），保留一步音量键确认安装；读不到 `getevent`/`timeout` 时自动安装、不能误取消。
+- 改 shell 至少 `bash -n customize.sh action.sh service.sh`；不要用 bash 语义「修正」POSIX sh，不在 Windows 跑安装流程。安装器**不选语言**（跟随系统/旧偏好）；**安装确认按风险分级**：普通升级/同版本重刷/首次安装直接进行，只有降级或 stable↔ML 跨通道才要求音量键确认；读不到 `getevent`/`timeout` 时自动安装并打印警告、不能误取消。
 - 改 shell/元数据（三个 `.sh`、`module.prop`、`module.yaml`、`module.json`、`update.json`、`package.json`）会触发 CI 的 `meta` 工作流：bash 语法、CRLF、module.prop 必填键与 id/version/versionCode 格式、`package.json` 与 `module.prop` 版本一致、JSON/YAML 可解析。本地可照 `meta.yml` 的步骤自查；**改版本号必须同时改 `package.json`**，否则 CI 直接失败。
 - 改 `module.yaml`/`module.json` 后用 YAML/JSON 解析器校验；改 README 任一侧同步另一侧并检查标题锚点。
 - 本地打包确认 `.sh`、`module.prop`、`META-INF` 文本是 LF（CRLF 会让 mksh 报 `: not found`/`syntax error`）。
@@ -77,8 +77,11 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - shebang 固定 `#!/system/bin/sh`；不用数组、`[[`、`local` 等 bash 特性；变量加引号，路径用 `$MODPATH`/`$MODDIR`。
 - 输出走 `ui_print`（缺失回退 `echo`），取消用 `abort`（缺失才 `exit 1`）；安装器总输出约 8~14 行。
-- 安装器不再选择语言（2026-11 按 issue #9 定稿）：语言跟随系统/旧 `data/lang`（探测不到回退英文），安装器不写 `data/lang`；**保留一步安装确认**（音量+ 安装 / 音量- 取消，30 秒超时取消）。应用内安装与恢复模式用同一套按键，**不按 BOOTMODE/管理器类型跳过**（2026-10 实机确认 LSPosed/Zygisk 系在 App 内也能读音量键）。只有读不到 `getevent`/`timeout` 时才自动安装，绝不能误取消。
-- `read_key` 只采纳 `DOWN`，忽略 `UP`/`SYN`（否则一次按键的抬起会被当成两次）。回归：按一次取消。
+- 安装器不再选择语言（2026-11 按 issue #9 定稿）：语言跟随系统/旧 `data/lang`（探测不到回退英文），安装器不写 `data/lang`。
+- **安装确认按风险分级**（2026-11 issue #9 讨论后定稿）：首次安装、普通升级（versionCode 变大）、同版本同通道重刷都直接安装，不读音量键（管理器自己已有安装确认，KernelSU/APatch 有模块信息弹窗；Magisk App/recovery 无，但普通安装仍不额外打断）。只有检测到**降级**（目标 versionCode 更小）或 **stable ↔ ML 跨通道**时，才打印「已安装 vX(code) 通道 → 本次 vY(code) 通道」并要求音量键确认（音量+ 继续 / 音量- 取消，30 秒超时取消）。
+- 通道判定：`module.prop` 有 `updateJson=` 行 = stable，没有 = ML（CI 打包 ML 时删掉该行）；`versionCode` 非数字/读不到时不比较。
+- 应用内安装与恢复模式用同一套按键，**不按 BOOTMODE/管理器类型跳过**（2026-10 实机确认 LSPosed/Zygisk 系在 App 内也能读音量键）。只有读不到 `getevent`/`timeout` 时才自动安装，绝不能误取消；风险场景同样打印警告后继续。
+- `read_key` 只采纳 `DOWN`，忽略 `UP`/`SYN`（否则一次按键的抬起会被当成两次）。回归：风险确认时按一次取消。
 - `SKIPUNZIP=0` 时已解压到 `$MODPATH`，不要重复 `unzip`，仅缺 `module.prop` 时兜底一次。
 - 只发 arm64：用 `$ARCH` 门控（缺失跳过），非 arm64 直接失败。
 - 交互文案走 `T`/`L`，语言探测顺序与 `i18n.go` 一致（升级沿用 `data/lang`，否则系统语言，探测不到回退英文）；不把逻辑改动混进文案替换。
@@ -123,7 +126,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | 路径 | 用途 |
 | :-- | :-- |
 | `cmd/batteryd/` | Go daemon：采样、结算、容量估计、SQLite、description、各子命令 |
-| `service.sh` / `action.sh` / `customize.sh` | 启动壳 / Action 跑一次 `once` / 安装确认（音量键）安装器 |
+| `service.sh` / `action.sh` / `customize.sh` | 启动壳 / Action 跑一次 `once` / 风险分级确认安装器 |
 | `webui/` → `webroot/` | WebUI 源码（Vite）→ 构建产物（进 zip，不提交） |
 | `scripts/` | 离线扫描、gzip 体积检查、无头冒烟（`smoke.mjs`）、README 截图（`screenshots.mjs`） |
 | `module.prop` / `module.yaml` / `module.json` / `update.json` | 模块元数据与 KernelSU 展示/更新（`assetPattern` 只匹配 stable） |

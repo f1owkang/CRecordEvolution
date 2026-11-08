@@ -56,7 +56,9 @@ Requires Magisk v20.4+, KernelSU, or APatch (arm64 only). Download from [Release
 
 ### Flashing
 
-Pick the zip in your manager and confirm the install with the volume keys (Volume Up = install, Volume Down = cancel, 30 s timeout = cancel); the UI language follows the phone language automatically. Reboot when done.
+Pick the zip in your manager. First installs, normal upgrades and reinstalls of the same build proceed without extra prompts — the manager already asks for its own confirmation. The installer only asks for a volume-key confirmation when it detects a **downgrade** or a **stable ↔ ML channel switch**, and shows the installed vs incoming version/channel first (Volume Up = continue, Volume Down = cancel, 30 s timeout = cancel). The UI language follows the phone language automatically. Reboot when done.
+
+If you flashed the wrong build but have not rebooted yet, simply flash the correct zip again: the wrong binary never starts, so you still only reboot once.
 
 ### Notes
 
