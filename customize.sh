@@ -2,7 +2,8 @@
 # 脚本编写感谢 酷安@阿巴酱
 SKIPUNZIP=0
 
-# 安装器输出控制在 8~14 行：标题/说明、设备、自动安装说明、结果、一条提示。
+# 安装器输出控制在 8~14 行：标题/说明、设备、结果、一条提示；只有降级或
+# 跨通道（stable ↔ ML）时才追加「已安装 → 本次」对比与音量键确认。
 # 管理器提供 ui_print（recovery 控制台可见）时优先使用，否则退回 echo。
 say()
 {
@@ -47,7 +48,9 @@ esac
 device=`getprop ro.product.device 2>/dev/null`
 android=`getprop ro.build.version.release 2>/dev/null`
 [ -n "$android" ] && android="Android $android"
-oldlang=`cat "/data/adb/modules/$modid/data/lang" 2>/dev/null | tr -d '\r\n'`
+oldmod="/data/adb/modules/$modid"
+oldprop="$oldmod/module.prop"
+oldlang=`cat "$oldmod/data/lang" 2>/dev/null | tr -d '\r\n'`
 
 # 文案语言：升级沿用旧 data/lang，否则跟随系统（顺序与 i18n.go 一致），
 # 探测不到时回退英文（与 i18n.go / boot.js 的兜底一致）。
@@ -113,24 +116,72 @@ say "$(L "用充电会话估算电池健康与容量" "Battery health & capacity
 rule
 say "$(L "设备：" "Device: ")${device:-unknown}${android:+ · $android}"
 
-# 语言跟随系统/旧偏好，不再单独选择；只保留一步安装确认。
-# 应用内安装与恢复模式用同一套按键，不按 BOOTMODE/管理器类型跳过。
-if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-	say "$(L "确认安装（30 秒后取消）" "Confirm install (30s → cancel)")"
-	say "$(L "    音量+ 安装 / 音量- 取消" "    Volume+ install / Volume- cancel")"
-	case `read_key 10` in
-	UP) ;;
-	*) die "$(L "已取消安装" "Installation cancelled")" ;;
+# 安装确认按风险分级：普通升级、同版本重刷、首次安装直接进行（管理器自己
+# 已有一次安装确认）；只有「降级」或「stable ↔ ML 跨通道」才要求音量键确认，
+# 并显示已安装版本/通道与本次 zip 的对比。
+# 应用内安装与恢复模式仍用同一套按键，不按 BOOTMODE/管理器类型跳过。
+oldver=""
+oldcode=""
+oldch=""
+if [ -f "$oldprop" ]; then
+	oldver=`grep '^version=' "$oldprop" | cut -d= -f2- | tr -d '\r'`
+	oldcode=`grep '^versionCode=' "$oldprop" | cut -d= -f2- | tr -d '\r'`
+	# stable 包带 updateJson，ML 包在 CI 里删掉该行：这是安装态的可靠通道差异。
+	if grep -q '^updateJson=' "$oldprop"; then oldch=stable; else oldch=ml; fi
+fi
+newch=stable
+grep -q '^updateJson=' "$MODPATH/module.prop" || newch=ml
+
+ch_name()
+{
+	case "$1" in
+	ml) L "ML实验版" "ML experimental" ;;
+	*) printf 'stable' ;;
 	esac
-else
-	say "$(L "未检测到按键工具，自动安装" "No key tools detected; installing automatically")"
+}
+
+need_confirm=0
+risk_zh=""
+risk_en=""
+old_num=0
+new_num=0
+case "$oldcode" in ""|*[!0-9]*) ;; *) old_num=1 ;; esac
+case "$modcode" in ""|*[!0-9]*) ;; *) new_num=1 ;; esac
+if [ "$old_num" = 1 ] && [ "$new_num" = 1 ] && [ "$modcode" -lt "$oldcode" ]; then
+	need_confirm=1
+	risk_zh="降级"
+	risk_en="a downgrade"
+fi
+if [ -n "$oldch" ] && [ "$oldch" != "$newch" ]; then
+	if [ "$need_confirm" = 1 ]; then
+		risk_zh="降级并切换通道"
+		risk_en="a downgrade + channel switch"
+	else
+		risk_zh="切换通道"
+		risk_en="a channel switch"
+	fi
+	need_confirm=1
+fi
+
+if [ "$need_confirm" = 1 ]; then
+	say "$(L "已安装：v${oldver:-?}(${oldcode:-?}) $(ch_name "$oldch")" "Installed: v${oldver:-?}(${oldcode:-?}) $(ch_name "$oldch")")"
+	say "$(L "本次刷入：v$modver($modcode) $(ch_name "$newch")" "This package: v$modver($modcode) $(ch_name "$newch")")"
+	if command -v getevent >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+		say "$(L "检测到$risk_zh（30 秒后取消）" "Detected $risk_en (30s → cancel)")"
+		say "$(L "    音量+ 继续安装 / 音量- 取消" "    Volume+ continue / Volume- cancel")"
+		case `read_key 10` in
+		UP) ;;
+		*) die "$(L "已取消安装" "Installation cancelled")" ;;
+		esac
+	else
+		say "$(L "未检测到按键工具，仍继续安装" "No key tools detected; continuing")"
+	fi
 fi
 
 say "$(L "正在写入模块…" "Installing module...")"
 
 # 保留旧学习数据；失败不阻断安装，也不谎报“已保留”。
 kept=0
-oldmod="/data/adb/modules/$modid"
 if [ "$oldmod" != "$MODPATH" ] && [ -d "$oldmod/data" ]; then
 	mkdir -p "$MODPATH/data"
 	cp -a "$oldmod/data/." "$MODPATH/data/" 2>/dev/null && kept=1
