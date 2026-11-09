@@ -7,9 +7,20 @@
 html {
   -webkit-text-size-adjust: 100%;
   background: var(--bg);
+  /* 页面滚动交给 #app；html/body 固定为视口高度且不滚动，
+     这样 Android WebView 的根节点橡皮筋不会带动 fixed 底栏。 */
+  height: 100%;
+  overflow: hidden;
+  overflow-anchor: none;
+  overscroll-behavior: none;
 }
 body {
   -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+#root {
+  height: 100%;
 }
 button,
 .navitem,
@@ -72,6 +83,11 @@ button:focus-visible {
   --nav-ind-fg: var(--accent);
   --nav-fg: var(--mute);
   --nav-active-label: var(--fg);
+
+  /* 顶栏展开/折叠：由 useCollapsingTopbar 按滚动位置连续写入。 */
+  --tb-bg-scale: 1;
+  --tb-title-y: 0px;
+  --tb-title-scale: 1;
 
   /* 系统栏安全区回退链：新版 KSU 动态注入 --safe-area-inset-*，
      旧版 insets.css 提供 --window-inset-*，浏览器兜底 env()，最后 0 */
@@ -224,12 +240,34 @@ body {
     'PingFang SC',
     'Microsoft YaHei',
     sans-serif;
-  min-height: 100vh;
-  min-height: 100dvh;
-  padding: 0 0 calc(104px + var(--inset-bottom));
+  height: 100%;
 }
-html[data-bar='classic'] body {
-  padding-bottom: calc(76px + var(--inset-bottom));
+/* 唯一滚动容器：内容滚在这里，顶栏/底栏都在它外面保持 fixed。
+   顶部留白按展开态顶栏高度预留，折叠时内容不会被 reflow。 */
+#app {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: none;
+  overflow-anchor: none;
+  padding-top: calc(var(--inset-top) + 100px);
+  padding-bottom: calc(104px + var(--inset-bottom));
+  scrollbar-width: none;
+  scroll-timeline-name: --cre-page;
+  scroll-timeline-axis: block;
+}
+@media (prefers-reduced-motion: reduce) {
+  #app {
+    padding-top: calc(var(--inset-top) + 58px);
+  }
+}
+#app::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+html[data-bar='classic'] #app {
+  padding-bottom: calc(80px + var(--inset-bottom));
 }
 .pagewrap {
   max-width: 480px;
@@ -238,61 +276,110 @@ html[data-bar='classic'] body {
   padding: 14px calc(16px + var(--inset-right)) 8px calc(16px + var(--inset-left));
 }
 
-/* 顶部应用栏：sticky 吸顶，背景铺到状态栏下方（玻璃顶栏） */
+/* 顶部应用栏：fixed，背景/标题折叠只动画 transform（合成层），不再改
+   height/padding/font-size；因此滚动时不会触发页面 reflow，也不会像
+   backdrop-filter 那样每帧重采样滚动内容。 */
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 60;
-  padding: calc(10px + var(--inset-top)) calc(16px + var(--inset-right)) 10px
-    calc(16px + var(--inset-left));
-  background: var(--bg);
-  border-bottom: 1px solid var(--border-soft);
+  height: calc(var(--inset-top) + 100px);
+  background: transparent;
+  pointer-events: none;
 }
-@supports (background: color-mix(in srgb, white, transparent)) {
-  .topbar {
-    background: color-mix(in srgb, var(--bg) 82%, transparent);
-    -webkit-backdrop-filter: blur(18px) saturate(1.2);
-    backdrop-filter: blur(18px) saturate(1.2);
-  }
+.topbar-status {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--inset-top);
+  background: var(--bg);
+}
+.topbar-bg {
+  position: absolute;
+  top: var(--inset-top);
+  left: 0;
+  right: 0;
+  height: 100px;
+  background: var(--bg);
+  transform-origin: top center;
+  transition: box-shadow 160ms ease-out;
+}
+/* 和 LSPosed 的 appBar.setLifted 一致：离顶后给顶栏一点 elevation。 */
+html[data-scrolled='1'] .topbar-bg {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    0 6px 16px rgba(0, 0, 0, 0.08);
 }
 .topbar-inner {
+  position: absolute;
+  top: calc(var(--inset-top) + 48px);
+  left: 0;
+  right: 0;
   max-width: 480px;
   margin: 0 auto;
+  height: 40px;
+  padding: 0 calc(16px + var(--inset-right)) 0 calc(16px + var(--inset-left));
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 38px;
 }
 #pageTitle {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 20px;
+  font-size: 28px;
+  line-height: 1.2;
   font-weight: 700;
   letter-spacing: 0.2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transform-origin: left center;
 }
-.iconbtn {
-  flex: 0 0 auto;
-  width: 38px;
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--card);
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  font-family: inherit;
+/* JS 兜底：只写 transform 变量。 */
+html.tb-fallback .topbar-bg {
+  transform: scaleY(var(--tb-bg-scale));
 }
-.iconbtn:active {
-  transform: scale(0.94);
+html.tb-fallback #pageTitle {
+  transform: translateY(var(--tb-title-y)) scale(var(--tb-title-scale));
 }
-.iconbtn:disabled {
-  opacity: 0.5;
-  cursor: default;
+/* 支持 Scroll-driven Animations 时交给合成线程，主线程完全不参与逐帧更新。 */
+@keyframes tb-bg-collapse {
+  from {
+    transform: scaleY(1);
+  }
+  to {
+    transform: scaleY(0.58);
+  }
+}
+@keyframes tb-title-collapse {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(-39px) scale(0.7142857);
+  }
+}
+html.tb-scroll-driven .topbar-bg {
+  animation: tb-bg-collapse linear both;
+  animation-timeline: --cre-page;
+  animation-range: 0 72px;
+}
+html.tb-scroll-driven #pageTitle {
+  animation: tb-title-collapse linear both;
+  animation-timeline: --cre-page;
+  animation-range: 0 72px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topbar-bg {
+    transform: scaleY(0.58) !important;
+    animation: none !important;
+  }
+  #pageTitle {
+    transform: translateY(-39px) scale(0.7142857) !important;
+    animation: none !important;
+  }
 }
 .icon {
   display: block;
@@ -307,10 +394,6 @@ html[data-bar='classic'] body {
   mask-size: contain;
   mask-repeat: no-repeat;
 }
-.icon-refresh {
-  -webkit-mask-image: url('./assets/icons/refresh.svg');
-  mask-image: url('./assets/icons/refresh.svg');
-}
 .icon-overview {
   -webkit-mask-image: url('./assets/icons/overview.svg');
   mask-image: url('./assets/icons/overview.svg');
@@ -323,13 +406,10 @@ html[data-bar='classic'] body {
   -webkit-mask-image: url('./assets/icons/settings.svg');
   mask-image: url('./assets/icons/settings.svg');
 }
-.iconbtn.spinning .icon {
-  animation: spin 900ms linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* M3 navigation bar：选中态用 filled Material Symbols（没有 fill 变体的图标沿用 outlined）。 */
+.navitem.is-active .icon-settings {
+  -webkit-mask-image: url('./assets/icons/settings-active.svg');
+  mask-image: url('./assets/icons/settings-active.svg');
 }
 
 /* 页面容器：三页用 display 切换，激活时淡入上浮 */
@@ -340,12 +420,12 @@ html[data-bar='classic'] body {
 }
 .page.is-active {
   display: flex;
-  animation: pageIn 200ms ease-out;
+  animation: pageIn 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 @keyframes pageIn {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -614,6 +694,7 @@ html[data-bar='classic'] body {
 .chip {
   flex: 0 0 auto;
   height: 40px;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -660,6 +741,8 @@ html[data-bar='classic'] body {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   gap: 7px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 .tl-rail {
   position: relative;
@@ -697,10 +780,14 @@ html[data-bar='classic'] body {
 .tl-card {
   min-width: 0;
   padding: 10px 12px;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--card);
   cursor: pointer;
+}
+.tl-card:active {
+  transform: scale(0.995);
 }
 .tl-card.is-invalid {
   opacity: 0.78;
@@ -728,6 +815,9 @@ html[data-bar='classic'] body {
   border-bottom: 1.5px solid var(--mute);
   transform: rotate(45deg);
   transition: transform 0.15s ease;
+}
+.tl-chev {
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 .tl-card.is-open .tl-chev {
   transform: rotate(225deg);
@@ -777,6 +867,7 @@ html[data-theme='light'] .pill.warn {
   padding-top: 9px;
   border-top: 1px solid var(--border-soft);
   font-size: 12px;
+  animation: softIn 140ms cubic-bezier(0.2, 0, 0, 1);
 }
 .tl-det .k {
   color: var(--mute);
@@ -882,6 +973,7 @@ html[data-theme='light'] .pill.warn {
 .trend-tile {
   min-width: 0;
   padding: 9px 10px;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--card);
@@ -889,6 +981,9 @@ html[data-theme='light'] .pill.warn {
   font-family: inherit;
   color: var(--fg);
   cursor: pointer;
+}
+.trend-tile:active {
+  transform: scale(0.99);
 }
 .trend-tile.is-open {
   grid-column: 1 / -1;
@@ -914,6 +1009,7 @@ html[data-theme='light'] .pill.warn {
 }
 .trend-tile.is-open .trend-big {
   display: block;
+  animation: softIn 140ms cubic-bezier(0.2, 0, 0, 1);
 }
 .trend-empty {
   padding: 15px 0;
@@ -960,6 +1056,32 @@ html[data-theme='light'] .pill.warn {
     animation: none;
   }
 }
+@keyframes softIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page.is-active,
+  .tl-det,
+  .trend-tile.is-open .trend-big {
+    animation: none;
+  }
+  button,
+  .chip,
+  .seg-btn,
+  .navitem,
+  .tl-card,
+  .trend-tile {
+    transition: none;
+  }
+}
+
 @media (max-width: 360px) {
   .trend-grid {
     gap: 8px;
@@ -1049,6 +1171,7 @@ html[data-theme='light'] .pill.warn {
   flex: 1 1 0;
   min-width: 0;
   min-height: 40px;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   padding: 9px 6px;
   border: 0;
   border-radius: 9px;
@@ -1107,6 +1230,7 @@ html[data-theme='light'] .pill.warn {
 .navitem {
   position: relative;
   z-index: 1;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1125,6 +1249,10 @@ html[data-theme='light'] .pill.warn {
 .navitem .icon {
   width: 22px;
   height: 22px;
+  transition: transform 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+.navitem.is-active .icon {
+  transform: translateY(-1px);
 }
 .navitem.is-active {
   color: var(--nav-ind-fg);
@@ -1136,9 +1264,6 @@ html[data-theme='light'] .pill.warn {
 /* 传统底栏：Material 3 Navigation bar 规范（80dp 容器 / 24dp 图标 /
    12sp label / 64×32dp 激活指示器 = secondaryContainer，图标 onSecondaryContainer，
    激活 label onSurface、未激活 onSurfaceVariant）。 */
-html[data-bar='classic'] body {
-  padding-bottom: calc(80px + var(--inset-bottom));
-}
 html[data-bar='classic'] .dock {
   left: 0;
   right: 0;
@@ -1235,6 +1360,7 @@ html[data-bar='classic'] .navitem.is-active::before {
 /* 设置页“立即刷新”按钮（设置页隐藏顶部刷新按钮，改用页内主按钮） */
 button#refresh {
   width: 100%;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   background: var(--btn);
   color: var(--btn-fg);
   border: none;
@@ -1247,6 +1373,10 @@ button#refresh {
 }
 button#refresh:hover:not(:disabled) {
   background: var(--btn-hover);
+}
+button#refresh:active:not(:disabled),
+button#diag:active:not(:disabled) {
+  transform: scale(0.98);
 }
 button#refresh:disabled {
   opacity: 0.55;
@@ -1261,6 +1391,7 @@ button#refresh:disabled {
 }
 button#diag {
   width: 100%;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
   background: var(--btn);
   color: var(--btn-fg);
   border: none;

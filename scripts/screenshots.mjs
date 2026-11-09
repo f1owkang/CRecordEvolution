@@ -299,7 +299,11 @@ window.ksu = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function shoot(page, name) {
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(() => {
+    const el = document.getElementById('app');
+    if (el) el.scrollTop = 0;
+    else window.scrollTo(0, 0);
+  });
   await sleep(350);
   // scale:'css'：按 CSS 像素输出 390 宽（DSF=2 只用于渲染锐度）
   await page.screenshot({ path: join(OUT, name), scale: 'css' });

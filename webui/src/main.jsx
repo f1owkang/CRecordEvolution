@@ -6,18 +6,28 @@ import { LangCtx, TopBar, Overview, Settings, Dock, Gate, ErrorBanner } from './
 import { History } from './history/index.js';
 import { useDocPolling } from './useDocPolling.js';
 import { useUiPrefs } from './useUiPrefs.js';
+import { useCollapsingTopbar } from './useCollapsingTopbar.js';
 import './app.css';
 
 const HAS_HOST_EXEC = hasExec();
 
-// 两个渲染分支共用的外壳：LangCtx + 顶栏 + pagewrap；gate 分支没有底栏。
+// 页面滚动发生在 #app 内部：html/body 固定为视口高度且不滚动，
+// 避免 Android WebView 的根节点橡皮筋把 fixed 底栏一起带动。
+function appScroller() {
+  return document.getElementById('app');
+}
+
+// 两个渲染分支共用的外壳：顶栏 fixed 在滚动容器外，页面内容在 #app 内滚动。
+// 这样顶栏折叠时只重排顶栏自身，不会每帧带着整页内容一起 reflow。
 function AppShell({ value, topbar, dock, children }) {
   return (
     <LangCtx.Provider value={value}>
-      {topbar}
-      <main>
-        <div class="pagewrap">{children}</div>
-      </main>
+      <div id="app" class="app-scroll">
+        {topbar}
+        <main>
+          <div class="pagewrap">{children}</div>
+        </main>
+      </div>
       {dock}
     </LangCtx.Provider>
   );
@@ -38,6 +48,7 @@ function App() {
     setBarMode,
   } = useUiPrefs();
   const { doc, err, busy, histReload, refreshNow } = useDocPolling();
+  useCollapsingTopbar();
 
   const [page, setPage] = useState(0);
   const scrollPos = useRef([0, 0, 0]);
@@ -50,9 +61,8 @@ function App() {
     function () {
       document.title =
         page === 0
-          ? 'ChargingRecord Evolution'
-          : translate(lang, page === 1 ? 'page_history' : 'page_settings') +
-            ' · ChargingRecord Evolution';
+          ? 'CRecord Evolution'
+          : translate(lang, page === 1 ? 'page_history' : 'page_settings') + ' · CRecord Evolution';
     },
     [lang, page]
   );
@@ -66,8 +76,10 @@ function App() {
         raf2 = 0;
       raf1 = requestAnimationFrame(function () {
         raf2 = requestAnimationFrame(function () {
+          const el = appScroller();
           try {
-            window.scrollTo(0, y);
+            if (el) el.scrollTo(0, y);
+            else window.scrollTo(0, y);
           } catch (e) {}
         });
       });
@@ -80,21 +92,24 @@ function App() {
   );
 
   function goPage(i) {
+    const el = appScroller();
     if (i === page) {
       try {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+        else window.scrollTo({ top: 0, behavior: 'smooth' });
       } catch (e) {
-        window.scrollTo(0, 0);
+        if (el) el.scrollTop = 0;
+        else window.scrollTo(0, 0);
       }
       return;
     }
-    scrollPos.current[page] = window.scrollY || 0;
+    scrollPos.current[page] = el ? el.scrollTop : window.scrollY || 0;
     setPage(i);
   }
 
   if (!HAS_HOST_EXEC) {
     return (
-      <AppShell value={ctx} topbar={<TopBar page={0} busy={false} gateMode onRefresh={null} />}>
+      <AppShell value={ctx} topbar={<TopBar page={0} />}>
         <Gate />
       </AppShell>
     );
@@ -103,7 +118,7 @@ function App() {
   return (
     <AppShell
       value={ctx}
-      topbar={<TopBar page={page} busy={busy} gateMode={false} onRefresh={refreshNow} />}
+      topbar={<TopBar page={page} />}
       dock={<Dock page={page} onNavigate={goPage} />}
     >
       <ErrorBanner err={err} />

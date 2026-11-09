@@ -20,26 +20,14 @@ function TopBar(props) {
   const { t, lang } = useTr();
   const title =
     props.page === 0
-      ? 'ChargingRecord Evolution'
+      ? 'CRecord Evolution'
       : translate(lang, props.page === 1 ? 'page_history' : 'page_settings');
-  const showRefresh = !props.gateMode && props.page !== 2;
   return (
     <header class="topbar">
+      <div class="topbar-status" aria-hidden="true" />
+      <div class="topbar-bg" aria-hidden="true" />
       <div class="topbar-inner">
         <h1 id="pageTitle">{title}</h1>
-        {showRefresh ? (
-          <button
-            id="refreshTop"
-            type="button"
-            class={'iconbtn' + (props.busy ? ' spinning' : '')}
-            title={translate(lang, 'refresh')}
-            aria-label={translate(lang, 'refresh')}
-            disabled={props.busy}
-            onClick={props.onRefresh}
-          >
-            <Icon name="refresh" />
-          </button>
-        ) : null}
       </div>
     </header>
   );

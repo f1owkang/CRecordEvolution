@@ -362,16 +362,38 @@ window.ksu = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 页面滚动发生在 #app 内部（html/body 固定不滚）。
+async function appScrollTo(page, y) {
+  await page.evaluate((value) => {
+    const el = document.getElementById('app');
+    if (el) el.scrollTop = value;
+    else window.scrollTo(0, value);
+  }, y);
+}
+
+async function appScrollY(page) {
+  return page.evaluate(() => {
+    const el = document.getElementById('app');
+    return el ? el.scrollTop : window.scrollY;
+  });
+}
+
 // 截图前回到顶部，避免 Playwright 的 fullPage 把 fixed 底栏画在滚动后的位置
 async function shot(page, name) {
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await appScrollTo(page, 0);
   await sleep(250);
   await page.screenshot({ path: join(SHOTS, name), fullPage: true });
 }
 
 // 视口截图：展示固定底栏在 390×844 首屏里的真实观感（不做整页拼接）。
 async function shotView(page, name) {
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await appScrollTo(page, 0);
+  await sleep(250);
+  await page.screenshot({ path: join(SHOTS, name), fullPage: false });
+}
+
+// 保持当前滚动位置的视口截图（用于顶栏折叠状态）。
+async function shotNoScroll(page, name) {
   await sleep(250);
   await page.screenshot({ path: join(SHOTS, name), fullPage: false });
 }
@@ -447,6 +469,124 @@ try {
   check(
     (await page.locator('#page_overview .chart svg path[stroke-dasharray]').count()) === 1,
     '概览：估算趋势虚线'
+  );
+
+  // 顶栏 M3 Large Top App Bar：顶部展开、下滚折叠、回顶恢复。
+  const tbExpanded = await page.evaluate(() => {
+    const bar = document.querySelector('.topbar');
+    const bg = document.querySelector('.topbar-bg');
+    const title = document.querySelector('#pageTitle');
+    return {
+      barH: Math.round(bar.getBoundingClientRect().height),
+      bgH: Math.round(bg.getBoundingClientRect().height),
+      titleH: Math.round(title.getBoundingClientRect().height),
+      font: getComputedStyle(title).fontSize,
+      overflow: title.scrollWidth - title.clientWidth,
+      shadow: getComputedStyle(bg).boxShadow,
+    };
+  });
+  check(tbExpanded.font === '28px', '顶栏：顶部展开标题 28px', tbExpanded.font);
+  check(tbExpanded.bgH >= 95, '顶栏：展开态背景高度', `${tbExpanded.bgH}/${tbExpanded.barH}`);
+  check(tbExpanded.overflow <= 1, '顶栏：展开标题不截断', `overflow=${tbExpanded.overflow}`);
+  check(tbExpanded.shadow === 'none', '顶栏：顶部无 elevation', tbExpanded.shadow);
+  await shotView(page, 'topbar-expanded.png');
+  const contentBeforeCollapse = await page.evaluate(() => {
+    const el = document.querySelector('#page_overview .hero');
+    return {
+      top: el.getBoundingClientRect().top,
+      scroll: document.getElementById('app').scrollTop,
+    };
+  });
+  await appScrollTo(page, 150);
+  await page.waitForFunction(
+    () => {
+      const bg = document.querySelector('.topbar-bg');
+      return Math.abs(bg.getBoundingClientRect().height - 58) <= 1;
+    },
+    null,
+    { timeout: 10000 }
+  );
+  const contentAfterCollapse = await page.evaluate(() => {
+    const el = document.querySelector('#page_overview .hero');
+    return {
+      top: el.getBoundingClientRect().top,
+      scroll: document.getElementById('app').scrollTop,
+    };
+  });
+  check(
+    Math.abs(contentBeforeCollapse.top - contentAfterCollapse.top - 150) <= 1,
+    '顶栏：折叠只改顶栏，不 reflow 页面内容',
+    `${contentBeforeCollapse.top} → ${contentAfterCollapse.top}`
+  );
+  const tbCollapsed = await page.evaluate(() => {
+    const bg = document.querySelector('.topbar-bg');
+    const title = document.querySelector('#pageTitle');
+    return {
+      bgH: Math.round(bg.getBoundingClientRect().height),
+      titleH: Math.round(title.getBoundingClientRect().height),
+      font: getComputedStyle(title).fontSize,
+      shadow: getComputedStyle(bg).boxShadow,
+      scrolled: document.documentElement.getAttribute('data-scrolled'),
+      transform: getComputedStyle(title).transform,
+    };
+  });
+  check(tbCollapsed.font === '28px', '顶栏：折叠后字号不变（transform 缩放）', tbCollapsed.font);
+  check(
+    tbCollapsed.bgH <= 60,
+    '顶栏：折叠后背景高度变小',
+    `${tbCollapsed.bgH} < ${tbExpanded.bgH}`
+  );
+  check(
+    tbCollapsed.titleH < tbExpanded.titleH,
+    '顶栏：折叠后标题视觉变小',
+    `${tbCollapsed.titleH} < ${tbExpanded.titleH}`
+  );
+  check(tbCollapsed.transform !== 'none', '顶栏：折叠使用 transform', tbCollapsed.transform);
+  check(tbCollapsed.scrolled === '1', '顶栏：离顶标记');
+  check(tbCollapsed.shadow !== 'none', '顶栏：离顶后显示 elevation', tbCollapsed.shadow);
+  const scrollRoot = await page.evaluate(() => {
+    const app = document.getElementById('app');
+    return {
+      appTop: app.scrollTop,
+      winY: window.scrollY,
+      docTop: document.documentElement.scrollTop,
+      appOverflow: getComputedStyle(app).overflowY,
+      appOverscroll: getComputedStyle(app).overscrollBehaviorY,
+    };
+  });
+  check(scrollRoot.appTop > 100, '页面：滚动发生在 #app 内部', String(scrollRoot.appTop));
+  check(scrollRoot.winY === 0 && scrollRoot.docTop === 0, '页面：根文档不滚动');
+  check(scrollRoot.appOverflow === 'auto', '页面：#app 是滚动容器', scrollRoot.appOverflow);
+  check(scrollRoot.appOverscroll === 'none', '页面：#app 禁止橡皮筋回弹', scrollRoot.appOverscroll);
+  await shotNoScroll(page, 'topbar-collapsed.png');
+  await appScrollTo(page, 0);
+  await page.waitForFunction(
+    () => Math.abs(document.querySelector('.topbar-bg').getBoundingClientRect().height - 100) <= 1,
+    null,
+    { timeout: 10000 }
+  );
+  check(true, '顶栏：回顶重新展开');
+
+  // 底栏固定 + 根节点禁止 overscroll：到底部继续上滑时不能被 WebView 橡皮筋带动。
+  const scrollFx = await page.evaluate(() => {
+    const bar = document.querySelector('.dock');
+    const top = document.querySelector('.topbar');
+    const css = getComputedStyle(document.documentElement);
+    const bodyCss = getComputedStyle(document.body);
+    return {
+      position: getComputedStyle(bar).position,
+      topbarPosition: getComputedStyle(top).position,
+      overscrollHtml: css.overscrollBehaviorY,
+      overscrollBody: bodyCss.overscrollBehaviorY,
+      bottom: Math.round(bar.getBoundingClientRect().bottom),
+    };
+  });
+  check(scrollFx.position === 'fixed', '底栏：fixed 不随页面滚动', scrollFx.position);
+  check(scrollFx.topbarPosition === 'fixed', '顶栏：fixed 在滚动容器外', scrollFx.topbarPosition);
+  check(
+    scrollFx.overscrollHtml === 'none' && scrollFx.overscrollBody === 'none',
+    '底栏：根节点禁止橡皮筋回弹',
+    `${scrollFx.overscrollHtml}/${scrollFx.overscrollBody}`
   );
   check((await page.locator('#page_overview .hero-temp').count()) === 1, '概览：温度行在主卡内');
   const heroTemp = await page.locator('#page_overview .hero-temp').innerText();
@@ -570,9 +710,9 @@ try {
   ).length;
   const itemsBeforeSwitch = await page.locator('#page_history .tl-item').count();
   const detsBeforeSwitch = await page.locator('#page_history .tl-det').count();
-  await page.evaluate(() => window.scrollTo(0, 320));
+  await appScrollTo(page, 320);
   await sleep(120);
-  const scrollBeforeSwitch = await page.evaluate(() => window.scrollY);
+  const scrollBeforeSwitch = await appScrollY(page);
   check(scrollBeforeSwitch > 100, '历史：列表滚动到中部', String(scrollBeforeSwitch));
   await page.click('#nav_settings');
   await page.waitForSelector('#page_settings.is-active');
@@ -584,7 +724,7 @@ try {
   const histCallsAfterSwitch = (
     await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
   ).length;
-  const scrollAfterSwitch = await page.evaluate(() => window.scrollY);
+  const scrollAfterSwitch = await appScrollY(page);
   check(
     itemsBeforeSwitch === 10 && itemsAfterSwitch === itemsBeforeSwitch,
     '历史：切页返回保留第 2 页记录',
@@ -635,11 +775,19 @@ try {
   );
   check((await page.locator('#page_history .tl-item').count()) === 10, '历史：重试后加载更早成功');
 
-  // 手动刷新（reloadKey）仍必须重载：列表重置回第一页
+  // 手动刷新（reloadKey）仍必须重载：列表重置回第一页。
+  // 顶栏不再提供刷新按钮，改用设置页的「立即刷新」。
   const histCallsBeforeRefresh = (
     await page.evaluate(() => window.__crCommands.filter((c) => c.indexOf('history') >= 0))
   ).length;
-  await page.click('#refreshTop');
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  await page.click('#refresh');
+  await page.waitForFunction(() => !document.querySelector('#refresh').disabled, null, {
+    timeout: 10000,
+  });
+  await page.click('#nav_history');
+  await page.waitForSelector('#page_history.is-active');
   await page.waitForFunction(
     (n) =>
       window.__crCommands.filter((c) => c.indexOf('history') >= 0).length > n &&
@@ -753,6 +901,15 @@ try {
   await page.waitForSelector('#page_settings.is-active');
   check((await page.locator('#theme_seg .seg-btn').count()) === 4, '设置：主题四档（含取色）');
   check((await page.locator('#amoled_seg .seg-btn').count()) === 2, '设置：纯黑背景开关');
+  const activeNavMask = await page.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('#nav_settings .icon'));
+    return cs.webkitMaskImage || cs.maskImage || '';
+  });
+  check(
+    activeNavMask.indexOf('settings-active') >= 0,
+    '底栏：选中设置使用 Material Symbols filled 图标',
+    activeNavMask
+  );
   check(
     (await page.locator('#page_settings [data-field="current_node"]').count()) === 1,
     '设置：电流采样节点行'
@@ -800,6 +957,10 @@ try {
     '设置：复制成功无手动文本'
   );
   check((await page.locator('#page_settings .about-hero').count()) === 1, '设置：关于品牌卡');
+  check(
+    (await page.locator('#page_settings .about-name').innerText()) === 'ChargingRecord Evolution',
+    '设置：关于卡使用完整品牌名'
+  );
   check(
     (await page.locator('#page_settings .about-chip').count()) === 2,
     '设置：关于通道/版本胶囊'
@@ -1009,14 +1170,19 @@ try {
   );
   await shot(page, 'settings.png');
 
-  // 无 live/daemon 场景：同一页面删掉 mock 的实时字段并强制刷新，实时卡与待重启行都必须消失。
+  // 无 live/daemon 场景：设置页刷新后，实时卡与待重启行都必须消失。
   await page.evaluate(() => {
     delete window.__crData.json.live;
     delete window.__crData.json.daemon;
   });
+  await page.click('#nav_settings');
+  await page.waitForSelector('#page_settings.is-active');
+  await page.click('#refresh');
+  await page.waitForFunction(() => !document.querySelector('#refresh').disabled, null, {
+    timeout: 10000,
+  });
   await page.click('#nav_overview');
   await page.waitForSelector('#page_overview.is-active');
-  await page.click('#refreshTop');
   await page.waitForFunction(
     () => document.querySelectorAll('#page_overview .charge-card').length === 0,
     null,
@@ -1038,8 +1204,9 @@ try {
   await page.waitForSelector('#page_history.is-active');
   await page.locator('#hist_mode_seg .seg-btn').nth(0).click();
   await page.waitForSelector('#page_history .tl-item', { timeout: 15000 });
-  const zhSub = await page.locator('#page_history .tl-sub').first().innerText();
-  check(/温度 \d+ ℃/.test(zhSub), '历史：中文温度单位空格', zhSub);
+  // content-visibility 会跳过离屏条目，innerText 可能为空；用 textContent 断言文案。
+  const zhSub = await page.locator('#page_history .tl-sub').first().textContent();
+  check(/温度 \d+ ℃/.test(zhSub || ''), '历史：中文温度单位空格', zhSub || '');
   const zhCounts = await page.locator('#page_history .tl-count').allInnerTexts();
   check(
     zhCounts.every((s) => /^共 \d+ 条$/.test(s)),
