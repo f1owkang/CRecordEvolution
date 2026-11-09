@@ -136,7 +136,7 @@ jobs:
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          name: ChargingRecord Evolution ${{ github.ref_name }}
+          name: CRecord Evolution ${{ github.ref_name }}
           # release notes 同时是 KernelSU 模块页与更新弹窗里的更新日志
           body_path: changelog.txt
           draft: true

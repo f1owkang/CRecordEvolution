@@ -4,9 +4,9 @@
 
 ## 项目概览
 
-ChargingRecord Evolution 是一个 Android 模块（id=`CRecordEvolution`），用 Go 二进制 `batteryd` 读取电池 sysfs、结合充电会话估算健康度与容量，并把结果写入管理器的模块描述；模块自带一个三页 WebUI（概览 / 历史 / 设置），数据保存在本机 SQLite。
+ChargingRecord Evolution（短名 `CRecord Evolution`）是一个 Android 模块（id=`CRecordEvolution`），用 Go 二进制 `batteryd` 读取电池 sysfs、结合充电会话估算健康度与容量，并把结果写入管理器的模块描述；模块自带一个三页 WebUI（概览 / 历史 / 设置），数据保存在本机 SQLite。
 
-**全项目有且仅有两种叫法**：`CRecordEvolution`（模块 id、安装路径与数据目录、资产名前缀、代码标识符）与 `ChargingRecord Evolution`（展示名：`module.prop`/`module.yaml` 的 `name`、README 标题、WebUI 标题与关于卡、发布标题）。文档、UI、工作流新增文案只能用这两种，不要写 `ChargingRecord`、`Charging Record`、`ChargingRecord Evolution ML` 之类的变体；ML 变体与 stable 同名，只靠 `version` 后缀 `-ML`（模块 Version 字段）和资产名区分，**不改 `name`**，模块描述保持与 stable 一致的纯状态卡。不属于展示名的历史遗留保持原样：旧模块 id `Charging_Record`（README 升级提示、`describe_test.go` 夹具）与 `go.mod` 的模块路径 `charging_record`。
+**命名分两层**：模块 id 固定 `CRecordEvolution`（安装路径、数据目录、资产名前缀、代码标识符）；展示短名 `CRecord Evolution` 只用于空间受限或与模块元数据强关联的场合——`module.prop`/`module.yaml` 的 `name`、Release 标题、WebUI 顶栏与浏览器标题、安装器 fallback；完整品牌名 `ChargingRecord Evolution` 用于空间充足的正式文案——README 标题与正文、设置页关于卡、`THIRD_PARTY_NOTICES.txt`。有关联的字段必须同层统一（模块 `name` ↔ Release 标题 ↔ 安装器 fallback 用短名；README ↔ 关于卡 ↔ 许可用全名），不要写 `ChargingRecord`、`Charging Record`、`CRecordEvolution Evolution`、`CRecord Evolution ML` 之类的变体；ML 变体与 stable 同名，只靠 `version` 后缀 `-ML`（模块 Version 字段）和资产名区分，**不改 `name`**，模块描述保持与 stable 一致的纯状态卡。不属于展示名的历史遗留保持原样：旧模块 id `Charging_Record`（README 升级提示、`describe_test.go` 夹具）与 `go.mod` 的模块路径 `charging_record`。
 
 - 业务逻辑全部在 `cmd/batteryd/`；`service.sh`、`action.sh`、`customize.sh` 只是 POSIX sh 引导/交互壳，由 root 管理器执行。
 - WebUI 源码在 `webui/`（Preact + Vite，ES module/JSX），构建到 `webroot/`（生成目录，不提交）。
@@ -91,15 +91,15 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 - Preact 10.29.8 + hooks，源码在 `webui/src/`；**完全离线**：无 CDN/远程脚本字体/运行时网络请求；新增运行时依赖进 bundle 并更新 `THIRD_PARTY_NOTICES.txt`。
 - 统一 JSX；不用 `h()`/`E()`，新代码拆小函数/组件，别把 `Overview`/`History` 重新写胖。**不引入 htm**（Apache-2.0 与 GPL-2.0-only 不兼容）。
-- 静态图标放 `webui/src/assets/icons/*.svg`，由 `app.css` 的 `mask-image` + `currentColor` 着色；组件里不内联 `<svg>`。图表 SVG 由 `charts.js` 运行时生成。
+- 静态图标放 `webui/src/assets/icons/*.svg`，由 `app.css` 的 `mask-image` + `currentColor` 着色；组件里不内联 `<svg>`。图表 SVG 由 `charts.js` 运行时生成。底栏图标用 Material Symbols Rounded（outlined/filled，Apache-2.0，来源与许可记录在 `THIRD_PARTY_NOTICES.txt`）。
 - `webui/index.html` 只做入口壳；`public/boot.js` 在 `<head>` 同步加载；`/internal/insets.css` 用占位符交给 `vite.config.js`。
-- 源码按职责分：`i18n`、`core`、`charts`、`ui/`（context/components/overview/overviewModel/settings）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData）、`assets/icons/`、`useDocPolling`/`useUiPrefs`、`main.jsx`；模块间 import/export，不退回全局变量。
+- 源码按职责分：`i18n`、`core`、`charts`、`ui/`（context/components/overview/overviewModel/settings）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData）、`assets/icons/`、`useDocPolling`/`useUiPrefs`/`useCollapsingTopbar`、`main.jsx`；模块间 import/export，不退回全局变量。
 - 可测纯逻辑放同级 `*Model.js`（如 `buildOverviewModel(doc, lang, t)`），取数与副作用放 `use*` hook，组件只编排渲染；`App` 只组合 hook。
 - `webroot/` 生成目录：不手改不提交；样式改 `webui/src/app.css`，逻辑改 `webui/src/`。
 - 用户数据只用 `textContent`/Preact children；唯一 `dangerouslySetInnerHTML` 是 `charts.js` 内部生成的数据驱动 SVG。
 - 可交互元素要有语义：分段/档位按钮带 `aria-pressed`、可展开的格子带 `role="button"` + `tabIndex` + `aria-expanded` 并支持 Enter/Space；可点区域不小于 40px（`.chip`/`.seg-btn` 已按此设高）；对比度不足的 `--faint` 已提到 ≥4.5:1，新增弱化色不得低于它。
 - 图表 SVG 统一 `aria-hidden="true"`（信息由卡片标题/最新值/点按读数/caption 承载，读屏无法操作数据点），不要给无名称的 `role="img"`。
-- 顶栏三页统一高度（`.topbar-inner` 的 `min-height`）；全局关闭 `-webkit-tap-highlight-color`、按钮 outline 与 user-select。
+- 轻量动效约定：页面切换 `pageIn` 160ms/4px 淡入上移；`.chip`/`.seg-btn`/`.navitem`/时间轴卡片/趋势格的按压反馈是 120ms `scale()`；导航激活图标 `translateY(-1px)` 150ms；详情/趋势展开用 `softIn` 140ms 透明度+位移。全部只动 transform/opacity，不动画 height/margin/padding；`prefers-reduced-motion` 下统一关闭，新增动效保持 ≤200ms。
 
 ### 双语文案与格式
 
@@ -168,9 +168,9 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 三页与设置项
 
 - 概览：健康度主卡（容量行下方温度行 `temp_c`，缺失整行省略）、充电中实时卡（`live`）、容量/循环/估算/内阻/趋势/可信度、估算趋势图。充电实时卡只在 `live.charging` 存在或 `status=Charging` 时渲染，显示实时电流/功率/电压、本次会话进度与预计充满，字段缺失逐段省略；电流/功率符号按上面的「充电正、放电负」约定显示（放电中不显示预计充满）；会话进度与预计充满**合并为一行**（`.charge-meta`，`nowrap`，390dp 不溢出，smoke 断言 `scrollWidth` 与单行高度）。充电期轮询 15s、其余 60s（`POLL_CHARGE`/`POLL_BASE`），`chargeActive()` 是两处共用的唯一判据。`contentFP` 按 0.1℃ 纳入 `temp_c`，剔除 `calib.raw_current`/`current_ua`（每次 json 都变、不展示），并把 `live` 按显示粒度取整（电流 10mA、功率 0.1W、电压 0.01V、会话 1mAh/60s），否则实时值会被去重冻结；`recent` 与 `trend_mah_per_week` 共用最近 200 点窗口；趋势显著时 JSON 给 `trend_from_mah`/`trend_to_mah`（窗口首/末点容量），前端直接连两端点画虚线，不要下发斜率让前端外推。
-- 历史：摘要统计；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；趋势视图为容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
+- 历史：摘要统计；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；趋势视图为容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。时间轴条目用 `content-visibility: auto` + `contain-intrinsic-size: auto 96px` 跳过离屏渲染；修改列表高度/分页时必须回归滚动位置与「加载更早」，避免 intrinsic 估算造成 scrollHeight 跳变。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
 - 设置：外观（主题/纯黑/取色/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`，末尾「复制诊断」）、关于（品牌卡 + 版本/通道/许可/第三方）。`json` 的 `sessions` 只有最近 10 条，「会话数」必须用顶层 `sessions_n`；会话条目 `start_cap`/`end_cap`，趋势卡与时间轴百分比是 **SOC 百分点变化**（70%→97% 是 27 个点），不是容量增长。`daemon.stale` 为 true 时数据区追加一行「已升级，重启后生效」（`data-field="daemon"`），不 stale 时该行不出现。
-- 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；**`classic` 按 Material 3 Navigation bar 规范**：容器 `--nav-bg`（内置=卡片色，取色=`surfaceContainer`）、高 80dp、图标 24dp、label 12sp/500、激活指示器 64×32dp 全圆角 `--nav-ind-bg`（取色=`secondaryContainer`）、激活图标 `onSecondaryContainer`、激活 label `onSurface`、未激活 `onSurfaceVariant`；悬浮态沿用原胶囊但选中底/字改用同一组 token。`cre_theme` 为 `auto|light|dark|my`（`my` 仅宿主提供 M3 调色板时可选中，明暗从调色板 `--background` 亮度推导，`data-scheme` 承载方案）；`cre_amoled` 为独立纯黑开关（只在解析为深色时把底色压到 `#000`，浅色不受影响；`data-black` 属性承载）；`cre_lang`。切页保存/恢复滚动；设置页隐藏顶栏刷新，用页内「立即刷新」。
+- 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；**`classic` 按 Material 3 Navigation bar 规范**：容器 `--nav-bg`（内置=卡片色，取色=`surfaceContainer`）、高 80dp、图标 24dp、label 12sp/500、激活指示器 64×32dp 全圆角 `--nav-ind-bg`（取色=`secondaryContainer`）、激活图标 `onSecondaryContainer`、激活 label `onSurface`、未激活 `onSurfaceVariant`；悬浮态沿用原胶囊但选中底/字改用同一组 token。`cre_theme` 为 `auto|light|dark|my`（`my` 仅宿主提供 M3 调色板时可选中，明暗从调色板 `--background` 亮度推导，`data-scheme` 承载方案）；`cre_amoled` 为独立纯黑开关（只在解析为深色时把底色压到 `#000`，浅色不受影响；`data-black` 属性承载）；`cre_lang`。切页保存/恢复滚动；顶栏不提供刷新按钮，手动刷新只在设置页用页内「立即刷新」（其余靠 15s/60s 轮询）。
 
 ### 语言文件
 
