@@ -49,6 +49,7 @@ function App() {
 
   const [page, setPage] = useState(0);
   const pageRef = useRef(0);
+  const pagerAnim = useRef({ raf: 0, busy: false });
   const tr = function (key, vars) {
     return translate(lang, key, vars);
   };
@@ -105,6 +106,56 @@ function App() {
     };
   }, []);
 
+  // Miuix PagerNavigationSpringSpec：stiffness 322.2、damping 32.31（mass=1）。
+  // 原生 scrollTo smooth 的时长由 WebView 固定且偏慢，这里用同一弹簧参数自己积分，
+  // 点击/底栏松手都能在约 0.3s 内完成同样的回弹手感。
+  function animatePager(next) {
+    const el = appScroller();
+    if (!el) return;
+    const anim = pagerAnim.current;
+    if (anim.raf) cancelAnimationFrame(anim.raf);
+    anim.raf = 0;
+    const width = el.clientWidth || 1;
+    const target = next * width;
+    const reduced = !!(
+      window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+    el.style.scrollSnapType = 'none';
+    if (reduced || Math.abs(target - el.scrollLeft) < 1) {
+      el.scrollLeft = target;
+      el.style.scrollSnapType = '';
+      anim.busy = false;
+      return;
+    }
+    anim.busy = true;
+    let x = el.scrollLeft;
+    let v = 0;
+    let last = performance.now();
+    const K = 322.2;
+    const C = 32.31;
+    function step(now) {
+      let dt = Math.min(0.032, Math.max(0, (now - last) / 1000));
+      last = now;
+      while (dt > 0) {
+        const h = Math.min(1 / 240, dt);
+        const a = -K * (x - target) - C * v;
+        v += a * h;
+        x += v * h;
+        dt -= h;
+      }
+      el.scrollLeft = x;
+      if (Math.abs(x - target) < 0.5 && Math.abs(v) < 8) {
+        el.scrollLeft = target;
+        el.style.scrollSnapType = '';
+        anim.busy = false;
+        anim.raf = 0;
+        return;
+      }
+      anim.raf = requestAnimationFrame(step);
+    }
+    anim.raf = requestAnimationFrame(step);
+  }
+
   function goPage(i) {
     const next = Math.max(0, Math.min(2, i));
     if (next === pageRef.current) {
@@ -114,10 +165,7 @@ function App() {
     }
     pageRef.current = next;
     setPage(next);
-    const el = appScroller();
-    if (el) {
-      el.scrollTo({ left: next * el.clientWidth, behavior: 'smooth' });
-    }
+    animatePager(next);
   }
 
   if (!HAS_HOST_EXEC) {

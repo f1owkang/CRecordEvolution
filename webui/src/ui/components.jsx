@@ -99,13 +99,15 @@ function Dock(props) {
       app.style.scrollSnapType = 'none';
       if (target === pageRef.current) {
         app.scrollTo({ left: target * width, behavior: 'smooth' });
+        clearTimeout(snapTimer);
+        snapTimer = setTimeout(function () {
+          app.style.scrollSnapType = '';
+        }, 380);
       } else {
+        // 切页交给 App 的 Miuix 弹簧动画，snap 由它在动画结束时恢复。
+        clearTimeout(snapTimer);
         navRef.current(target);
       }
-      clearTimeout(snapTimer);
-      snapTimer = setTimeout(function () {
-        app.style.scrollSnapType = '';
-      }, 380);
       setTimeout(function () {
         suppressClick.current = false;
       }, 0);
@@ -152,7 +154,8 @@ function Dock(props) {
     function onTouchEnd(event) {
       const drag = dragRef.current;
       if (!drag || drag.id !== 'touch') return;
-      if (event.cancelable) event.preventDefault();
+      // 只有真正拖动过才 preventDefault；普通点按必须保留 click，否则底栏不响应单击。
+      if (drag.moved && event.cancelable) event.preventDefault();
       settleDrag(false);
     }
 
