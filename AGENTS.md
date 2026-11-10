@@ -99,7 +99,10 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 用户数据只用 `textContent`/Preact children；唯一 `dangerouslySetInnerHTML` 是 `charts.js` 内部生成的数据驱动 SVG。
 - 可交互元素要有语义：分段/档位按钮带 `aria-pressed`、可展开的格子带 `role="button"` + `tabIndex` + `aria-expanded` 并支持 Enter/Space；可点区域不小于 40px（`.chip`/`.seg-btn` 已按此设高）；对比度不足的 `--faint` 已提到 ≥4.5:1，新增弱化色不得低于它。
 - 图表 SVG 统一 `aria-hidden="true"`（信息由卡片标题/最新值/点按读数/caption 承载，读屏无法操作数据点），不要给无名称的 `role="img"`。
-- 轻量动效约定：页面切换 `pageIn` 160ms/4px 淡入上移；`.chip`/`.seg-btn`/`.navitem`/时间轴卡片/趋势格的按压反馈是 120ms `scale()`；导航激活图标 `translateY(-1px)` 150ms；详情/趋势展开用 `softIn` 140ms 透明度+位移。全部只动 transform/opacity，不动画 height/margin/padding；`prefers-reduced-motion` 下统一关闭，新增动效保持 ≤200ms。
+- 轻量动效约定：`.chip`/`.seg-btn`/`.navitem`/时间轴卡片/趋势格的按压反馈是 120ms `scale()`；导航激活图标 `translateY(-1px)` 150ms；详情/趋势展开用 `softIn` 140ms 透明度+位移。全部只动 transform/opacity，不动画 height/margin/padding；`prefers-reduced-motion` 下统一关闭，新增动效保持 ≤200ms。横向切页由原生 pager 驱动，不再套 `pageIn` 动画。
+- 页面结构：`#app` 是横向 ViewPager（`overflow-x:auto`、`scroll-snap-type:x mandatory`、`overscroll-behavior-x:contain`）；`#pager-track` 宽 300%，三个 `.page` 各 33.333% 宽、独立纵向滚动，页面 padding 预留展开顶栏和底栏高度；gate 分支用 `#app.is-single` 单页模式。横滑跟手/回弹由原生 scroll-snap 完成，不要再加 touch 手势切页。`#app` 的 scroll 事件用 rAF 更新 `#dockInd` 的 `translateX`，停稳 90ms 后提交 `page` 状态；历史 `.hist-chips` 的横向滚动交给浏览器嵌套滚动。
+- 底栏拖动（对齐 Miuix）：`.dock-inner` 同时监听 touchstart/move/end（真实手机主路径）和 pointerdown/move/up（鼠标/桌面）；`touch-action:none`。拖动时实时改 `#app.scrollLeft` 并临时设 `scrollSnapType:none`，方向「向右拖→下一页」；松手按 `drag.progress` round 调 `onNavigate`，保持 snap 关闭完成平滑滚动、约 380ms 后再恢复，不能在恢复 snap 后读 `scrollLeft`（会被立即吸回）。拖完用 capture 阶段吞一次 click；`touchmove` 必须 preventDefault；**不要对 `.dock-inner` 调 `setPointerCapture`**，否则普通点击的 click target 会变成 inner、按钮 onClick 不触发。
+- 顶栏按 M3 Large Top App Bar 折叠：顶栏 fixed 在滚动层外，展开高度固定 `inset+100px`；`useCollapsingTopbar(page)` 监听 `.page.is-active` 的纵向 scroll + rAF，只写 `--tb-bg-scale/--tb-title-y/--tb-title-scale`，`.topbar-bg` 做 `scaleY(1→0.58)`、`#pageTitle` 做 `translateY(-39px) scale(1→0.714)`；不再使用 scroll timeline/`--cre-page`。`html::before` 用 `var(--bg)` 铺状态栏；顶栏下投阴影用 `clip-path: inset(0 -32px -32px -32px)` 裁掉顶边，避免状态栏底出现分割线。不要给顶栏加 `backdrop-filter`，不要用 `-webkit-overflow-scrolling`；状态栏/底部安全区仍用 `--inset-*` 回退链。
 
 ### 双语文案与格式
 

@@ -42,6 +42,7 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 - **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
 - **Theme options**: follow the system, or pick light / dark, plus an independent pure-black background switch for AMOLED screens (dark mode only); the bottom bar supports a floating pill or a Material 3 navigation bar.
 - **Material motion**: the top app bar starts with a large title and collapses smoothly while scrolling (and re-expands at the top); the bottom bar uses Material Symbols icons (outlined / filled for the active item). Reduced-motion settings are respected.
+- **Horizontal paging**: swipe left/right anywhere in the content area, or drag horizontally on the bottom bar, to move between Overview / History / Settings; the floating or classic bottom bar indicator follows your finger and snaps to the nearest tab.
 - **Manager palette / Material You**: when the manager exposes a WebUI palette (KernelSU v3.0.0+ with a Monet color mode or Material UI, APatch build 11219+, MMRL / WebUI-X v212+), an extra "Dynamic" theme option follows the manager theme; managers without a palette simply hide it.
 - **Upgrade self-check**: if an older daemon is still running after an upgrade, Settings says "Updated — restart to apply", so old and new data never mix.
 - **Bilingual UI**: Simplified Chinese / English, following the phone language automatically and switchable any time in the WebUI.
