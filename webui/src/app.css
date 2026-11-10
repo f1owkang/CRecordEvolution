@@ -22,6 +22,19 @@ body {
 #root {
   height: 100%;
 }
+/* 状态栏兜底：顶栏 fixed 在滚动容器内时，仍保证系统栏区域铺满页面底色，
+   避免宿主把状态栏和标题栏画成两种颜色。 */
+html::before {
+  content: '';
+  position: fixed;
+  z-index: 59;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--inset-top);
+  background: var(--bg);
+  pointer-events: none;
+}
 button,
 .navitem,
 .seg-btn,
@@ -242,38 +255,35 @@ body {
     sans-serif;
   height: 100%;
 }
-/* 唯一滚动容器：内容滚在这里，顶栏/底栏都在它外面保持 fixed。
-   顶部留白按展开态顶栏高度预留，折叠时内容不会被 reflow。 */
+/* 外层 #app 是横向 ViewPager 视口；每个 .page 自己纵向滚动。
+   顶部留白按展开态顶栏高度预留，折叠时页面不 reflow。 */
 #app {
   height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
   overscroll-behavior-y: none;
   overflow-anchor: none;
-  padding-top: calc(var(--inset-top) + 100px);
-  padding-bottom: calc(104px + var(--inset-bottom));
+  background: var(--bg);
+  scroll-snap-type: x mandatory;
   scrollbar-width: none;
-  scroll-timeline-name: --cre-page;
-  scroll-timeline-axis: block;
-}
-@media (prefers-reduced-motion: reduce) {
-  #app {
-    padding-top: calc(var(--inset-top) + 58px);
-  }
 }
 #app::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none;
 }
-html[data-bar='classic'] #app {
-  padding-bottom: calc(80px + var(--inset-bottom));
+#pager-track {
+  display: flex;
+  width: 300%;
+  height: 100%;
 }
-.pagewrap {
-  max-width: 480px;
-  margin: 0 auto;
-  /* 顶栏与内容之间留出呼吸感，避免上边距过窄 */
-  padding: 14px calc(16px + var(--inset-right)) 8px calc(16px + var(--inset-left));
+#app.is-single {
+  overflow-x: hidden;
+  scroll-snap-type: none;
+}
+#app.is-single #pager-track {
+  width: 100%;
 }
 
 /* 顶部应用栏：fixed，背景/标题折叠只动画 transform（合成层），不再改
@@ -306,8 +316,9 @@ html[data-bar='classic'] #app {
   background: var(--bg);
   transform-origin: top center;
   transition: box-shadow 160ms ease-out;
+  /* 阴影只向下投：裁掉顶边向上的 blur，避免在状态栏底形成浅分割线。 */
+  clip-path: inset(0 -32px -32px -32px);
 }
-/* 和 LSPosed 的 appBar.setLifted 一致：离顶后给顶栏一点 elevation。 */
 html[data-scrolled='1'] .topbar-bg {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.16),
@@ -343,33 +354,6 @@ html.tb-fallback .topbar-bg {
 }
 html.tb-fallback #pageTitle {
   transform: translateY(var(--tb-title-y)) scale(var(--tb-title-scale));
-}
-/* 支持 Scroll-driven Animations 时交给合成线程，主线程完全不参与逐帧更新。 */
-@keyframes tb-bg-collapse {
-  from {
-    transform: scaleY(1);
-  }
-  to {
-    transform: scaleY(0.58);
-  }
-}
-@keyframes tb-title-collapse {
-  from {
-    transform: translateY(0) scale(1);
-  }
-  to {
-    transform: translateY(-39px) scale(0.7142857);
-  }
-}
-html.tb-scroll-driven .topbar-bg {
-  animation: tb-bg-collapse linear both;
-  animation-timeline: --cre-page;
-  animation-range: 0 72px;
-}
-html.tb-scroll-driven #pageTitle {
-  animation: tb-title-collapse linear both;
-  animation-timeline: --cre-page;
-  animation-range: 0 72px;
 }
 @media (prefers-reduced-motion: reduce) {
   .topbar-bg {
@@ -412,25 +396,40 @@ html.tb-scroll-driven #pageTitle {
   mask-image: url('./assets/icons/settings-active.svg');
 }
 
-/* 页面容器：三页用 display 切换，激活时淡入上浮 */
+/* 每个页面是独立纵向滚动面板；#app 负责横向跟手与 scroll-snap。 */
 .page {
-  display: none;
+  flex: 0 0 33.3333%;
+  width: 33.3333%;
+  min-width: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: calc(var(--inset-top) + 114px) calc(16px + var(--inset-right))
+    calc(112px + var(--inset-bottom)) calc(16px + var(--inset-left));
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  scrollbar-width: none;
+  overscroll-behavior-y: contain;
 }
-.page.is-active {
-  display: flex;
-  animation: pageIn 160ms cubic-bezier(0.2, 0, 0, 1);
+#app.is-single .page {
+  flex-basis: 100%;
+  width: 100%;
 }
-@keyframes pageIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
+.page::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page {
+    padding-top: calc(var(--inset-top) + 72px);
   }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+}
+html[data-bar='classic'] .page {
+  padding-bottom: calc(88px + var(--inset-bottom));
 }
 
 /* 概览主卡徽章：实测估算 / 内核满充两种口径 */
@@ -454,6 +453,13 @@ html.tb-scroll-driven #pageTitle {
 }
 
 .err {
+  position: fixed;
+  z-index: 70;
+  top: calc(var(--inset-top) + 112px);
+  left: 16px;
+  right: 16px;
+  max-width: 480px;
+  margin: 0 auto;
   background: var(--err-bg);
   border: 1px solid var(--err-bd);
   color: var(--err-fg);
@@ -1205,6 +1211,7 @@ html[data-theme='light'] .pill.warn {
 .dock-inner {
   position: relative;
   pointer-events: auto;
+  touch-action: none;
   width: min(300px, 100%);
   height: 60px;
   display: grid;
@@ -1225,7 +1232,6 @@ html[data-theme='light'] .pill.warn {
   border-radius: 999px;
   background: var(--nav-ind-bg);
   border: 1px solid var(--nav-ind-bd);
-  transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .navitem {
   position: relative;

@@ -365,7 +365,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 页面滚动发生在 #app 内部（html/body 固定不滚）。
 async function appScrollTo(page, y) {
   await page.evaluate((value) => {
-    const el = document.getElementById('app');
+    const el = document.querySelector('.page.is-active') || document.getElementById('app');
     if (el) el.scrollTop = value;
     else window.scrollTo(0, value);
   }, y);
@@ -373,7 +373,7 @@ async function appScrollTo(page, y) {
 
 async function appScrollY(page) {
   return page.evaluate(() => {
-    const el = document.getElementById('app');
+    const el = document.querySelector('.page.is-active') || document.getElementById('app');
     return el ? el.scrollTop : window.scrollY;
   });
 }
@@ -525,9 +525,9 @@ try {
       bgH: Math.round(bg.getBoundingClientRect().height),
       titleH: Math.round(title.getBoundingClientRect().height),
       font: getComputedStyle(title).fontSize,
+      transform: getComputedStyle(title).transform,
       shadow: getComputedStyle(bg).boxShadow,
       scrolled: document.documentElement.getAttribute('data-scrolled'),
-      transform: getComputedStyle(title).transform,
     };
   });
   check(tbCollapsed.font === '28px', '顶栏：折叠后字号不变（transform 缩放）', tbCollapsed.font);
@@ -543,21 +543,32 @@ try {
   );
   check(tbCollapsed.transform !== 'none', '顶栏：折叠使用 transform', tbCollapsed.transform);
   check(tbCollapsed.scrolled === '1', '顶栏：离顶标记');
-  check(tbCollapsed.shadow !== 'none', '顶栏：离顶后显示 elevation', tbCollapsed.shadow);
+  check(tbCollapsed.shadow !== 'none', '顶栏：离顶后显示下投阴影', tbCollapsed.shadow);
   const scrollRoot = await page.evaluate(() => {
-    const app = document.getElementById('app');
+    const pager = document.getElementById('app');
+    const panel = document.querySelector('.page.is-active');
     return {
-      appTop: app.scrollTop,
+      panelTop: panel ? panel.scrollTop : 0,
       winY: window.scrollY,
       docTop: document.documentElement.scrollTop,
-      appOverflow: getComputedStyle(app).overflowY,
-      appOverscroll: getComputedStyle(app).overscrollBehaviorY,
+      pagerOverflowX: getComputedStyle(pager).overflowX,
+      panelOverflowY: panel ? getComputedStyle(panel).overflowY : 'none',
+      pagerOverscroll: getComputedStyle(pager).overscrollBehaviorY,
     };
   });
-  check(scrollRoot.appTop > 100, '页面：滚动发生在 #app 内部', String(scrollRoot.appTop));
+  check(scrollRoot.panelTop > 100, '页面：滚动发生在当前 page 内', String(scrollRoot.panelTop));
   check(scrollRoot.winY === 0 && scrollRoot.docTop === 0, '页面：根文档不滚动');
-  check(scrollRoot.appOverflow === 'auto', '页面：#app 是滚动容器', scrollRoot.appOverflow);
-  check(scrollRoot.appOverscroll === 'none', '页面：#app 禁止橡皮筋回弹', scrollRoot.appOverscroll);
+  check(scrollRoot.pagerOverflowX === 'auto', '页面：#app 是横向 pager', scrollRoot.pagerOverflowX);
+  check(
+    scrollRoot.panelOverflowY === 'auto',
+    '页面：.page 是纵向滚动容器',
+    scrollRoot.panelOverflowY
+  );
+  check(
+    scrollRoot.pagerOverscroll === 'none',
+    '页面：pager 禁止纵向橡皮筋',
+    scrollRoot.pagerOverscroll
+  );
   await shotNoScroll(page, 'topbar-collapsed.png');
   await appScrollTo(page, 0);
   await page.waitForFunction(
@@ -566,6 +577,69 @@ try {
     { timeout: 10000 }
   );
   check(true, '顶栏：回顶重新展开');
+
+  // 横向 pager：滚到第二页/回第一页，页面状态随快照提交。
+  async function pagerTo(index) {
+    await page.evaluate((i) => {
+      const el = document.getElementById('app');
+      el.scrollTo({ left: i * el.clientWidth, behavior: 'instant' });
+    }, index);
+  }
+  await pagerTo(1);
+  await page.waitForSelector('#page_history.is-active');
+  check(true, '手势：横向 pager 切到历史');
+  await pagerTo(0);
+  await page.waitForSelector('#page_overview.is-active');
+  check(true, '手势：横向 pager 切回概览');
+
+  // 底栏手指横向滑动：拖动时实时带动 pager，松手吸附到最近页。
+  const dockBox = await page.locator('.dock-inner').boundingBox();
+  const cx = dockBox.x + dockBox.width / 2;
+  const cy = dockBox.y + dockBox.height / 2;
+  const slot = dockBox.width / 3;
+  // 底栏拖动方向跟指示器一致：向右拖到下一页，向左拖回上一页。
+  await page.mouse.move(cx - slot * 0.45, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + slot * 0.55, cy, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForSelector('#page_history.is-active');
+  check(true, '底栏：向右拖动切到历史');
+  await page.mouse.move(cx + slot * 0.45, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx - slot * 0.55, cy, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForSelector('#page_overview.is-active');
+  check(true, '底栏：向左拖动切回概览');
+
+  // 触摸路径：真实手机走 touch 事件，不依赖 pointer 事件。
+  async function dockTouch(fromX, toX) {
+    await page.evaluate(
+      ({ fromX, toX }) => {
+        const inner = document.querySelector('.dock-inner');
+        const y = inner.getBoundingClientRect().top + inner.getBoundingClientRect().height / 2;
+        function fire(type, x) {
+          const ev = new Event(type, { bubbles: true, cancelable: true });
+          Object.defineProperty(ev, 'touches', {
+            value: type === 'touchend' ? [] : [{ clientX: x, clientY: y }],
+          });
+          Object.defineProperty(ev, 'changedTouches', {
+            value: [{ clientX: x, clientY: y }],
+          });
+          inner.dispatchEvent(ev);
+        }
+        fire('touchstart', fromX);
+        fire('touchmove', toX);
+        fire('touchend', toX);
+      },
+      { fromX, toX }
+    );
+  }
+  await dockTouch(cx - slot * 0.45, cx + slot * 0.55);
+  await page.waitForSelector('#page_history.is-active');
+  check(true, '底栏：触摸向右拖动切到历史');
+  await dockTouch(cx + slot * 0.45, cx - slot * 0.55);
+  await page.waitForSelector('#page_overview.is-active');
+  check(true, '底栏：触摸向左拖动切回概览');
 
   // 底栏固定 + 根节点禁止 overscroll：到底部继续上滑时不能被 WebView 橡皮筋带动。
   const scrollFx = await page.evaluate(() => {

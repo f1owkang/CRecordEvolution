@@ -11,30 +11,28 @@ import './app.css';
 
 const HAS_HOST_EXEC = hasExec();
 
-// 页面滚动发生在 #app 内部：html/body 固定为视口高度且不滚动，
-// 避免 Android WebView 的根节点橡皮筋把 fixed 底栏一起带动。
+// 外层 #app 是横向 ViewPager 视口；每个 .page 自己纵向滚动。
+// 这样手指横滑时页面实时跟手、松手由原生 scroll-snap 回弹，接近 LSPosed 的 ViewPager2。
 function appScroller() {
   return document.getElementById('app');
 }
 
-// 两个渲染分支共用的外壳：顶栏 fixed 在滚动容器外，页面内容在 #app 内滚动。
-// 这样顶栏折叠时只重排顶栏自身，不会每帧带着整页内容一起 reflow。
-function AppShell({ value, topbar, dock, children }) {
+function activePageScroller() {
+  return document.querySelector('.page.is-active');
+}
+
+function AppShell({ value, topbar, dock, children, single }) {
   return (
     <LangCtx.Provider value={value}>
-      <div id="app" class="app-scroll">
+      <div id="app" class={'app-scroll' + (single ? ' is-single' : '')}>
         {topbar}
-        <main>
-          <div class="pagewrap">{children}</div>
-        </main>
+        <div id="pager-track">{children}</div>
       </div>
       {dock}
     </LangCtx.Provider>
   );
 }
 
-// App 只负责「组合 hooks + 渲染壳」：取数与轮询在 useDocPolling，语言/主题/底栏
-// 与其落盘在 useUiPrefs；这里保留页面切换、滚动位置、标题与 gate 分支。
 function App() {
   const {
     lang,
@@ -48,14 +46,14 @@ function App() {
     setBarMode,
   } = useUiPrefs();
   const { doc, err, busy, histReload, refreshNow } = useDocPolling();
-  useCollapsingTopbar();
 
   const [page, setPage] = useState(0);
-  const scrollPos = useRef([0, 0, 0]);
+  const pageRef = useRef(0);
   const tr = function (key, vars) {
     return translate(lang, key, vars);
   };
   const ctx = { lang, t: tr };
+  useCollapsingTopbar(page);
 
   useEffect(
     function () {
@@ -67,50 +65,67 @@ function App() {
     [lang, page]
   );
 
-  // 切页后的滚动恢复：等 DOM 提交再等两帧，确保目标页（含历史页的列表/展开详情）
-  // 完成布局后再 scrollTo；否则恢复会被同帧的骨架屏/高度抖动夹回 0。
-  useEffect(
-    function () {
-      const y = scrollPos.current[page] || 0;
-      let raf1 = 0,
-        raf2 = 0;
-      raf1 = requestAnimationFrame(function () {
-        raf2 = requestAnimationFrame(function () {
-          const el = appScroller();
-          try {
-            if (el) el.scrollTo(0, y);
-            else window.scrollTo(0, y);
-          } catch (e) {}
-        });
-      });
-      return function () {
-        cancelAnimationFrame(raf1);
-        cancelAnimationFrame(raf2);
-      };
-    },
-    [page]
-  );
+  // 横向 pager：滚动过程中让底栏指示器实时跟手，停稳后再提交 page 状态。
+  useEffect(function () {
+    const el = appScroller();
+    if (!el) return undefined;
+    let raf = 0;
+    let settle = 0;
+    let current = pageRef.current;
+
+    function apply() {
+      raf = 0;
+      const width = el.clientWidth || 1;
+      const progress = Math.max(0, Math.min(2, el.scrollLeft / width));
+      const indicator = document.getElementById('dockInd');
+      if (indicator) indicator.style.transform = 'translateX(' + progress * 100 + '%)';
+      clearTimeout(settle);
+      settle = setTimeout(function () {
+        const next = Math.max(0, Math.min(2, Math.round(progress)));
+        if (next !== current) {
+          current = next;
+          pageRef.current = next;
+          setPage(next);
+        }
+      }, 90);
+    }
+
+    function onScroll() {
+      if (!raf) raf = requestAnimationFrame(apply);
+    }
+
+    apply();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return function () {
+      el.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+      clearTimeout(settle);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   function goPage(i) {
-    const el = appScroller();
-    if (i === page) {
-      try {
-        if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
-        else window.scrollTo({ top: 0, behavior: 'smooth' });
-      } catch (e) {
-        if (el) el.scrollTop = 0;
-        else window.scrollTo(0, 0);
-      }
+    const next = Math.max(0, Math.min(2, i));
+    if (next === pageRef.current) {
+      const panel = activePageScroller();
+      if (panel) panel.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    scrollPos.current[page] = el ? el.scrollTop : window.scrollY || 0;
-    setPage(i);
+    pageRef.current = next;
+    setPage(next);
+    const el = appScroller();
+    if (el) {
+      el.scrollTo({ left: next * el.clientWidth, behavior: 'smooth' });
+    }
   }
 
   if (!HAS_HOST_EXEC) {
     return (
-      <AppShell value={ctx} topbar={<TopBar page={0} />}>
-        <Gate />
+      <AppShell value={ctx} topbar={<TopBar page={0} />} single>
+        <section class="page is-active">
+          <Gate />
+        </section>
       </AppShell>
     );
   }
@@ -145,4 +160,5 @@ function App() {
 requestEdgeToEdge();
 setTimeout(requestEdgeToEdge, 350);
 window.addEventListener('load', requestEdgeToEdge);
+
 render(<App />, document.getElementById('root'));
