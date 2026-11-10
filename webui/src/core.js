@@ -541,10 +541,11 @@ function applyThemeDocument(mode, amoled) {
   root.setAttribute('data-black', black ? '1' : '0');
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
-    // 取色模式直接用宿主 --background（可能是 #RRGGBB 或 rgb()），否则用内置底色。
+    // 用当前实际底色（含 Material You / AMOLED）同步状态栏，避免宿主取到旧色。
+    const bodyBg = getComputedStyle(document.body).backgroundColor;
     const paletteBg = mode === 'my' ? hostPaletteBackground() : '';
     const builtin = scheme === 'light' ? '#f6f8fa' : '#0b0e14';
-    meta.setAttribute('content', black ? '#000000' : paletteBg || builtin);
+    meta.setAttribute('content', black ? '#000000' : paletteBg || bodyBg || builtin);
   }
   try {
     const api = window.$CRecordEvolution;

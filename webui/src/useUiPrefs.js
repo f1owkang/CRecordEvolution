@@ -92,7 +92,7 @@ function useUiPrefs() {
         else if (mq.removeListener) mq.removeListener(onChange);
       };
     },
-    [themeMode, amoled]
+    [themeMode, amoled, dynamicColor]
   );
 
   // 底栏：悬浮胶囊 / 传统贴底。
