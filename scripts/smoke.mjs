@@ -641,6 +641,32 @@ try {
   await page.waitForSelector('#page_overview.is-active');
   check(true, '底栏：触摸向左拖动切回概览');
 
+  // 触摸点按不能被拖动逻辑吞掉：touchend 不得 preventDefault，click 仍要切页。
+  const tapTouch = await page.evaluate(() => {
+    const inner = document.querySelector('.dock-inner');
+    const btn = document.querySelector('#nav_history');
+    const y = inner.getBoundingClientRect().top + inner.getBoundingClientRect().height / 2;
+    function fire(type, x) {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'touches', {
+        value: type === 'touchend' ? [] : [{ clientX: x, clientY: y }],
+      });
+      Object.defineProperty(ev, 'changedTouches', { value: [{ clientX: x, clientY: y }] });
+      inner.dispatchEvent(ev);
+      return ev;
+    }
+    fire('touchstart', inner.getBoundingClientRect().left + 20);
+    const up = fire('touchend', inner.getBoundingClientRect().left + 20);
+    const prevented = up.defaultPrevented;
+    btn.click();
+    return { prevented };
+  });
+  check(tapTouch.prevented === false, '底栏：触摸点按不阻止 click', String(tapTouch.prevented));
+  await page.waitForSelector('#page_history.is-active');
+  check(true, '底栏：触摸点按正常切页');
+  await page.click('#nav_overview');
+  await page.waitForSelector('#page_overview.is-active');
+
   // 底栏固定 + 根节点禁止 overscroll：到底部继续上滑时不能被 WebView 橡皮筋带动。
   const scrollFx = await page.evaluate(() => {
     const bar = document.querySelector('.dock');
