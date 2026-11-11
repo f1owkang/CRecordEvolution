@@ -19,16 +19,32 @@ function ErrorBanner(props) {
 
 function TopBar(props) {
   const { t, lang } = useTr();
-  const title =
-    props.page === 0
-      ? 'CRecord Evolution'
-      : translate(lang, props.page === 1 ? 'page_history' : 'page_settings');
+  const titles = [
+    'CRecord Evolution',
+    translate(lang, 'page_history'),
+    translate(lang, 'page_settings'),
+  ];
   return (
     <header class="topbar">
       <div class="topbar-status" aria-hidden="true" />
       <div class="topbar-bg" aria-hidden="true" />
       <div class="topbar-inner">
-        <h1 id="pageTitle">{title}</h1>
+        <div class="topbar-titles">
+          <div class="topbar-title-track" id="titleTrack">
+            {titles.map(function (title, i) {
+              return (
+                <h1
+                  key={title}
+                  class="topbar-title"
+                  id={props.page === i ? 'pageTitle' : null}
+                  aria-hidden={props.page === i ? 'false' : 'true'}
+                >
+                  {title}
+                </h1>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </header>
   );

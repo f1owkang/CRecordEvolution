@@ -11,15 +11,15 @@ const TITLE_END_Y = -39;
 function useCollapsingTopbar(page) {
   useEffect(
     function () {
-      const root = document.documentElement;
       const scroller = document.querySelector('.page.is-active');
-      if (!scroller) return undefined;
+      const bg = document.querySelector('.topbar-bg');
+      const titles = document.querySelector('.topbar-titles');
+      if (!scroller || !bg || !titles) return undefined;
+      const root = document.documentElement;
       const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
       let raf = 0;
       let reduced = !!(mq && mq.matches);
       let scrolled = null;
-
-      root.classList.add('tb-fallback');
 
       function markScrolled(isScrolled) {
         if (isScrolled === scrolled) return;
@@ -31,11 +31,13 @@ function useCollapsingTopbar(page) {
         raf = 0;
         const y = scroller.scrollTop || 0;
         markScrolled(y > 2);
-        if (reduced) return;
-        const p = Math.max(0, Math.min(1, y / COLLAPSE_RANGE));
-        root.style.setProperty('--tb-bg-scale', String(1 + (BG_END - 1) * p));
-        root.style.setProperty('--tb-title-y', TITLE_END_Y * p + 'px');
-        root.style.setProperty('--tb-title-scale', String(1 + (TITLE_END_SCALE - 1) * p));
+        const p = reduced ? 1 : Math.max(0, Math.min(1, y / COLLAPSE_RANGE));
+        const bgScale = 1 + (BG_END - 1) * p;
+        const titleScale = 1 + (TITLE_END_SCALE - 1) * p;
+        // 直接写元素 transform，避免每帧往 :root 写 CSS 变量触发全页样式重算。
+        bg.style.transform = 'scale3d(1,' + bgScale + ',1)';
+        titles.style.transform =
+          'translate3d(0,' + TITLE_END_Y * p + 'px,0) scale(' + titleScale + ')';
       }
 
       function schedule() {
@@ -57,7 +59,6 @@ function useCollapsingTopbar(page) {
       return function () {
         scroller.removeEventListener('scroll', schedule);
         window.removeEventListener('resize', schedule);
-        root.classList.remove('tb-fallback');
         if (mq) {
           if (mq.removeEventListener) mq.removeEventListener('change', onMotionChange);
           else if (mq.removeListener) mq.removeListener(onMotionChange);

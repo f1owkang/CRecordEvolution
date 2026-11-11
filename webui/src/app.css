@@ -97,11 +97,6 @@ button:focus-visible {
   --nav-fg: var(--mute);
   --nav-active-label: var(--fg);
 
-  /* 顶栏展开/折叠：由 useCollapsingTopbar 按滚动位置连续写入。 */
-  --tb-bg-scale: 1;
-  --tb-title-y: 0px;
-  --tb-title-scale: 1;
-
   /* 系统栏安全区回退链：新版 KSU 动态注入 --safe-area-inset-*，
      旧版 insets.css 提供 --window-inset-*，浏览器兜底 env()，最后 0 */
   --inset-top: var(--safe-area-inset-top, var(--window-inset-top, env(safe-area-inset-top, 0px)));
@@ -318,6 +313,7 @@ body {
   transition: box-shadow 160ms ease-out;
   /* 阴影只向下投：裁掉顶边向上的 blur，避免在状态栏底形成浅分割线。 */
   clip-path: inset(0 -32px -32px -32px);
+  will-change: transform;
 }
 html[data-scrolled='1'] .topbar-bg {
   box-shadow:
@@ -332,13 +328,30 @@ html[data-scrolled='1'] .topbar-bg {
   max-width: 480px;
   margin: 0 auto;
   height: 40px;
-  padding: 0 calc(16px + var(--inset-right)) 0 calc(16px + var(--inset-left));
+  /* 横向裁到内容盒，纵向留足空间给折叠位移；不能 overflow:hidden，否则折叠标题会被裁掉。 */
+  clip-path: inset(-80px 0 -80px 0);
+}
+.topbar-titles {
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform-origin: calc(16px + var(--inset-left)) center;
+  will-change: transform;
+}
+.topbar-title-track {
+  display: flex;
+  width: 300%;
+  height: 100%;
+  transform-origin: left center;
+  will-change: transform;
+}
+.topbar-title {
+  flex: 0 0 33.3333%;
+  width: 33.3333%;
   display: flex;
   align-items: center;
-}
-#pageTitle {
-  flex: 1 1 auto;
   min-width: 0;
+  padding: 0 calc(16px + var(--inset-right)) 0 calc(16px + var(--inset-left));
   font-size: 28px;
   line-height: 1.2;
   font-weight: 700;
@@ -347,23 +360,6 @@ html[data-scrolled='1'] .topbar-bg {
   text-overflow: ellipsis;
   white-space: nowrap;
   transform-origin: left center;
-}
-/* JS 兜底：只写 transform 变量。 */
-html.tb-fallback .topbar-bg {
-  transform: scaleY(var(--tb-bg-scale));
-}
-html.tb-fallback #pageTitle {
-  transform: translateY(var(--tb-title-y)) scale(var(--tb-title-scale));
-}
-@media (prefers-reduced-motion: reduce) {
-  .topbar-bg {
-    transform: scaleY(0.58) !important;
-    animation: none !important;
-  }
-  #pageTitle {
-    transform: translateY(-39px) scale(0.7142857) !important;
-    animation: none !important;
-  }
 }
 .icon {
   display: block;

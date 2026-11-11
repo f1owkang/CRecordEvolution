@@ -80,6 +80,13 @@ function App() {
       const progress = Math.max(0, Math.min(2, el.scrollLeft / width));
       const indicator = document.getElementById('dockInd');
       if (indicator) indicator.style.transform = 'translateX(' + progress * 100 + '%)';
+      // 标题横向 track 与页面滚动同一进度：滑到一半时两张标题各露一半。
+      const titles = document.getElementById('titleTrack');
+      if (titles) titles.style.transform = 'translate3d(' + -progress * (100 / 3) + '%,0,0)';
+      const titleEls = document.querySelectorAll('.topbar-title');
+      for (let i = 0; i < titleEls.length; i++) {
+        titleEls[i].style.opacity = String(Math.max(0, 1 - Math.abs(progress - i)));
+      }
       clearTimeout(settle);
       settle = setTimeout(function () {
         const next = Math.max(0, Math.min(2, Math.round(progress)));
