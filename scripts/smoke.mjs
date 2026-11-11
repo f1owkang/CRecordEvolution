@@ -525,7 +525,7 @@ try {
       bgH: Math.round(bg.getBoundingClientRect().height),
       titleH: Math.round(title.getBoundingClientRect().height),
       font: getComputedStyle(title).fontSize,
-      transform: getComputedStyle(title).transform,
+      transform: getComputedStyle(document.querySelector('.topbar-titles')).transform,
       shadow: getComputedStyle(bg).boxShadow,
       scrolled: document.documentElement.getAttribute('data-scrolled'),
     };
@@ -541,9 +541,11 @@ try {
     '顶栏：折叠后标题视觉变小',
     `${tbCollapsed.titleH} < ${tbExpanded.titleH}`
   );
+  check(tbCollapsed.titleH > 0, '顶栏：折叠后标题仍可见', String(tbCollapsed.titleH));
   check(tbCollapsed.transform !== 'none', '顶栏：折叠使用 transform', tbCollapsed.transform);
   check(tbCollapsed.scrolled === '1', '顶栏：离顶标记');
   check(tbCollapsed.shadow !== 'none', '顶栏：离顶后显示下投阴影', tbCollapsed.shadow);
+  await shotNoScroll(page, 'topbar-collapsed.png');
   const scrollRoot = await page.evaluate(() => {
     const pager = document.getElementById('app');
     const panel = document.querySelector('.page.is-active');
@@ -588,9 +590,34 @@ try {
   await pagerTo(1);
   await page.waitForSelector('#page_history.is-active');
   check(true, '手势：横向 pager 切到历史');
+  const titleAtHistory = await page.evaluate(() => {
+    const track = document.getElementById('titleTrack');
+    const m = new DOMMatrixReadOnly(getComputedStyle(track).transform);
+    return {
+      x: m.m41,
+      text: document.querySelector('#pageTitle').textContent,
+      opacity: [...document.querySelectorAll('.topbar-title')].map((el) =>
+        Number(el.style.opacity || 1)
+      ),
+    };
+  });
+  check(titleAtHistory.x < -100, '顶栏：标题轨道随 pager 横向移动', String(titleAtHistory.x));
+  check(titleAtHistory.text === 'History', '顶栏：标题跟随当前 tab', titleAtHistory.text);
+  check(
+    titleAtHistory.opacity[0] === 0 && titleAtHistory.opacity[1] === 1,
+    '顶栏：非当前标题淡出',
+    JSON.stringify(titleAtHistory.opacity)
+  );
   await pagerTo(0);
   await page.waitForSelector('#page_overview.is-active');
   check(true, '手势：横向 pager 切回概览');
+  const titleAtOverview = await page.evaluate(() => {
+    const track = document.getElementById('titleTrack');
+    const m = new DOMMatrixReadOnly(getComputedStyle(track).transform);
+    return { x: m.m41, text: document.querySelector('#pageTitle').textContent };
+  });
+  check(Math.abs(titleAtOverview.x) < 1, '顶栏：回概览标题归位', String(titleAtOverview.x));
+  check(titleAtOverview.text === 'CRecord Evolution', '顶栏：回概览标题正确', titleAtOverview.text);
 
   // 底栏手指横向滑动：拖动时实时带动 pager，松手吸附到最近页。
   const dockBox = await page.locator('.dock-inner').boundingBox();
