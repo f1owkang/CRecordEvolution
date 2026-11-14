@@ -14,6 +14,9 @@ const LANGS = {
     history_summary_valid: '有效会话',
     history_summary_discharges: '放电记录',
     history_summary_samples: '采样数',
+    history_summary_charge: '总充入（mAh）',
+    history_summary_avg: '平均每次（mAh）',
+    history_summary_duration: '平均时长（分钟）',
     // 历史页：记录 / 趋势视图切换与范围筛选
     hist_mode_records: '记录',
     hist_mode_trends: '趋势',
@@ -33,6 +36,8 @@ const LANGS = {
     hist_empty_filter: '该筛选下暂无记录',
     hist_empty_trends: '趋势数据还不够，继续使用后会出现',
     hist_trend_capacity: '容量趋势',
+    hist_trend_archive: '长期容量档案',
+    hist_archive_note: '每日汇总，永久保留',
     hist_trend_sessions: '充电会话',
     hist_trend_discharge: '放电记录',
     hist_trend_rest: '静置电压',
@@ -183,6 +188,9 @@ const LANGS = {
     trend_days: ' · {n}/21 天',
     trend_down: '每周衰减 {n} mAh',
     trend_up: '每周回升 {n} mAh',
+    life_months: '约 {n} 个月后降至 80%',
+    life_weeks_one: '约 {n} 周后降至 80%',
+    life_weeks: '约 {n} 周后降至 80%',
 
     // 质量哨兵（ema / 中段 / 放电 / 内核四路互检）
     qual_ok: '可信',
@@ -237,6 +245,9 @@ const LANGS = {
     history_summary_valid: 'Valid sessions',
     history_summary_discharges: 'Discharges',
     history_summary_samples: 'Samples',
+    history_summary_charge: 'Charged (mAh)',
+    history_summary_avg: 'Avg charge (mAh)',
+    history_summary_duration: 'Avg duration (min)',
     // 历史页：记录 / 趋势视图切换与范围筛选
     hist_mode_records: 'Records',
     hist_mode_trends: 'Trends',
@@ -256,6 +267,8 @@ const LANGS = {
     hist_empty_filter: 'No records for this filter',
     hist_empty_trends: 'Not enough trend data yet; keep using the module',
     hist_trend_capacity: 'Capacity trend',
+    hist_trend_archive: 'Capacity archive',
+    hist_archive_note: 'daily summary, kept forever',
     hist_trend_sessions: 'Sessions',
     hist_trend_discharge: 'Discharge',
     hist_trend_rest: 'Resting V',
@@ -408,6 +421,9 @@ const LANGS = {
     trend_days: ' · {n} of 21 days',
     trend_down: 'Down {n} mAh per week',
     trend_up: 'Up {n} mAh per week',
+    life_months: 'About {n} months to 80% at this rate',
+    life_weeks_one: 'About {n} week to 80% at this rate',
+    life_weeks: 'About {n} weeks to 80% at this rate',
 
     // 质量哨兵（ema / 中段 / 放电 / 内核四路互检）
     qual_ok: 'Reliable',

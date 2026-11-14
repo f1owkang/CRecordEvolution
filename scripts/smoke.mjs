@@ -123,7 +123,7 @@ const day = 86400;
 
 const jsonDoc = {
   channel: 'stable',
-  version: '1.3.6(35)',
+  version: '1.3.10(39)',
   design_mah: 5000,
   full_mah: 4800,
   cycles: 210,
@@ -136,6 +136,8 @@ const jsonDoc = {
   trend_mah_per_week: -6.2,
   trend_state: 'significant',
   trend_span_day: 21,
+  // 终点预测：后端按显著衰减斜率算好周数（18 周≈4 个月），前端只换算单位
+  weeks_to_80: 18,
   // 趋势虚线端点：与 recent 同一份数据拟合（后端 trend_from/to），前端直接画线
   trend_from_mah: 4600,
   trend_to_mah: 4490,
@@ -169,7 +171,7 @@ const jsonDoc = {
       eta_min: 42,
     },
   },
-  daemon: { version: '1.3.6(35)', ts: now, age_sec: 12, stale: true },
+  daemon: { version: '1.3.10(39)', ts: now, age_sec: 12, stale: true },
   recent: [
     { ts: now - day * 4, mah: 4620 },
     { ts: now - day * 3, mah: 4560 },
@@ -290,7 +292,7 @@ const SMOKE_DATA = {
   json: jsonDoc,
   diag:
     'CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）\n' +
-    'module=1.3.6(35) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
+    'module=1.3.10(39) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
     'device=OnePlus PJE110 (aston)\n' +
     'calib=x1000 ma I_node=/sys/class/power_supply/battery/current_now\n' +
     'est=5273mAh samples=12 cycleEq=1.42\n' +
@@ -305,6 +307,9 @@ const SMOKE_DATA = {
     valid_sessions: sessions.length,
     discharges: discharges.length,
     samples: 15432,
+    charge_mah: 12345,
+    avg_mah: 2345,
+    avg_secs: 3900,
     oldest_ts: now - day * 29,
     newest_ts: now,
   },
@@ -315,6 +320,15 @@ const SMOKE_DATA = {
     rest_points: restPoints,
     ccct,
     ica_peaks: ica,
+    // 长期档案：跨越 150 天（超出 90 天明细窗口），验证永久保留的档案照常展示。
+    archive: [
+      { ts: now - day * 150, mah: 4800 },
+      { ts: now - day * 120, mah: 4760 },
+      { ts: now - day * 90, mah: 4720 },
+      { ts: now - day * 60, mah: 4690 },
+      { ts: now - day * 30, mah: 4660 },
+      { ts: now - day * 3, mah: 4640 },
+    ],
   },
   nextBefore: now - day * 7,
 };
@@ -718,6 +732,14 @@ try {
   check((await page.locator('#page_overview .hero-temp').count()) === 1, '概览：温度行在主卡内');
   const heroTemp = await page.locator('#page_overview .hero-temp').innerText();
   check(heroTemp.includes('31.5') && heroTemp.includes('℃'), '概览：温度数值与单位', heroTemp);
+  // 健康度终点预测：只在趋势单元格里追加一行，不改变原有趋势文案。
+  const lifeText = await page.evaluate(() => {
+    const cells = [...document.querySelectorAll('#page_overview .cell')];
+    const cell = cells.find((c) => c.textContent.includes('Capacity trend'));
+    const det = cell && cell.querySelector('.det');
+    return det ? det.textContent : '';
+  });
+  check(lifeText === 'About 4 months to 80% at this rate', '概览：健康度终点预测', lifeText);
   // 充电中实时卡：状态 / 电流 / 功率 / 电压 / 会话进度 / 预计充满
   check(
     (await page.locator('#page_overview .charge-card').count()) === 1,
@@ -767,7 +789,16 @@ try {
   await page.click('#nav_history');
   await page.waitForSelector('#page_history.is-active');
   await page.waitForSelector('#page_history .tl-item', { timeout: 15000 });
-  check((await page.locator('#page_history .hist-stat').count()) === 3, '历史：三张摘要卡');
+  check((await page.locator('#page_history .hist-stat').count()) === 6, '历史：六张摘要卡');
+  const statTexts = await page.locator('#page_history .hist-stat').allInnerTexts();
+  check(
+    statTexts.some((s) => s.includes('mAh')),
+    '历史：摘要含充入容量'
+  );
+  check(
+    statTexts.some((s) => s.includes('min')),
+    '历史：摘要含平均时长'
+  );
   check((await page.locator('#page_history .tl-item').count()) >= 3, '历史：时间轴记录');
   check((await page.locator('#page_history .hist-chips--single').count()) === 1, '历史：筛选单行');
   check(
@@ -940,7 +971,7 @@ try {
     { timeout: 10000 }
   );
   await sleep(150);
-  check((await page.locator('#page_history .trend-hero').count()) === 2, '趋势：两张主卡');
+  check((await page.locator('#page_history .trend-hero').count()) === 3, '趋势：三张主卡');
   check((await page.locator('#page_history .trend-tile').count()) === 4, '趋势：四张小图');
 
   // 容量大图：点按数据点出现读数 + 高亮圈；点图表空白处清除选中回到提示文案
@@ -1003,6 +1034,31 @@ try {
   check(ringInside, '趋势：顶部点高亮圈不被裁切');
   await shot(page, 'trends-top-tap.png');
   await capHero.locator('.chart').click({ position: { x: 4, y: 4 } });
+
+  // 长期容量档案：独立于范围筛选的主卡（150 天前仍有点），标题、永久保留说明与
+  // 点按读数/高亮都要可用。
+  const archiveHero = page.locator('#page_history .trend-hero').nth(1);
+  check(
+    (await archiveHero.locator('.trend-title').innerText()) === 'Capacity archive',
+    '趋势：长期档案主卡'
+  );
+  check(
+    (await archiveHero.locator('.trend-cap').innerText()).includes('kept forever'),
+    '趋势：长期档案永久保留说明'
+  );
+  await archiveHero.locator('.chart circle[data-i="3"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => {
+      const el = document
+        .querySelectorAll('#page_history .trend-hero')[1]
+        .querySelector('.trend-det');
+      return el && /mAh/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
+  check((await archiveHero.locator('circle.pt-sel').count()) === 1, '趋势：长期档案点按高亮');
+  await archiveHero.locator('.chart').click({ position: { x: 4, y: 4 } });
 
   await page.locator('#page_history .trend-tile').first().click();
   await page.waitForSelector('#page_history .trend-tile.is-open .trend-big', { timeout: 5000 });
@@ -1093,7 +1149,7 @@ try {
     '设置：关于通道/版本胶囊'
   );
   check(
-    (await page.locator('#page_settings [data-field="version"]').innerText()).includes('1.3.6'),
+    (await page.locator('#page_settings [data-field="version"]').innerText()).includes('1.3.10'),
     '设置：关于版本信息'
   );
   await page.locator('#theme_seg .seg-btn').nth(1).click();

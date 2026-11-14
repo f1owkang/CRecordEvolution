@@ -143,7 +143,19 @@ function overviewTrendText(doc, hasTrendMahPerWeek, trendMahPerWeek, t) {
   return t('trend_up', { n: fmtFix(trendMahPerWeek, 1) });
 }
 
-// 可信度详情：只列本机已有的容量口径，按固定顺序用「 / 」拼接
+// 终点预测：后端只在趋势显著、方向为衰减且未跌破 80% 时下发 weeks_to_80。
+// 前端只做单位换算（<9 周按周，其余按月，1 个月≈4.345 周），不拿斜率外推；
+// 月份最小为 2，只有周数可能为 1，故周文案走 plural。
+function overviewLifeText(doc, lang, t) {
+  const weeks = doc && doc.weeks_to_80 != null ? Number(doc.weeks_to_80) : NaN;
+  if (!isFinite(weeks) || weeks < 1) return null;
+  if (weeks < 9) {
+    return plural(lang, weeks, 'life_weeks_one', 'life_weeks', { n: fmtInt(weeks) });
+  }
+  const months = Math.max(2, Math.round(weeks / 4.345));
+  return t('life_months', { n: fmtInt(months) });
+}
+
 function overviewQualDetail(quality, t) {
   return QUAL_CHANNELS.filter(function (channelKey) {
     return quality[channelKey + '_mah'] != null;
@@ -170,6 +182,7 @@ function buildOverviewModel(doc, lang, t) {
   const trendMahPerWeek = doc ? Number(doc.trend_mah_per_week) : NaN;
   const hasTrendMahPerWeek = doc && doc.trend_mah_per_week != null && isFinite(trendMahPerWeek);
   const trendText = overviewTrendText(doc, hasTrendMahPerWeek, trendMahPerWeek, t);
+  const lifeText = overviewLifeText(doc, lang, t);
   // 趋势线端点由后端给出（与 recent 同一份 estimates 拟合）；旧 JSON 没有这两个
   // 字段时不画虚线，避免前端拿首点+斜率外推导致线整体偏移。
   const trendLine =
@@ -232,6 +245,7 @@ function buildOverviewModel(doc, lang, t) {
     cyceqText: fmtFix(doc ? doc.cycle_equiv : null, 2),
     rmohText: doc && doc.r_moh != null ? fmtFix(doc.r_moh, 1) + ' mΩ' : t('rmoh_collecting'),
     trendText,
+    lifeText,
     qualityOk,
     qualityText,
     qualityDetailText,

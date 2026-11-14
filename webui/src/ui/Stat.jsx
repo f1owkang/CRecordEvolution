@@ -1,5 +1,5 @@
 // 历史页摘要区的统计卡（HistStat）：上数值、下标题的两行布局，三张卡横排。
-// WebUI 组件统一使用 JSX（@preact/preset-vite automatic runtime）。
+// 单位统一写在标题里（如「总充入（mAh）」），数值列只放纯数字，窄屏不会断行。
 export function HistStat({ value, label }) {
   return (
     <div class="hist-stat">

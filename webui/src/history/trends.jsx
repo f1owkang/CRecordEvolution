@@ -112,7 +112,7 @@ function TrendEmpty({ message }) {
   );
 }
 
-const NO_SEL = { cap: null, ses: null, tileKey: null, tileIndex: null };
+const NO_SEL = { cap: null, archive: null, ses: null, tileKey: null, tileIndex: null };
 
 // 趋势视图：派生数据全部在 buildTrendModel，这里只维护「哪张图的哪个点被选中」
 // 并把模型排成两张 hero + 四张小图。
@@ -126,7 +126,7 @@ function TrendsView({ trends, openTile, onToggleTile }) {
     },
     [trends]
   );
-  const selMap = { cap: sel.cap, ses: sel.ses, tiles: {} };
+  const selMap = { cap: sel.cap, archive: sel.archive, ses: sel.ses, tiles: {} };
   if (openTile != null && sel.tileKey === openTile) selMap.tiles[openTile] = sel.tileIndex;
   const model = buildTrendModel(trends, t, lang, selMap);
   if (!model.hasAnyData) return <TrendEmpty message={t('hist_empty_trends')} />;
@@ -134,6 +134,9 @@ function TrendsView({ trends, openTile, onToggleTile }) {
   const hint = t('tap_hint');
   function selectCap(index) {
     setSel((old) => ({ ...old, cap: index }));
+  }
+  function selectArchive(index) {
+    setSel((old) => ({ ...old, archive: index }));
   }
   function selectSes(index) {
     setSel((old) => ({ ...old, ses: index }));
@@ -163,6 +166,17 @@ function TrendsView({ trends, openTile, onToggleTile }) {
     hint,
     onSelect: selectCap,
   };
+  const archiveHero = {
+    title: t('hist_trend_archive'),
+    value: model.archiveVal,
+    svg: model.archiveSvg,
+    empty: t('hist_empty_trends'),
+    caption: model.archiveCap,
+    points: model.archiveRows,
+    det: selectedText(model.archiveRows, model.archiveFormat, sel.archive),
+    hint,
+    onSelect: selectArchive,
+  };
   const sessionsHero = {
     title: t('hist_trend_sessions'),
     value: model.sesVal,
@@ -189,6 +203,7 @@ function TrendsView({ trends, openTile, onToggleTile }) {
   return (
     <div class="trend-wrap">
       <TrendHero {...capacityHero} />
+      <TrendHero {...archiveHero} />
       <TrendHero {...sessionsHero} />
       <TrendGrid tiles={tiles} openTile={openTile} onToggleTile={toggleTile} />
     </div>

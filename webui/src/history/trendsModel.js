@@ -99,6 +99,18 @@ function buildTrendModel(trends, t, lang, sel) {
     estDelta = t('hist_est_delta', { n: (diff >= 0 ? '+' : '') + fmtInt(diff) });
   }
 
+  // 长期容量档案：来自永久保留的每日汇总（daily 表），不受 --days 范围筛选影响，
+  // 因此始终展示本机有史以来的容量点；点按读数与容量趋势卡同格式。
+  const archiveRows = ascRows(Array.isArray(trendData.archive) ? trendData.archive : [], 'mah');
+  const archiveSvg = archiveRows.length
+    ? svgLine(archiveRows, CHART_W, CHART_H, 'var(--accent)', null, sel.archive)
+    : '';
+  const latestArchive = archiveRows.length ? archiveRows[archiveRows.length - 1] : null;
+  const archiveVal = latestArchive ? fmtInt(latestArchive.mah) + ' mAh' : '—';
+  const archiveCap = archiveRows.length
+    ? pointsCaption(lang, pickPairs(archiveRows, 'ts', 'mah')) + ' · ' + t('hist_archive_note')
+    : '';
+
   // 充电会话：只取结算有效、且有涨幅的会话，值优先展示最近一次的涨幅。
   const sessions = (Array.isArray(trendData.sessions) ? trendData.sessions : []).filter(
     (session) => session && session.valid && isFinite(Number(session.delta_pct))
@@ -207,6 +219,7 @@ function buildTrendModel(trends, t, lang, sel) {
 
   const hasAnyData =
     capRows.length ||
+    archiveRows.length ||
     sesRows.length ||
     disAsc.length ||
     restAsc.length ||
@@ -274,6 +287,13 @@ function buildTrendModel(trends, t, lang, sel) {
       return capacityReadout(lang, row);
     },
     estDelta,
+    archiveSvg,
+    archiveVal,
+    archiveCap,
+    archiveRows,
+    archiveFormat: function (row) {
+      return capacityReadout(lang, row);
+    },
     sesBig,
     sesVal,
     sesCap,

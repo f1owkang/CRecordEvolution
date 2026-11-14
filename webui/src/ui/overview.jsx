@@ -129,6 +129,7 @@ function Overview(props) {
         >
           <div class="label">{t('label_trend')}</div>
           <div class="val">{m.trendText}</div>
+          {m.lifeText ? <div class="det">{m.lifeText}</div> : null}
         </div>
         <Cell
           label={t('label_qual')}

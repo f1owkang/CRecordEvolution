@@ -70,7 +70,7 @@ const day = 86400;
 // —— 虚构演示数据：数值自洽（估算 4520mAh / 设计 5000mAh ≈ 90%，当前 76% 充电中）——
 const jsonDoc = {
   channel: 'stable',
-  version: '1.3.8(37)',
+  version: '1.3.10(39)',
   design_mah: 5000,
   full_mah: 4820,
   cycles: 232,
@@ -84,6 +84,7 @@ const jsonDoc = {
   trend_mah_per_week: -5.8,
   trend_state: 'significant',
   trend_span_day: 24,
+  weeks_to_80: 15,
   trend_from_mah: 4680,
   trend_to_mah: 4530,
   quality: { ok: true, spread_pct: 4, ema_mah: 4520, mid_mah: 4600, dis_mah: 4500, full_mah: 4820 },
@@ -115,7 +116,7 @@ const jsonDoc = {
       eta_min: 42,
     },
   },
-  daemon: { version: '1.3.8(37)', ts: now, age_sec: 12 },
+  daemon: { version: '1.3.10(39)', ts: now, age_sec: 12 },
   recent: [
     { ts: now - day * 24, mah: 4680 },
     { ts: now - day * 21, mah: 4655 },
@@ -236,7 +237,7 @@ const DEMO = {
   json: jsonDoc,
   diag:
     'CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）\n' +
-    'module=1.3.8(37) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
+    'module=1.3.10(39) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
     'device=OnePlus PJE110 (aston)\n' +
     'calib=x1000 ma I_node=/sys/class/power_supply/battery/current_now\n' +
     'est=4520mAh samples=46 cycleEq=1.68\n' +
@@ -250,6 +251,9 @@ const DEMO = {
     valid_sessions: sessions.length,
     discharges: discharges.length,
     samples: 6420,
+    charge_mah: 18420,
+    avg_mah: 2631,
+    avg_secs: 3720,
     oldest_ts: now - day * 6,
     newest_ts: now,
   },
@@ -260,6 +264,19 @@ const DEMO = {
     rest_points: restPoints,
     ccct,
     ica_peaks: ica,
+    // 长期容量档案：跨越半年的每日汇总（90 天明细清理之外的永久数据）
+    archive: [
+      { ts: now - day * 170, mah: 4660 },
+      { ts: now - day * 150, mah: 4640 },
+      { ts: now - day * 130, mah: 4635 },
+      { ts: now - day * 110, mah: 4610 },
+      { ts: now - day * 90, mah: 4590 },
+      { ts: now - day * 70, mah: 4575 },
+      { ts: now - day * 50, mah: 4552 },
+      { ts: now - day * 30, mah: 4540 },
+      { ts: now - day * 10, mah: 4525 },
+      { ts: now - day * 1, mah: 4520 },
+    ],
   },
   nextBefore: now - day * 7,
 };
@@ -363,6 +380,12 @@ try {
     await page.locator('#hist_mode_seg .seg-btn').nth(1).click();
     await page.waitForSelector('#page_history .trend-wrap', { timeout: 15000 });
     await sleep(400);
+    // 长期容量档案是新增主卡：稍微下滚让「容量趋势 + 长期档案」两张主卡都完整入镜。
+    await page.evaluate(() => {
+      const el = document.querySelector('.page.is-active') || document.getElementById('app');
+      if (el) el.scrollTop = 140;
+    });
+    await sleep(300);
     await shoot(page, `trends-${lang}.png`);
 
     await page.click('#nav_settings');
