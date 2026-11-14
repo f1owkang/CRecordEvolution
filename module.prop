@@ -1,7 +1,7 @@
 id=CRecordEvolution
 name=CRecord Evolution
-version=1.3.8
-versionCode=37
+version=1.3.10
+versionCode=39
 author=f1owkang、hcnk3HrzQe
 description=电池健康与容量实时写入模块描述｜Battery health & capacity live in the module description
 updateJson=https://raw.githubusercontent.com/f1owkang/CRecordEvolution/main/update.json
