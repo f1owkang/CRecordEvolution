@@ -4,8 +4,8 @@
 //
 // 数据流：Tick 每拍读 sysfs（电压/电流/温度/显示电量/charge_counter），充电期
 // 累计会话并在状态翻转时结算；Estimator 把会话隐含容量融合进 EMA 基线；Store
-// 负责 SQLite 十表的读写与 90 天清理；jsonout/history 按「缺失即省略」的纪律
-// 把结果映射为 WebUI 契约。
+// 负责 SQLite 十一表的读写、90 天明细清理与长期档案；jsonout/history 按「缺失
+// 即省略」的纪律把结果映射为 WebUI 契约。
 //
 // 容量多口径（代码与文档里复用的术语）：
 //   - ema：会话隐含容量经 EMA 融合后的「实测」基线（estimator_stable.go /
@@ -21,12 +21,13 @@
 //   - main.go：子命令入口、app 装配、本地时区、描述/once/json 出口；
 //   - pipeline.go：采样状态机、充电会话累计与结算、内阻与静置点；
 //   - discharge.go：放电会话差分累计与校准；
-//   - store.go：SQLite 建表、幂等迁移、各表读写与 90 天清理；
+//   - store.go：SQLite 建表、幂等迁移、各表读写与 90 天明细清理；
+//   - archive.go：按本地日汇总的长期容量档案（永久保留、只读派生）；
 //   - sysfs.go：sysfs 节点查找、整数读取与电流/温度单位归一；
 //   - estimator*.go：stable / ml 两条容量估计通道；
 //   - midwin.go、ccct.go、ccseg.go、ica.go：中段校准与 CCCT/ICA 特征；
 //   - quality.go：ema/mid/dis/full 四路容量口径互检；
-//   - trend.go：容量趋势三态判定（Mann-Kendall）；
+//   - trend.go：容量趋势三态判定（Mann-Kendall）与健康度终点预测；
 //   - describe.go、i18n.go：module.prop 描述与双语文案；
 //   - jsonout.go、history.go：WebUI 取数协议出口。
 package main

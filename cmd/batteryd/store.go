@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS sessions(
   valid INTEGER NOT NULL,                             -- 0/1
   invalid_reason TEXT);
 CREATE TABLE IF NOT EXISTS estimates(ts INTEGER PRIMARY KEY, mah INTEGER NOT NULL); -- mah 为历史列名，实为 µAh
+CREATE TABLE IF NOT EXISTS daily(
+  day INTEGER PRIMARY KEY,   -- 本地日 yyyymmdd（长期档案，不进 90 天清理）
+  ts INTEGER NOT NULL,       -- 当日最后一次采信估算的时刻（Unix 秒）
+  uah INTEGER NOT NULL,      -- 当日最后一次采信估算（µAh）
+  n INTEGER NOT NULL);       -- 当日估算点数量
 CREATE TABLE IF NOT EXISTS resistance(ts INTEGER PRIMARY KEY, mo REAL NOT NULL);   -- 内阻（mΩ）
 CREATE TABLE IF NOT EXISTS rest_points(ts INTEGER PRIMARY KEY, uv INTEGER NOT NULL, cap INTEGER NOT NULL); -- uv=静置电压（µV）；cap=显示电量（%）
 CREATE TABLE IF NOT EXISTS events(ts INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT); -- ts=Unix 秒
@@ -444,10 +449,14 @@ func (s *Store) InsertSession(sess Session) (int64, error) {
 	return res.LastInsertId()
 }
 
-// InsertEstimate 写入一条容量估算点（estUAh 单位 µAh，DB 列名历史遗留为 mah）。
+// InsertEstimate 写入一条容量估算点（estUAh 单位 µAh，DB 列名历史遗留为 mah），
+// 同时并入当天的长期档案（daily）。档案写失败一并返回，避免「明细有、档案缺」
+// 的分叉静默存在。
 func (s *Store) InsertEstimate(ts, estUAh int64) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, estUAh)
-	return err
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, estUAh); err != nil {
+		return err
+	}
+	return s.upsertDaily(localDayKey(ts), ts, estUAh)
 }
 
 // RecentEstimates 取最近 limit 条容量估算（值单位 µAh，按 ts 倒序）。
@@ -770,7 +779,9 @@ func (s *Store) CountSamplesSince(since int64) (int64, error) {
 	return n, err
 }
 
-// PruneBefore 删除各表早于 cutoffTs 的行，实现 90 天保留窗口。
+// PruneBefore 删除各表早于 cutoffTs 的行，实现 90 天明细保留窗口。
+// daily（长期容量档案）不在清理范围内：它按天汇总且体量恒定，是 90 天以外
+// 容量的唯一来源。
 func (s *Store) PruneBefore(cutoffTs int64) error {
 	for _, table := range []struct {
 		name  string

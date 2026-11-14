@@ -195,6 +195,12 @@ func newApp() (*app, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
 	}
+	// 长期容量档案回填：升级后把仍在 90 天窗口内的 estimates 折进 daily，
+	// 只跑一次（kv daily_backfill 标记）。档案是派生只读视图，失败只告警，
+	// 不阻断采样：下次启动会重试（标记未落）。
+	if err := st.BackfillDaily(); err != nil {
+		fmt.Fprintf(os.Stderr, "batteryd: 长期容量档案回填失败：%v\n", err)
+	}
 	fs := SysFS{}
 	// 历史数据量纲修复：charge_counter 按 mAh 报数的机型升级后把旧库的 cc 列
 	// 一次性迁移到 µAh；节点读数不齐时不做猜测，留待下次启动再判。
@@ -479,6 +485,13 @@ func (a *app) stats() (Design, Snapshot, error) {
 			// FitTrend 斜率与 estimates 表同单位（µAh/周），换算为 mAh/周
 			v := tr.MahPerWeek / 1000
 			snap.TrendMahPerWeek = &v
+			// 终点预测只在趋势显著、且当前已有采信估算时给出；前端只展示
+			// 后端算好的周数，不自行外推。设计容量用原始 µAh（不走 mAh 取整）。
+			if a.designUAh > 0 && snap.EstUAh != nil {
+				if weeks, ok := WeeksTo80(*snap.EstUAh, a.designUAh, tr.MahPerWeek); ok {
+					snap.WeeksTo80 = &weeks
+				}
+			}
 		}
 	}
 	return d, snap, nil

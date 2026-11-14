@@ -59,6 +59,24 @@ func TestPaginateHistoryKeepsSameTimestampTogether(t *testing.T) {
 	}
 }
 
+func TestSummarizeCharges(t *testing.T) {
+	rows := []Session{
+		// 电量计口径优先：900000µAh（而不是积分 1000000µAh）
+		{StartTs: 1000, EndTs: 4600, AccUAs: 3_600_000_000, CounterUAh: 900_000, Valid: true},
+		// 无电量计时回退积分：3600000000µA·s ÷ 3600 = 1000000µAh
+		{StartTs: 2000, EndTs: 3800, AccUAs: 3_600_000_000, Valid: true},
+		// 无效会话不参与任何统计
+		{StartTs: 0, EndTs: 9999, AccUAs: 9_999_999, CounterUAh: 123, Valid: false},
+	}
+	charge, avg, secs := summarizeCharges(rows)
+	if charge != 1_900_000 || avg != 950_000 || secs != 2700 {
+		t.Fatalf("summarizeCharges=(%d,%d,%d) want (1900000,950000,2700)", charge, avg, secs)
+	}
+	if charge, avg, secs := summarizeCharges(nil); charge != 0 || avg != 0 || secs != 0 {
+		t.Fatalf("空输入应为全零，got (%d,%d,%d)", charge, avg, secs)
+	}
+}
+
 func TestBuildHistoryDocSummaryFilterAndTrends(t *testing.T) {
 	s := openTestStore(t, t.TempDir()+"/battery.db")
 	defer func() { _ = s.Close() }()
@@ -129,6 +147,14 @@ func TestBuildHistoryDocSummaryFilterAndTrends(t *testing.T) {
 	}
 	if len(doc.Trends.Estimates) != 1 || doc.Trends.Estimates[0].Mah != 4400 {
 		t.Fatalf("estimates=%+v，期望 4400 mAh", doc.Trends.Estimates)
+	}
+	// 长期档案不受范围筛选影响（来自永久保留的 daily 表）。
+	if len(doc.Trends.Archive) != 1 || doc.Trends.Archive[0].Mah != 4400 {
+		t.Fatalf("archive=%+v，期望 4400 mAh", doc.Trends.Archive)
+	}
+	// 摘要的充入统计只计有效会话：积分 600000µAh、时长 1 小时。
+	if doc.Summary.ChargeMah != 600 || doc.Summary.AvgMah != 600 || doc.Summary.AvgSecs != 3600 {
+		t.Fatalf("充入摘要=%+v，期望 600/600/3600", doc.Summary)
 	}
 	if len(doc.Trends.RestPoints) != 1 || len(doc.Trends.Ccct) != 1 || len(doc.Trends.IcaPeaks) != 1 {
 		t.Fatalf("趋势点数不对: rest=%d ccct=%d ica=%d",

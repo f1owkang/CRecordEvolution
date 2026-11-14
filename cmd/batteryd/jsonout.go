@@ -95,6 +95,9 @@ type jsonDoc struct {
 	// 实际点当锚点，虚线整体偏移。
 	TrendFromMah *int64 `json:"trend_from_mah,omitempty"`
 	TrendToMah   *int64 `json:"trend_to_mah,omitempty"`
+	// WeeksTo80 按显著衰减斜率推算降到设计容量 80% 的周数；趋势不显著、
+	// 未采信估算或方向不为衰减时省略（旧前端忽略未知字段）。
+	WeeksTo80 *int64 `json:"weeks_to_80,omitempty"`
 	// Quality 通道互检（各路容量口径互相印证）；可用路数 <2 时整体省略，
 	// 旧前端忽略未知字段，缺失即省略纪律不破坏
 	Quality *Quality `json:"quality,omitempty"`
@@ -200,6 +203,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		TrendMahPerWeek: finitePtr(snap.TrendMahPerWeek),
 		TrendState:      snap.TrendState,
 		TrendSpanDay:    snap.TrendSpanDay,
+		WeeksTo80:       snap.WeeksTo80,
 		EstMahSigma:     finitePtr(snap.SigmaMah),
 		Updated:         now.Format("2006-01-02 15:04:05"),
 		Recent:          make([]recentEntry, 0, len(recent)),

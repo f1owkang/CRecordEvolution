@@ -35,7 +35,8 @@ type historyEvent struct {
 	Discharge *dischargeEntry `json:"discharge,omitempty"`
 }
 
-// historySummary 为范围内摘要统计（会话数/有效会话数/放电数/样本数）。
+// historySummary 为范围内摘要统计（会话数/有效会话数/放电数/样本数，
+// 以及有效会话的充入总量、平均每次充入与平均时长）。
 type historySummary struct {
 	Days          int   `json:"days"`
 	Since         int64 `json:"since"`
@@ -44,11 +45,17 @@ type historySummary struct {
 	ValidSessions int   `json:"valid_sessions"`
 	Discharges    int   `json:"discharges"`
 	Samples       int64 `json:"samples"`
-	OldestTs      int64 `json:"oldest_ts,omitempty"`
-	NewestTs      int64 `json:"newest_ts,omitempty"`
+	// ChargeMah 有效会话累计充入（mAh，电量计差分优先、缺失回退积分），
+	// AvgMah 为平均每次充入，AvgSecs 为平均会话时长（秒）；无有效会话时省略。
+	ChargeMah int64 `json:"charge_mah,omitempty"`
+	AvgMah    int64 `json:"avg_mah,omitempty"`
+	AvgSecs   int64 `json:"avg_secs,omitempty"`
+	OldestTs  int64 `json:"oldest_ts,omitempty"`
+	NewestTs  int64 `json:"newest_ts,omitempty"`
 }
 
 // historyTrends 为历史页趋势视图的数据集（各表最多 historyTrendLimit 点）。
+// Archive 不受 --days 影响：它来自永久保留的按日档案，是 90 天以外容量的来源。
 type historyTrends struct {
 	Sessions   []sessionEntry   `json:"sessions"`
 	Discharge  []dischargeEntry `json:"discharge"`
@@ -56,6 +63,14 @@ type historyTrends struct {
 	Ccct       []ccctEntry      `json:"ccct"`
 	IcaPeaks   []icaEntry       `json:"ica_peaks"`
 	Estimates  []recentEntry    `json:"estimates"`
+	Archive    []archiveEntry   `json:"archive"`
+}
+
+// archiveEntry 为长期容量档案的一个点：TS 为该本地日最后一次估算的时刻，
+// Mah 为当日容量（mAh）。
+type archiveEntry struct {
+	TS  int64 `json:"ts"`
+	Mah int64 `json:"mah"`
 }
 
 // historyDoc 为 `batteryd history` 的 JSON 输出结构。
@@ -181,6 +196,10 @@ func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc,
 		Sessions: len(sessRows), ValidSessions: validSessions,
 		Discharges: len(disRows), Samples: samples,
 	}
+	chargeUAh, avgUAh, avgSecs := summarizeCharges(sessRows)
+	summary.ChargeMah = chargeUAh / 1000
+	summary.AvgMah = avgUAh / 1000
+	summary.AvgSecs = avgSecs
 	if len(all) > 0 {
 		summary.NewestTs = all[0].TS
 		summary.OldestTs = all[len(all)-1].TS
@@ -250,6 +269,7 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 		Ccct:       []ccctEntry{},
 		IcaPeaks:   []icaEntry{},
 		Estimates:  []recentEntry{},
+		Archive:    []archiveEntry{},
 	}
 
 	sessRows, err := st.SessionsSince(since)
@@ -314,5 +334,39 @@ func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
 		tr.Estimates = append(tr.Estimates, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
 	}
 
+	// 长期容量档案：按本地日汇总、永久保留，按需压缩到 historyArchiveLimit 点。
+	dailyRows, err := st.DailyEstimates(archiveQueryLimit)
+	if err != nil {
+		return tr, err
+	}
+	for _, d := range downsampleDaily(dailyRows, historyArchiveLimit) {
+		tr.Archive = append(tr.Archive, archiveEntry{TS: d.TS, Mah: d.UAh / 1000})
+	}
+
 	return tr, nil
+}
+
+// summarizeCharges 由范围内会话行汇总充入统计（只计有效会话）：累计充入 µAh
+// （结算采信的电量计差分优先，缺失/未采信回退电流积分）、平均每次充入 µAh、
+// 平均会话时长（秒）。没有任何有效会话时全部返回 0（JSON 省略）。
+func summarizeCharges(rows []Session) (chargeUAh, avgUAh, avgSecs int64) {
+	var n, secs int64
+	for _, se := range rows {
+		if !se.Valid {
+			continue
+		}
+		n++
+		secs += se.EndTs - se.StartTs
+		energy := se.CounterUAh
+		if energy <= 0 {
+			energy = se.AccUAs / 3600
+		}
+		if energy > 0 {
+			chargeUAh += energy
+		}
+	}
+	if n == 0 {
+		return 0, 0, 0
+	}
+	return chargeUAh, chargeUAh / n, secs / n
 }

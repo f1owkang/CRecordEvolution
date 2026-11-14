@@ -41,6 +41,9 @@ type Snapshot struct {
 	TrendMahPerWeek *float64
 	TrendState      string
 	TrendSpanDay    *int64
+	// WeeksTo80 按显著衰减斜率推算降到设计容量 80% 的周数；趋势不显著、
+	// 未采信估算或方向不为衰减时为 nil（JSON 省略，前端不显示）。
+	WeeksTo80 *int64
 
 	// Quality 通道互检结果（各路容量口径互相印证），无从互检时为 nil
 	Quality *Quality

@@ -2,6 +2,42 @@ package main
 
 import "testing"
 
+func TestWeeksTo80(t *testing.T) {
+	cases := []struct {
+		name    string
+		est     int64
+		design  int64
+		perWeek float64
+		want    int64
+		wantOK  bool
+	}{
+		{"正常衰减", 4_500_000, 5_000_000, -5_000, 100, true},
+		{"四舍五入", 4_500_000, 5_000_000, -4_900, 102, true},
+		{"已跌破 80%", 4_000_000, 5_000_000, -5_000, 0, false},
+		{"回升趋势", 4_500_000, 5_000_000, 5_000, 0, false},
+		{"斜率过小超上限", 4_500_000, 5_000_000, -500, 0, false},
+		{"周数不足 1", 4_000_001, 5_000_000, -100_000, 0, false},
+		{"无设计容量", 4_500_000, 0, -5_000, 0, false},
+		{"无估算", 0, 5_000_000, -5_000, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := WeeksTo80(tc.est, tc.design, tc.perWeek)
+			if ok != tc.wantOK || got != tc.want {
+				t.Fatalf("WeeksTo80(%d,%d,%.0f)=(%d,%v) want (%d,%v)",
+					tc.est, tc.design, tc.perWeek, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+	// 端点：恰好 520 周可给出（gap=520×1000µAh/周），521 周超出上限。
+	if w, ok := WeeksTo80(4_520_000, 5_000_000, -1_000); !ok || w != 520 {
+		t.Fatalf("上限结果=(%d,%v) want (520,true)", w, ok)
+	}
+	if _, ok := WeeksTo80(4_521_000, 5_000_000, -1_000); ok {
+		t.Fatal("521 周应超出预测上限")
+	}
+}
+
 func TestFitTrend(t *testing.T) {
 	base := int64(1735689600) // 2025-01-01
 	var rising []TsVal

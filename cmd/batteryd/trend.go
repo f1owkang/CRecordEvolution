@@ -21,6 +21,11 @@ const (
 	trendMinPts     = 8
 	trendMinSpanDay = 21
 	trendMKZ        = 1.96 // Mann-Kendall 双侧 5% 显著性临界值
+	// trendLifeTarget 健康度终点目标：设计容量的 80%（业界通行的「寿终」口径）。
+	trendLifeTarget = 0.8
+	// trendLifeMaxWeeks 预测上限（约 10 年）：斜率极小但统计显著时，外推
+	// 出的年限没有实际意义，宁可不显示也不给出离谱数字。
+	trendLifeMaxWeeks = 520
 )
 
 // TrendState 为趋势三态：insufficient / stable / significant。
@@ -43,6 +48,30 @@ type TrendResult struct {
 	SpanDay    int64
 	FitFromUAh float64
 	FitToUAh   float64
+}
+
+// WeeksTo80 按显著衰减斜率推算当前采信估算降到设计容量 80% 的周数。
+// perWeekUAh 为 FitTrend 输出的斜率（µAh/周，负值表示衰减），estUAh/designUAh
+// 同为 µAh。只有「已采信估算、设计容量有效、斜率在衰减方向、且未跌破目标」
+// 时才给出结果；周数超出 [1, trendLifeMaxWeeks] 时视为不可预测。
+// 前端只展示这个由后端算好的终点，不自行拿斜率外推。
+func WeeksTo80(estUAh, designUAh int64, perWeekUAh float64) (int64, bool) {
+	if estUAh <= 0 || designUAh <= 0 || perWeekUAh >= 0 {
+		return 0, false
+	}
+	target := float64(designUAh) * trendLifeTarget
+	if float64(estUAh) <= target {
+		return 0, false
+	}
+	weeks := (float64(estUAh) - target) / -perWeekUAh
+	if math.IsNaN(weeks) || math.IsInf(weeks, 0) {
+		return 0, false
+	}
+	w := int64(math.Round(weeks))
+	if w < 1 || w > trendLifeMaxWeeks {
+		return 0, false
+	}
+	return w, true
 }
 
 // FitTrend 对容量估计点做 Theil-Sen 稳健线性拟合：x=(ts-first)/86400 天，斜率×7 折算为
