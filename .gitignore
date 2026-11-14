@@ -8,6 +8,7 @@ data/
 
 # WebUI 依赖与构建产物（webroot/ 由 pnpm build 生成，进模块 zip 但不入库）
 /node_modules/
+/webui/node_modules/
 /webroot/
 /artifacts/
 

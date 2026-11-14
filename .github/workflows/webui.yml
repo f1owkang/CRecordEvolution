@@ -57,6 +57,10 @@ jobs:
       - name: Format check
         run: pnpm run format:check
 
+      # 纯逻辑单测：概览/趋势/时间轴的派生模型（vitest，纯 node 环境，不进产物）
+      - name: Unit tests
+        run: pnpm run test:ui
+
       # 构建到 webroot/，并按 50KB gzip 上限与“无远程请求/外部 URL”扫描产物
       - name: Build and guard
         run: pnpm run verify
