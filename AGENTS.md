@@ -33,6 +33,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 pnpm install --frozen-lockfile
 pnpm run verify   # build → 离线扫描 → 50KB gzip 上限
+pnpm run test:ui  # vitest 纯逻辑单测（overviewModel/trendsModel/timeline，node 环境，不进产物）
 pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate 截图
 pnpm run shots    # 重新生成 README 的 8 张截图（390×844 深色；会覆盖 .github/images/）
 pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:check 只检查不写
@@ -44,7 +45,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 
 ### WebUI 冒烟检查
 
-改 `webui/` 后先 `pnpm run build`，再 `pnpm run smoke`（起静态服务、注入 mock `ksu.exec`、截图写到 `artifacts/smoke/`），或 `pnpm run dev` 手测。至少检查：三页切换且无 console 报错、`assets/*` 与 `boot.js` 无 404；设置页主题/纯黑/取色/语言/底栏（悬浮与经典两种，经典需断言 M3 80dp/24dp/12sp/64×32 指示器）；历史页 7/30/90 天与筛选、滚动加载、详情与趋势小图展开；无 `ksu` 时显示 gate 页而非白屏。
+改 `webui/` 后先 `pnpm run build`，再 `pnpm run smoke`（起静态服务、注入 mock `ksu.exec`、截图写到 `artifacts/smoke/`），或 `pnpm run dev` 手测。纯逻辑（派生模型、时间轴文案、趋势/档案图表模型）补 `src/**/*.test.js` 并跑 `pnpm run test:ui`——smoke 只证明渲染链，覆盖不到模型分支。至少检查：三页切换且无 console 报错、`assets/*` 与 `boot.js` 无 404；设置页主题/纯黑/取色/语言/底栏（悬浮与经典两种，经典需断言 M3 80dp/24dp/12sp/64×32 指示器）；历史页 7/30/90 天与筛选、滚动加载、详情与趋势小图展开、长期档案主卡；无 `ksu` 时显示 gate 页而非白屏。
 
 ### 不能本地验证与测试要求
 
@@ -139,16 +140,16 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 | `.release-baseline` | 更新日志基线（上一版发布内容 commit），CI 回写，勿手改 |
 | `README.md` / `README_ZH.md` / `docs/` | 中英文档必须同步 / 论文 PDF 库 |
 
-运行时数据只在 `$MODDIR/data/` 内；历史查询按 90 天窗口取数，趋势点 ≤120 个/类，事件正文游标分页。
+运行时数据只在 `$MODDIR/data/` 内；历史查询的明细按 90 天窗口取数，趋势点 ≤120 个/类，事件正文游标分页；按天汇总的长期容量档案（`daily` 表）永久保留，下发时压到 ≤120 点。
 
 ## WebUI 与宿主集成
 
 ### 取数协议
 
 - 通过管理器 cbName 协议 `exec(cmd, '{}', 回调函数名)` 调用固定命令：`/data/adb/modules/CRecordEvolution/bin/batteryd json|once|history|diag`。
-- `json` 顶层除概览/历史数据外还有两个实时块：`live`（status/cap/current_ua/voltage_uv/power_mw，`charging` 为进行中会话的 start_ts/start_cap/cap/acc_uah/secs/avg_current_ua/eta_min）与 `daemon`（心跳 version/ts/age_sec/stale）。两者字段缺失即省略：节点全读不到没有 `live`，`data/daemon.json` 缺失/损坏没有 `daemon`；旧 daemon 兼容靠这一点。`live.current_ua` 必须走 `normalizeCurrentUA`（已学刻度优先），**不得**下发原始读数；**符号约定固定为充电正、放电负**（`liveDirection` 按 status + 进行中会话判向，尾段 status=Full 仍按充电），不要跟随 `current_now` 原始符号——部分内核充电报负、放电报正（真机实测），透传会出现「充电中 -8.8A」；`power_mw = current_ua × voltage_uv ÷ 1e9`（双电芯总电压×总电流即总功率，不除电芯数，符号随电流）。ETA 由后端 `chargingEta` 纯函数算（参考满容量取 `charge_full`→`design`，速率优先本次会话平均电流，瞬时电流只在 status=Charging 时兜底，夹到 [1,1440] 分钟），只在充电方向（`liveDirection>0`）给出，放电中不给，前端只显示不推算。
+- `json` 顶层除概览/历史数据外还有两个实时块：`live`（status/cap/current_ua/voltage_uv/power_mw，`charging` 为进行中会话的 start_ts/start_cap/cap/acc_uah/secs/avg_current_ua/eta_min）与 `daemon`（心跳 version/ts/age_sec/stale）。两者字段缺失即省略：节点全读不到没有 `live`，`data/daemon.json` 缺失/损坏没有 `daemon`；旧 daemon 兼容靠这一点。`live.current_ua` 必须走 `normalizeCurrentUA`（已学刻度优先），**不得**下发原始读数；**符号约定固定为充电正、放电负**（`liveDirection` 按 status + 进行中会话判向，尾段 status=Full 仍按充电），不要跟随 `current_now` 原始符号——部分内核充电报负、放电报正（真机实测），透传会出现「充电中 -8.8A」；`power_mw = current_ua × voltage_uv ÷ 1e9`（双电芯总电压×总电流即总功率，不除电芯数，符号随电流）。ETA 由后端 `chargingEta` 纯函数算（参考满容量取 `charge_full`→`design`，速率优先本次会话平均电流，瞬时电流只在 status=Charging 时兜底，夹到 [1,1440] 分钟），只在充电方向（`liveDirection>0`）给出，放电中不给，前端只显示不推算。`weeks_to_80` 由后端 `WeeksTo80`（显著衰减斜率 + 当前采信估算 + 设计容量）算好，只在趋势 significant、方向为衰减、未跌破 80% 且周数在 [1,520] 时下发；**前端只换算周/月单位，不得自行拿斜率外推**。
 - `diag` 只输出短文本（≤1800 字符）：机型/系统/root 管理器/电池节点/校准与最近会话摘要 + 最近一次校准或口径裁决 detail（≤160 字、带 `(Nd)` 时效）+ 最后采样时间；日志按关键词优先、启动行去重。**不得含序列号/IMEI/MAC/账号**；`getprop` 必须走 `diagAllowedProps` 白名单（manufacturer/model/device/release/sdk/abi），白名单外直接返回空。设置页「复制诊断」执行它写剪贴板（失败回退只读文本框）。
-- 历史页用 `history --days 7|30|90 --limit 20 --type all|charge|discharge [--before TS]`：服务端合并充电/放电事件、按时间倒序游标分页，返回摘要与趋势点；`json` 保持原样供概览/设置。
+- 历史页用 `history --days 7|30|90 --limit 20 --type all|charge|discharge [--before TS]`：服务端合并充电/放电事件、按时间倒序游标分页，返回摘要与趋势点；摘要含有效会话的 `charge_mah`（累计充入）、`avg_mah`/`avg_secs`（平均每次充入/平均时长），无有效会话时省略；`trends.archive` 为长期容量档案（`{ts, mah}`，来自 `daily` 表，不受 `--days` 影响、最多 120 点）；`json` 保持原样供概览/设置。
 - 15s 超时；`ksu` → `APatch`/`apatch` 级联回退；无 `ksu` 显示 gate 页。命令必须是常量或固定模板拼接；`history` 参数只接受数字与固定枚举，不得拼用户输入或远端数据。
 
 ### Edge-to-edge / 系统栏
@@ -172,7 +173,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 三页与设置项
 
 - 概览：健康度主卡（容量行下方温度行 `temp_c`，缺失整行省略）、充电中实时卡（`live`）、容量/循环/估算/内阻/趋势/可信度、估算趋势图。充电实时卡只在 `live.charging` 存在或 `status=Charging` 时渲染，显示实时电流/功率/电压、本次会话进度与预计充满，字段缺失逐段省略；电流/功率符号按上面的「充电正、放电负」约定显示（放电中不显示预计充满）；会话进度与预计充满**合并为一行**（`.charge-meta`，`nowrap`，390dp 不溢出，smoke 断言 `scrollWidth` 与单行高度）。充电期轮询 15s、其余 60s（`POLL_CHARGE`/`POLL_BASE`），`chargeActive()` 是两处共用的唯一判据。`contentFP` 按 0.1℃ 纳入 `temp_c`，剔除 `calib.raw_current`/`current_ua`（每次 json 都变、不展示），并把 `live` 按显示粒度取整（电流 10mA、功率 0.1W、电压 0.01V、会话 1mAh/60s），否则实时值会被去重冻结；`recent` 与 `trend_mah_per_week` 共用最近 200 点窗口；趋势显著时 JSON 给 `trend_from_mah`/`trend_to_mah`（窗口首/末点容量），前端直接连两端点画虚线，不要下发斜率让前端外推。
-- 历史：摘要统计；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；趋势视图为容量与充电会话大图 + 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。时间轴条目用 `content-visibility: auto` + `contain-intrinsic-size: auto 96px` 跳过离屏渲染；修改列表高度/分页时必须回归滚动位置与「加载更早」，避免 intrinsic 估算造成 scrollHeight 跳变。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
+- 历史：摘要统计（有效会话/放电/采样数 + 总充入/平均每次/平均时长）；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；趋势视图为容量与充电会话大图 + **长期容量档案**大图（`trends.archive`，每日汇总、不受范围筛选影响，永久保留）+ 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。时间轴条目用 `content-visibility: auto` + `contain-intrinsic-size: auto 96px` 跳过离屏渲染；修改列表高度/分页时必须回归滚动位置与「加载更早」，避免 intrinsic 估算造成 scrollHeight 跳变。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
 - 设置：外观（主题/纯黑/取色/语言/底栏）、手动刷新、数据信息（含采样节点与电流刻度诊断，来自 JSON 顶层 `calib`，末尾「复制诊断」）、关于（品牌卡 + 版本/通道/许可/第三方）。`json` 的 `sessions` 只有最近 10 条，「会话数」必须用顶层 `sessions_n`；会话条目 `start_cap`/`end_cap`，趋势卡与时间轴百分比是 **SOC 百分点变化**（70%→97% 是 27 个点），不是容量增长。`daemon.stale` 为 true 时数据区追加一行「已升级，重启后生效」（`data-field="daemon"`），不 stale 时该行不出现。
 - 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；**`classic` 按 Material 3 Navigation bar 规范**：容器 `--nav-bg`（内置=卡片色，取色=`surfaceContainer`）、高 80dp、图标 24dp、label 12sp/500、激活指示器 64×32dp 全圆角 `--nav-ind-bg`（取色=`secondaryContainer`）、激活图标 `onSecondaryContainer`、激活 label `onSurface`、未激活 `onSurfaceVariant`；悬浮态沿用原胶囊但选中底/字改用同一组 token。`cre_theme` 为 `auto|light|dark|my`（`my` 仅宿主提供 M3 调色板时可选中，明暗从调色板 `--background` 亮度推导，`data-scheme` 承载方案）；`cre_amoled` 为独立纯黑开关（只在解析为深色时把底色压到 `#000`，浅色不受影响；`data-black` 属性承载）；`cre_lang`。切页保存/恢复滚动；顶栏不提供刷新按钮，手动刷新只在设置页用页内「立即刷新」（其余靠 15s/60s 轮询）。
 
@@ -209,7 +210,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 时间与存储
 
 - 设备 `time.Now()` 可能是 UTC：面向用户的时间戳一律 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → UTC，内嵌 `time/tzdata`）；Pipeline 注入时钟同样用 `localNow`。
-- SQLite 十表：kv/sessions/estimates/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；90 天清理。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
+- SQLite 十一表：kv/sessions/estimates/daily/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；`PruneBefore` 清理 90 天明细，**`daily`（长期容量档案）不清理**。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
 - daemon 每 tick（循环前先写一次）原子写 `data/daemon.json`（临时文件 + rename，`{version,pid,ts}`）；`json`/`diag` 读它判断「已升级但旧 daemon 仍常驻」。心跳写失败静默，绝不阻塞采样；`json` 的 `daemon` 与 diag 的 `daemon=` 行都按文件缺失整体省略（旧版兼容）。
 - 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`RepairCounterUnits` 按「counter 读数 + charge_full + 显示电量」判定 mAh 口径机型，把历史 `samples.cc`/`sessions.cc`/`discharge.uah`/`discharge.implied` 与进行中会话 kv 一次性 ×1000（kv `counter_unit_repair`）。迁移以 kv `counter_unit_epoch`（新代码首次启动时刻）为截止，**只处理该时刻之前写入的行**：后续启动复用同一 epoch 重试也不会碰到已归一的新行；读不到节点/量纲不确定时本次不判定、不落终态标记，下次启动重试。不迁移 estimates/ema/mid_implied（可能来自积分口径）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
 - `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
@@ -230,6 +231,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
 - 放电会话只在 `status=Discharging` 时累计；旁路供电机型（Full 但实际放电）会漏记。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。
+- 长期容量档案（`daily`）取「当日最后一笔采信估算」，只做只读派生，不参与结算/校准/互检；升级后首次启动把仍在 90 天窗口内的 `estimates` 回填一次（kv `daily_backfill`），更早的历史在升级前已被清理、无法补回；回填失败只告警不阻断采样，下次启动重试。
 - 电流刻度自校准只在充电结算发生：学到新刻度会按新刻度重算该会话积分电量/平均电流/倍率（`sessions.ua`、`avg_i`、`c_rate`），并按比例回填该区间的 `samples.ua`、`resistance.mo` 与 `ica_peak_base`（事件 `cur_backfill`/`cur_backfill_fail`/`cur_backfill_skip`）；仅当旧有效刻度可确定（已学 >0，或 `anchorScaleUA(charge_full)`=1/1000）才回填。回填不覆盖 `charged_ua_total` 与历史行；无 counter 的机型缺标尺无法自校准；已发布库的坏基准无法自动识别。
 
 ## 安全注意事项
@@ -256,7 +258,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - [ ] 提交信息符合「提交信息（Git）」：`type(scope): 中文单行主题`，正文写根因/改动/测试（已先看 `git log` 对齐风格）。
 - [ ] Go 改动有测试；`go test ./...`、`go vet ./...` 通过。
 - [ ] shell 改动通过 `bash -n`，并说明无法在真机验证。
-- [ ] WebUI 改动通过 `pnpm run verify` 与 `pnpm run smoke`（或真机/模拟宿主），三页/设置/图表/分页都检查过。
+- [ ] WebUI 改动通过 `pnpm run verify`、`pnpm run test:ui` 与 `pnpm run smoke`（或真机/模拟宿主），三页/设置/图表/分页都检查过。
 - [ ] 没有把 `webroot/`、`node_modules/`、`artifacts/` 加入提交。
 - [ ] 新增 UI 文案同时更新 zh/en；新增 JSON 字段两端同步。
 - [ ] 需要发布的版本才改 `module.prop` 版本号；不提交 `bin/`、`dist/`、zip。

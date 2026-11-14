@@ -38,7 +38,10 @@ The three WebUI pages (Overview / History / Settings) at a glance. The battery d
 - **Live charging at a glance**: while charging, the Overview shows live current / power / voltage, this session's progress and the estimated time to full, refreshing every 15 s while charging (60 s otherwise).
 - **Three-page WebUI**: Overview / History / Settings; the Overview shows the current battery temperature, history filters by 7/30/90 days and by charge/discharge, records page through, and trend charts expand on tap with per-point values.
 - **Cross-checked capacity paths**: kernel full charge, mid-stretch calibration, discharge differential and settled sessions each produce a value; a clear mismatch is flagged instead of trusting one path alone.
-- **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, kept for 90 days.
+- **Long-term capacity archive**: the History · Trends view keeps a permanent day-by-day capacity archive (the 90-day window only prunes raw detail), so the wear curve stays visible across seasons.
+- **Charging statistics**: the History summary shows total charged, average charge per session and average session length for the selected range.
+- **Wear outlook**: when the capacity trend is statistically significant, the Overview's trend cell estimates "about N months to 80%" at the current rate — it only appears when the data supports it.
+- **Fully offline**: no network permission, no telemetry; data is written only to the local `data/battery.db`, with raw detail kept for 90 days and the daily capacity archive kept indefinitely.
 - **Multiple managers supported**: Magisk v20.4+ / KernelSU / APatch / MMRL, arm64 only; upgrades keep the previous learning history automatically.
 - **Theme options**: follow the system, or pick light / dark, plus an independent pure-black background switch for AMOLED screens (dark mode only); the bottom bar supports a floating pill or a Material 3 navigation bar.
 - **Material motion**: the top app bar starts with a large title and collapses smoothly while scrolling (and re-expands at the top); the bottom bar uses Material Symbols icons (outlined / filled for the active item). Reduced-motion settings are respected.
