@@ -593,6 +593,30 @@ func (a *app) sigmaMah() *float64 {
 }
 
 func runDaemon() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("定位可执行文件失败：%w", err)
+	}
+	moddir := deriveModdir(exe)
+	// 入口先抢单实例锁，且必须早于 newApp：否则第二个进程也会跑库迁移/回填，
+	// 并与持有者抢写。服务被重复拉起（升级后新旧并存、管理器重跑 service.sh、
+	// 手动执行）都会走到这里，拿不到锁就安静退出，由已在跑的那个继续采样。
+	lock, err := acquireDaemonLock(filepath.Join(moddir, "data", daemonLockFile))
+	if err != nil {
+		if errors.Is(err, errDaemonLocked) {
+			appendDaemonLog(moddir, "[守护] 已有 daemon 在运行，本进程退出（pid=%d）", os.Getpid())
+			fmt.Fprintln(os.Stderr, "batteryd: 已有守护进程在运行，本次启动跳过")
+			return nil
+		}
+		return err
+	}
+	defer lock.Close()
+	// 旧版本没有这把锁（issue #12）：把仍在内存里的旧 daemon 结束掉，避免新旧
+	// 两套口径同时写库。已持有的锁保证不会误伤本次进程。
+	if pids := reclaimOtherDaemons(exe); len(pids) > 0 {
+		appendDaemonLog(moddir, "[守护] 已回收旧 daemon 进程 %v", pids)
+	}
+
 	a, err := newApp()
 	if err != nil {
 		return err
@@ -720,7 +744,13 @@ func tickStrike(prev int, err error) (int, bool) {
 // 超过 maxLogBytes 时收敛为保尾 128KB 的环形语义。日志永远不影响主链路，
 // 任何内部错误均静默吞掉。
 func (a *app) appendLog(format string, args ...any) {
-	path := filepath.Join(a.moddir, "data", logFile)
+	appendDaemonLog(a.moddir, format, args...)
+}
+
+// appendDaemonLog 是 appendLog 的包级实现：daemon 入口在 newApp 之前（抢锁、
+// 回收旧进程）就需要写日志，那时还没有 app。
+func appendDaemonLog(moddir, format string, args ...any) {
+	path := filepath.Join(moddir, "data", logFile)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -729,7 +759,7 @@ func (a *app) appendLog(format string, args ...any) {
 	st, _ := f.Stat()
 	if st != nil && st.Size() > maxLogBytes {
 		f.Close()
-		a.trimLog(path)
+		trimLog(path)
 		f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return
@@ -739,7 +769,7 @@ func (a *app) appendLog(format string, args ...any) {
 	fmt.Fprintf(f, "[%s] %s\n", localNow().Format("01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 
-func (a *app) trimLog(path string) {
+func trimLog(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) <= keepTailBytes {
 		return

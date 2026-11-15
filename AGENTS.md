@@ -187,6 +187,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 采样与会话结算
 
 - 采样间隔：充电期 15s，其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，电流停歇去抖后结算。
+- **daemon 必须单实例**：结算幂等只在单进程内成立（`settle()` 先置 `sess_active=0` 再落库），多进程会各自从 kv 恢复同一会话并重复结算，历史里出现整行重复（issue #12）。入口先对 `<moddir>/data/batteryd.lock` 加 flock，拿不到锁安静退出；再按 `/proc/*/comm` + `exe` 回收本模块其它 batteryd 进程（兜住没有锁的旧版本）。不要在 `service.sh` 里再加一份无条件启动。
 - 会话电量双口径：电量计差分（首选）与电流积分。两者差 3 倍以上时用容量参考（设计容量，缺失用 `charge_full`）做 0.5~1.5 倍窗口裁决：只有「电量计在窗内、积分在窗外」才保留电量计，否则回退积分；3 倍失配裁决时写 `counter_scale` 事件。
 - `chargeSuppressed`：满电后高负载时内核仍报 Charging 且电流为正，但端电压较充电峰值回落 >`30mV × 电芯数`，视为直供假电流，不计入会话电量与吞吐（只作用于积分口径）。
 
@@ -212,7 +213,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 设备 `time.Now()` 可能是 UTC：面向用户的时间戳一律 `localNow()`（getprop `persist.sys.timezone` → 文件兜底 → UTC，内嵌 `time/tzdata`）；Pipeline 注入时钟同样用 `localNow`。
 - SQLite 十一表：kv/sessions/estimates/daily/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；`PruneBefore` 清理 90 天明细，**`daily`（长期容量档案）不清理**。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
 - daemon 每 tick（循环前先写一次）原子写 `data/daemon.json`（临时文件 + rename，`{version,pid,ts}`）；`json`/`diag` 读它判断「已升级但旧 daemon 仍常驻」。心跳写失败静默，绝不阻塞采样；`json` 的 `daemon` 与 diag 的 `daemon=` 行都按文件缺失整体省略（旧版兼容）。
-- 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`RepairCounterUnits` 按「counter 读数 + charge_full + 显示电量」判定 mAh 口径机型，把历史 `samples.cc`/`sessions.cc`/`discharge.uah`/`discharge.implied` 与进行中会话 kv 一次性 ×1000（kv `counter_unit_repair`）。迁移以 kv `counter_unit_epoch`（新代码首次启动时刻）为截止，**只处理该时刻之前写入的行**：后续启动复用同一 epoch 重试也不会碰到已归一的新行；读不到节点/量纲不确定时本次不判定、不落终态标记，下次启动重试。不迁移 estimates/ema/mid_implied（可能来自积分口径）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
+- 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`RepairCounterUnits` 按「counter 读数 + charge_full + 显示电量」判定 mAh 口径机型，把历史 `samples.cc`/`sessions.cc`/`discharge.uah`/`discharge.implied` 与进行中会话 kv 一次性 ×1000（kv `counter_unit_repair`）；`RepairDuplicateRecords` 清理多 daemon 并发写库留下的重复会话/放电行（按起止电量 + 起止时刻窗配对，保留最后写入的一行；kv `duplicate_repair`）。三者都是一次性、幂等，失败只记事件不阻断采样。迁移以 kv `counter_unit_epoch`（新代码首次启动时刻）为截止，**只处理该时刻之前写入的行**：后续启动复用同一 epoch 重试也不会碰到已归一的新行；读不到节点/量纲不确定时本次不判定、不落终态标记，下次启动重试。不迁移 estimates/ema/mid_implied（可能来自积分口径）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
 - `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
 
 ### 关键数值与口径（勿随意改）
@@ -225,7 +226,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 已知局限（有意取舍，勿当 bug）
 
 - 电流单位启发式在涓流 <10mA 可能误判；RLS 无遗忘因子、P 矩阵长期膨胀是潜伏项；`FindNode` 全树兜底只在缺节点时触发。
-- `charge_counter` 的 mAh 判定需要显示电量做交叉校验：显示电量为 0/不可读时读时归一不缩放、历史迁移本次不判定（下次启动重试）；`charge_full` 缺失或本身以 mAh 计时不归一（保持既有设备口径）。升级后旧 daemon 仍在内存里跑、继续按旧口径写库：心跳只能**提示**（`daemon.stale` → 设置页「已升级，重启后生效」），不会自动重启/替换守护进程，**升级后需要重启**；重启前旧 daemon 写的行仍可能带旧量纲且不会被迁移（`counter_unit_epoch` 之后的行按已归一口径处理）。
+- `charge_counter` 的 mAh 判定需要显示电量做交叉校验：显示电量为 0/不可读时读时归一不缩放、历史迁移本次不判定（下次启动重试）；`charge_full` 缺失或本身以 mAh 计时不归一（保持既有设备口径）。升级后旧 daemon 仍在内存里跑、继续按旧口径写库：心跳只能**提示**（`daemon.stale` → 设置页「已升级，重启后生效」）；新版 daemon 启动时会抢 flock 并回收旧进程，但若升级后 `service.sh` 没被重新执行（未重启），旧 daemon 仍会单独跑到重启，**升级后仍应尽快重启**；重启前旧 daemon 写的行仍可能带旧量纲且不会被迁移（`counter_unit_epoch` 之后的行按已归一口径处理）。
 - 充电实时卡的 ETA 用「本次会话平均电流」估算，CV 尾段电流自然衰减，估计值会偏乐观；旁路供电/极涓流或 `charge_full` 缺失时可能不显示，仅作参考，不参与任何结算。
 - Material You 调色板由宿主在**页面加载/主题组合时**生成并随 CSS 一起下发：WebUI 打开期间切换系统明暗或更换管理器配色不会重新取色（取色模式下的 `data-scheme` 也按加载时调色板的背景亮度固定，配色自洽）；重开 WebUI 即刷新（重挂 stylesheet 加 query 可重取，KSU/APatch 忽略 query）。KernelSU/SukiSU 未开启 Monet（`color_mode` 0~2 且非 Material 界面）时 `colors.css` 为空 → 取色档不出现，属于预期。不要为此引入远程请求。
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。

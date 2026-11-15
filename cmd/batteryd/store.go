@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -86,10 +87,16 @@ func reasonOrNull(s string) any {
 	return s
 }
 
+// rowQueryer 是 queryAll 接受的查询入口：*sql.DB 与 *sql.Tx 都满足。
+type rowQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // queryAll 执行查询，把每行经 scan 映射成 T；调用方只写 SQL 与单行映射。
 // 返回的切片恒非 nil（空结果输出 []，与各查询原有契约一致）。
-func queryAll[T any](db *sql.DB, query string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
-	rows, err := db.Query(query, args...)
+// 接受 *sql.DB 与 *sql.Tx：去重迁移需要在一个事务里读→删→落标记。
+func queryAll[T any](q rowQueryer, query string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
+	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +205,12 @@ func OpenStore(path string) (*Store, error) {
 	if err := st.repairSampleUnits(); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	// 多 daemon 并发写库遗留的重复会话/放电行一次性清理（issue #12）。清理不影响
+	// 采样主链路：失败只记事件与 stderr，下次打开重试（标记未落）。
+	if err := st.RepairDuplicateRecords(); err != nil {
+		_ = st.InsertEvent("dup_repair_fail", err.Error())
+		fmt.Fprintf(os.Stderr, "batteryd: 重复记录清理失败：%v\n", err)
 	}
 	return st, nil
 }
