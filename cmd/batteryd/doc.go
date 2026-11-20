@@ -23,6 +23,7 @@
 //   - discharge.go：放电会话差分累计与校准；
 //   - store.go：SQLite 建表、幂等迁移、各表读写与 90 天明细清理；
 //   - archive.go：按本地日汇总的长期容量档案（永久保留、只读派生）；
+//   - singleton.go / dedupe.go：单实例锁、旧 daemon 回收与重复记录自愈；
 //   - sysfs.go：sysfs 节点查找、整数读取与电流/温度单位归一；
 //   - estimator*.go：stable / ml 两条容量估计通道；
 //   - midwin.go、ccct.go、ccseg.go、ica.go：中段校准与 CCCT/ICA 特征；

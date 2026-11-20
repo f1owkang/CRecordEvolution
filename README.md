@@ -70,6 +70,8 @@ If you flashed the wrong build but have not rebooted yet, simply flash the corre
 - Both variants share the same id and name, and are mutually exclusive; the ML build is marked by the `-ML` suffix in the module **Version** field (and by the asset name), so the module description stays identical to the stable build;
 - Upgrades keep the `data/battery.db` learning history (the installer copies the old data automatically), so no manual backup is needed;
 - Reboot soon after upgrading: until then the old daemon keeps writing with the old units, and Settings shows "Updated — restart to apply";
+- Bypass charging is recorded too: when the status stays **Full** but the fuel gauge is actually dropping (charger connected, heavy load), the discharge session follows the gauge direction instead of `current_now`'s sign; a segment with no reported % drop only accumulates usage and produces no history row;
+- Duplicate sessions left by an old multi-daemon install are cleaned automatically and re-checked while an old daemon is still detected; charging-session duplicates also inflate the cycle equivalent, so Settings notes "may be inflated" when that happened. Capacity estimates are not affected;
 - Older Magisk versions have no Action button; wait for a reboot;
 - Upgrading from the old version (module id `Charging_Record`)? Uninstall it first — the two directory layouts are not interchangeable;
 - The language is chosen at install time and can be switched later in the WebUI; the module description refreshes immediately. With no explicit choice it follows the system language;
