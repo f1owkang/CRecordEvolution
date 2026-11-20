@@ -1,4 +1,4 @@
-// 多 daemon 并发写库遗留数据的一次性清理（issue #12）。
+// 多 daemon 并发写库遗留数据的可重跑清理（issue #12）。
 //
 // 背景：升级后旧 daemon 仍会驻留（旧版本没有单实例锁），只要管理器/软重启又拉起
 // 一个新 daemon，两个进程就会各自从 kv 恢复同一次充电会话、各自在 status 翻转时
@@ -6,18 +6,77 @@
 // 进程内累计值有细微差别。单实例锁（singleton.go）只挡住增量，已经落库的重复行
 // 在这里按「起止电量相同 + 起止时刻相近」配对删除，保留最后写入的一行。
 //
-// 只做一次性修复：kv duplicate_repair 标记落地后不再扫描；清理失败只记事件、
-// 下次启动重试，绝不阻断采样。
+// 这里不再用一次性标记：旧 daemon 在第一次清理之后仍可能继续写进新的重复行
+// （issue #12 的升级场景），所以扫描必须可重跑——daemon 启动时强制扫一次，
+// 检测到旧 daemon 心跳（stale）时按 dupScanMinInterval 节流重扫。判重本身幂等。
+//
+// 清理失败只记事件、下次触发时重试，绝不阻断采样。
 
 package main
 
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 )
 
-// kvDuplicateRepair 一次性数据修复标记：多 daemon 并发写库的重复会话/放电行已清理。
-const kvDuplicateRepair = "duplicate_repair"
+const (
+	// kvDupScanTs 上次扫描时刻（Unix 秒）：WebUI 的 json 每 60s 轮询一次，
+	// 扫描要开写事务，用它与 dupScanMinInterval 把重扫节奏压到 ≥5 分钟。
+	kvDupScanTs = "dup_scan_ts"
+	// kvDupRepairTs / kvDupRemoved* 最近一次清理的时间与累计删除行数，
+	// 供 JSON（dup_repair）、diag 与设置页展示；从未清理过时整体省略。
+	kvDupRepairTs          = "dup_repair_ts"
+	kvDupRemovedSessions   = "dup_removed_sessions"
+	kvDupRemovedDischarges = "dup_removed_discharges"
+
+	// dupScanMinInterval 两次重复扫描的最小间隔（秒）。
+	dupScanMinInterval int64 = 300
+)
+
+// dupResult 是一次重复记录扫描的结果（供事件/日志/JSON 出口）。
+type dupResult struct {
+	Sessions   int64
+	Discharges int64
+}
+
+// Removed 本趟是否真的删掉了行。
+func (r dupResult) Removed() bool { return r.Sessions > 0 || r.Discharges > 0 }
+
+// dupRepairInfo 是清理结果的外部出口（JSON `dup_repair` 与 diag）；TS 为最近一次
+// 删除发生的时刻，Sessions/Discharges 为累计删除行数。
+type dupRepairInfo struct {
+	TS         int64 `json:"ts"`
+	Sessions   int64 `json:"sessions"`
+	Discharges int64 `json:"discharges"`
+}
+
+// DuplicatesScanDue 判断是否该扫描重复记录：force 用于 daemon 启动（每次都扫），
+// 其余调用点（WebUI/action 检测到旧 daemon）按 dupScanMinInterval 节流。
+func (s *Store) DuplicatesScanDue(now int64, force bool) bool {
+	if force {
+		return true
+	}
+	last := kvInt(s, kvDupScanTs)
+	return last <= 0 || now-last >= dupScanMinInterval
+}
+
+// DuplicatesScanned 是否扫描过。升级后首次打开 WebUI 时即使没有 stale 心跳也应
+// 扫一次，不必非等 daemon 重启才能清掉升级前遗留的重复行。
+func (s *Store) DuplicatesScanned() bool { return kvInt(s, kvDupScanTs) > 0 }
+
+// DupRepairInfo 读取历史清理结果；从未清理过返回 nil（JSON 省略该字段）。
+func (s *Store) DupRepairInfo() *dupRepairInfo {
+	ts := kvInt(s, kvDupRepairTs)
+	if ts <= 0 {
+		return nil
+	}
+	return &dupRepairInfo{
+		TS:         ts,
+		Sessions:   kvInt(s, kvDupRemovedSessions),
+		Discharges: kvInt(s, kvDupRemovedDischarges),
+	}
+}
 
 // sessionSig 是充电会话去重所需的列（id 用于删除与保留「最后写入」的那行）。
 type sessionSig struct {
@@ -74,11 +133,11 @@ func duplicateDischargeEndTs(rows []dischargeSig) []int64 {
 	return removed
 }
 
-// sameChargeSession 判两行是否同一次充电会话：起止电量与有效性/拒收原因一致，
-// 起止时刻都在容差内。进程内累计的 ua/avgI 不参与比较——重复行本来就只在
-// 这些值上有差别。
+// sameChargeSession 判两行是否同一次充电会话：起止电量一致、有效性/拒收原因一致，
+// 起止时刻都在容差内。结束电量允许差 1 个百分点——各进程在相邻拍结算，读到的
+// 显示电量可能跨过一格。进程内累计的 ua/avgI 不参与比较。
 func sameChargeSession(a, b sessionSig) bool {
-	if a.startCap != b.startCap || a.endCap != b.endCap {
+	if a.startCap != b.startCap || absI64(a.endCap-b.endCap) > 1 {
 		return false
 	}
 	if a.valid != b.valid || a.reason != b.reason {
@@ -91,16 +150,30 @@ func sameChargeSession(a, b sessionSig) bool {
 }
 
 // duplicateSessionIDs 返回应删除的会话 id：输入按 start_ts 升序、同 start_ts 按
-// id 升序；相邻重复对里保留 id 更大（最后写入、带着最新校准口径）的一行。
+// id 升序。相邻同类行组成一组，组内保留 id 最大（最后写入、带着最新校准口径）
+// 的一行。不能只保留「排序最后」的一行——重复行的起止时刻由各进程结算的那一拍
+// 决定，最后写入的未必起止最晚，按排序取会删掉刚写进来的那行。
 func duplicateSessionIDs(rows []sessionSig) []int64 {
 	var removed []int64
-	for i := 1; i < len(rows); i++ {
+	for i := 0; i < len(rows); {
 		if rows[i].startTs <= 0 {
+			i++
 			continue
 		}
-		if sameChargeSession(rows[i-1], rows[i]) {
-			removed = append(removed, rows[i-1].id)
+		maxID := rows[i].id
+		j := i + 1
+		for j < len(rows) && sameChargeSession(rows[i], rows[j]) {
+			if rows[j].id > maxID {
+				maxID = rows[j].id
+			}
+			j++
 		}
+		for k := i; k < j; k++ {
+			if rows[k].id != maxID {
+				removed = append(removed, rows[k].id)
+			}
+		}
+		i = j
 	}
 	return removed
 }
@@ -124,16 +197,17 @@ func scanDischargeSig(rows *sql.Rows) (dischargeSig, error) {
 	return v, err
 }
 
-// RepairDuplicateRecords 清理多 daemon 并发写库留下的重复会话/放电行。
-// 已执行过（kv 标记已落）直接返回；清理与标记写入在同一个事务里，避免并发
-// 子进程（daemon / json / once）重复执行，失败则下次启动用同一逻辑重试。
-func (s *Store) RepairDuplicateRecords() error {
-	if v, ok := s.KVGet(kvDuplicateRepair); ok && v == "1" {
-		return nil
-	}
+// RepairDuplicateRecords 清理多 daemon 并发写库留下的重复会话/放电行，可重复执行。
+// 删除、扫描时刻与累计计数写在同一个事务里，避免并发子进程（daemon / json / once）
+// 重复统计；失败则回滚，下次触发时重试。
+func (s *Store) RepairDuplicateRecords(now int64) (dupResult, error) {
+	var res dupResult
+	prevSessions := kvInt(s, kvDupRemovedSessions)
+	prevDischarges := kvInt(s, kvDupRemovedDischarges)
+
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("重复记录清理开启事务失败：%w", err)
+		return res, fmt.Errorf("重复记录清理开启事务失败：%w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -141,27 +215,49 @@ func (s *Store) RepairDuplicateRecords() error {
 	sessions, err := queryAll(tx, `SELECT id, start_ts, end_ts, start_cap, end_cap, valid, invalid_reason
 		FROM sessions ORDER BY start_ts, id`, scanSessionSig)
 	if err != nil {
-		return fmt.Errorf("读取会话失败：%w", err)
+		return res, fmt.Errorf("读取会话失败：%w", err)
 	}
-	for _, id := range duplicateSessionIDs(sessions) {
+	removeIDs := duplicateSessionIDs(sessions)
+	for _, id := range removeIDs {
 		if _, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id); err != nil {
-			return fmt.Errorf("删除重复会话 id=%d 失败：%w", id, err)
+			return res, fmt.Errorf("删除重复会话 id=%d 失败：%w", id, err)
 		}
 	}
+	res.Sessions = int64(len(removeIDs))
 
 	discharges, err := queryAll(tx, `SELECT end_ts, secs, uah, start_cap
 		FROM discharge ORDER BY end_ts`, scanDischargeSig)
 	if err != nil {
-		return fmt.Errorf("读取放电记录失败：%w", err)
+		return res, fmt.Errorf("读取放电记录失败：%w", err)
 	}
-	for _, ts := range duplicateDischargeEndTs(discharges) {
+	removeTs := duplicateDischargeEndTs(discharges)
+	for _, ts := range removeTs {
 		if _, err := tx.Exec(`DELETE FROM discharge WHERE end_ts = ?`, ts); err != nil {
-			return fmt.Errorf("删除重复放电 end_ts=%d 失败：%w", ts, err)
+			return res, fmt.Errorf("删除重复放电 end_ts=%d 失败：%w", ts, err)
 		}
 	}
+	res.Discharges = int64(len(removeTs))
 
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, '1')`, kvDuplicateRepair); err != nil {
-		return err
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`,
+		kvDupScanTs, strconv.FormatInt(now, 10)); err != nil {
+		return res, err
 	}
-	return tx.Commit()
+	if res.Removed() {
+		for k, v := range map[string]int64{
+			kvDupRepairTs:          now,
+			kvDupRemovedSessions:   prevSessions + res.Sessions,
+			kvDupRemovedDischarges: prevDischarges + res.Discharges,
+		} {
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`, k, strconv.FormatInt(v, 10)); err != nil {
+				return res, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return res, err
+	}
+	if res.Removed() {
+		_ = s.InsertEvent("dup_repair", fmt.Sprintf("会话 %d 条 / 放电 %d 条", res.Sessions, res.Discharges))
+	}
+	return res, nil
 }

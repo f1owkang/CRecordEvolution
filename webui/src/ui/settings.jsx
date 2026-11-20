@@ -196,7 +196,32 @@ function dataItems(doc, channel, t) {
             : null
       ),
       field: 'sessions',
-    },
+    }
+  );
+  // 多 daemon 遗留重复记录的清理结果（issue #12）：只有清理过才出现；会话重复
+  // 会让循环当量偏高，放电重复不影响吞吐，所以只在会话数 >0 时提示。
+  if (doc.dup_repair) {
+    rows.push({
+      key: 'dup_repair',
+      kind: 'row',
+      label: t('settings_dup_repair'),
+      value: t('settings_dup_repair_value', {
+        s: fmtInt(doc.dup_repair.sessions),
+        d: fmtInt(doc.dup_repair.discharges),
+      }),
+      field: 'dup_repair',
+    });
+    if (Number(doc.dup_repair.sessions) > 0) {
+      rows.push({
+        key: 'dup_note',
+        kind: 'row',
+        label: t('settings_dup_note'),
+        value: t('settings_dup_note_value'),
+        field: 'dup_note',
+      });
+    }
+  }
+  rows.push(
     {
       key: 'retention',
       kind: 'row',

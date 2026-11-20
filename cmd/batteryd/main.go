@@ -459,6 +459,8 @@ func (a *app) stats() (Design, Snapshot, error) {
 		freshImpliedUAh(a.st, kvDisImpliedUAh, kvDisImpliedTs, now), fullUAh)
 	// 电流刻度校准诊断：采样节点、学习刻度、当前读数原始/归一值（设置页展示）
 	snap.Calib = a.calibInfo()
+	// 重复记录清理结果（issue #12）：从未清理过为 nil，设置页不显示。
+	snap.DupRepair = a.st.DupRepairInfo()
 	if ema, samples, ok := a.estimate(); ok {
 		snap.EstUAh = &ema
 		snap.Samples = samples
@@ -592,6 +594,36 @@ func (a *app) sigmaMah() *float64 {
 	return &f
 }
 
+// repairDuplicates 清理多 daemon 并发写库遗留的重复会话/放电行。daemon 启动时
+// 强制扫一次；WebUI/action 检测到旧 daemon（心跳 stale）时按 5 分钟节流重扫——
+// 一次性清理跑完之后旧 daemon 仍可能继续写进新的重复行（issue #12 的升级场景），
+// 必须能再次自愈。失败只记事件 + stderr，绝不阻断主链路。
+func (a *app) repairDuplicates(force bool) {
+	now := time.Now().Unix()
+	if !a.st.DuplicatesScanDue(now, force) {
+		return
+	}
+	res, err := a.st.RepairDuplicateRecords(now)
+	if err != nil {
+		_ = a.st.InsertEvent("dup_repair_fail", err.Error())
+		fmt.Fprintf(os.Stderr, "batteryd: 重复记录清理失败：%v\n", err)
+		return
+	}
+	if res.Removed() {
+		a.appendLog("[清理] 重复记录：会话 %d 条 / 放电 %d 条", res.Sessions, res.Discharges)
+	}
+}
+
+// repairDuplicatesIfStale 在心跳显示旧 daemon 仍在运行、或本机从未扫描过时触发
+// 节流重扫；其余情况（版本一致且已扫过）不扫，避免 WebUI 每次轮询都开写事务。
+func (a *app) repairDuplicatesIfStale() {
+	now := time.Now().Unix()
+	st := a.daemonStatus(now)
+	if (st != nil && st.Stale) || !a.st.DuplicatesScanned() {
+		a.repairDuplicates(false)
+	}
+}
+
 func runDaemon() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -622,6 +654,10 @@ func runDaemon() error {
 		return err
 	}
 	defer a.st.Close()
+
+	// 启动即扫一遍：升级前旧 daemon 留下的重复行，以及回收旧进程前后可能写入的
+	// 重复行都在这里一次性收干净。
+	a.repairDuplicates(true)
 
 	a.appendLog("启动 channel=%s", channel)
 
@@ -796,6 +832,7 @@ func runOnce() error {
 		return err
 	}
 	defer a.st.Close()
+	a.repairDuplicatesIfStale()
 
 	d, snap, err := a.stats()
 	if err != nil {
@@ -888,6 +925,7 @@ func runJson() error {
 		return err
 	}
 	defer a.st.Close()
+	a.repairDuplicatesIfStale()
 
 	d, snap, err := a.stats()
 	if err != nil {

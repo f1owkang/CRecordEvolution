@@ -396,3 +396,24 @@ func TestRenderJSONLiveDaemonOmitted(t *testing.T) {
 		t.Fatalf("输出非法 JSON: %s", b)
 	}
 }
+
+// 重复记录清理结果（issue #12）：只有清理过才输出 dup_repair；缺失时设置页降级
+// 不显示该行，旧前端忽略未知字段。
+func TestRenderJSONDupRepair(t *testing.T) {
+	snap := Snapshot{DupRepair: &dupRepairInfo{TS: 1_700_000_000, Sessions: 4, Discharges: 1}}
+	b, err := RenderJSON("stable", Design{}, snap, nil, nil, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"dup_repair":{"ts":1700000000,"sessions":4,"discharges":1}`
+	if !strings.Contains(string(b), want) {
+		t.Fatalf("dup_repair 序列化不符, want 含 %s, got %s", want, b)
+	}
+	b2, err := RenderJSON("stable", Design{}, Snapshot{}, nil, nil, nil, nil, nil, nil, nil, nil, 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b2), `"dup_repair"`) {
+		t.Fatalf("从未清理时应省略 dup_repair: %s", b2)
+	}
+}

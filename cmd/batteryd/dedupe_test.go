@@ -6,7 +6,8 @@ import (
 )
 
 // 同一次充电会话被两个 daemon 各结算一次（issue #12）：起止电量、有效性一致，
-// 只在起止时刻差几十秒、avgI/ua 不同。清理后应只留最后写入的一行，正常会话不动。
+// 只在起止时刻差几十秒、avgI/ua 不同。清理后应只留最后写入的一行，正常会话不动；
+// 结束电量差 1 个百分点（相邻拍读到不同格）也算同一次，差 >1 则宁可少删。
 func TestRepairDuplicateSessions(t *testing.T) {
 	st := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
 	defer st.Close()
@@ -25,20 +26,22 @@ func TestRepairDuplicateSessions(t *testing.T) {
 	// 重复对：同一会话，两次结算相差 2 秒、ua 不同。
 	insert(3000, 3600, 28, 31, "delta_lt_20", 572325000)
 	insert(3000, 3602, 28, 31, "delta_lt_20", 613380000)
-	// 同起始时刻但结束电量不同：不是同一段，保留两行（宁可少删）。
+	// 结束电量差 1 个百分点：相邻拍读到不同格，仍是同一次（保留后写入的 41）。
 	insert(5000, 5600, 30, 40, "", 111)
-	insert(5000, 5600, 30, 41, "", 222)
+	insert(5000, 5601, 30, 41, "", 222)
+	// 结束电量差 3 个百分点：不是同一段，保留两行。
+	insert(7000, 7600, 50, 60, "", 333)
+	insert(7000, 7600, 50, 63, "", 444)
 
-	// openTestStore 已经落过标记；测试里手工回滚标记以触发清理。
-	if err := st.KVSet(kvDuplicateRepair, "0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.RepairDuplicateRecords(); err != nil {
+	res, err := st.RepairDuplicateRecords(1_000_000)
+	if err != nil {
 		t.Fatalf("RepairDuplicateRecords: %v", err)
 	}
-
-	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions`); got != 4 {
-		t.Fatalf("清理后会话数 = %d, want 4（删掉 1 条重复）", got)
+	if !res.Removed() || res.Sessions != 2 || res.Discharges != 0 {
+		t.Fatalf("清理结果 = %+v, want 2 会话", res)
+	}
+	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions`); got != 5 {
+		t.Fatalf("清理后会话数 = %d, want 5（删掉 2 条重复）", got)
 	}
 	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions WHERE start_ts = 3000`); got != 1 {
 		t.Fatalf("同一会话应只留 1 行, got %d", got)
@@ -47,15 +50,94 @@ func TestRepairDuplicateSessions(t *testing.T) {
 	if got := queryInt64(t, st, `SELECT ua FROM sessions WHERE start_ts = 3000`); got != 613380000 {
 		t.Fatalf("应保留最后写入的会话行, ua = %d", got)
 	}
-	if got := queryInt64(t, st, `SELECT COUNT(*) FROM kv WHERE k = '`+kvDuplicateRepair+`' AND v = '1'`); got != 1 {
-		t.Fatal("清理后应落标记")
+	if got := queryInt64(t, st, `SELECT end_cap FROM sessions WHERE start_ts = 5000`); got != 41 {
+		t.Fatalf("结束电量差 1 的重复行应保留后写入的 41, got %d", got)
 	}
-	// 幂等：标记已落，再跑一次不改数据。
-	if err := st.RepairDuplicateRecords(); err != nil {
+	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions WHERE start_ts = 7000`); got != 2 {
+		t.Fatalf("结束电量差 3 不应合并, got %d 行", got)
+	}
+	// 累计结果与事件：供 JSON/diag/设置页展示。
+	info := st.DupRepairInfo()
+	if info == nil || info.Sessions != 2 || info.TS != 1_000_000 {
+		t.Fatalf("dup_repair 信息 = %+v", info)
+	}
+	if got := queryInt64(t, st, `SELECT COUNT(*) FROM events WHERE kind = 'dup_repair'`); got != 1 {
+		t.Fatalf("应落一条 dup_repair 事件, got %d", got)
+	}
+
+	// 幂等：没有新的重复行时再扫不漏删、不重复计数。
+	res2, err := st.RepairDuplicateRecords(1_000_300)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions`); got != 4 {
+	if res2.Removed() {
+		t.Fatalf("二次扫描不应再删, got %+v", res2)
+	}
+	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions`); got != 5 {
 		t.Fatalf("重复执行不应再改数据, got %d", got)
+	}
+}
+
+// 清理必须可重跑：第一次清理之后旧 daemon 仍可能写进新的重复行（issue #12 的
+// 升级场景），下一次触发必须能再收干净，并累加计数。
+func TestRepairDuplicateRecordsReruns(t *testing.T) {
+	st := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer st.Close()
+
+	insert := func(startTs, endTs, startCap, endCap int64) {
+		t.Helper()
+		if _, err := st.InsertSession(Session{
+			StartTs: startTs, EndTs: endTs, StartCap: startCap, EndCap: endCap,
+			AccUAs: 1000, AvgI: 10, Valid: false, InvalidReason: "delta_lt_20",
+		}); err != nil {
+			t.Fatalf("InsertSession: %v", err)
+		}
+	}
+	insert(1000, 2000, 30, 40)
+	insert(1000, 2002, 30, 40)
+
+	if res, err := st.RepairDuplicateRecords(1_000_000); err != nil || res.Sessions != 1 {
+		t.Fatalf("首次清理 = %+v err=%v", res, err)
+	}
+	// 首次清理之后又出现的重复对（旧 daemon 仍在写库）。
+	insert(5000, 6000, 20, 30)
+	insert(5000, 6001, 20, 30)
+
+	res, err := st.RepairDuplicateRecords(1_000_300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Sessions != 1 {
+		t.Fatalf("二次清理应再删 1 条, got %+v", res)
+	}
+	if got := queryInt64(t, st, `SELECT COUNT(*) FROM sessions`); got != 2 {
+		t.Fatalf("两次清理后应剩 2 行, got %d", got)
+	}
+	info := st.DupRepairInfo()
+	if info == nil || info.Sessions != 2 {
+		t.Fatalf("累计删除数应累加到 2, got %+v", info)
+	}
+}
+
+// 扫描节流：daemon 启动（force）总是扫，其余调用点 5 分钟内不重复开写事务。
+func TestDuplicatesScanDue(t *testing.T) {
+	st := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer st.Close()
+
+	if !st.DuplicatesScanDue(1_000_000, false) {
+		t.Fatal("从未扫描过应允许首次扫描")
+	}
+	if _, err := st.RepairDuplicateRecords(1_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if st.DuplicatesScanDue(1_000_000+dupScanMinInterval-1, false) {
+		t.Fatal("间隔内不应重扫")
+	}
+	if !st.DuplicatesScanDue(1_000_000+dupScanMinInterval, false) {
+		t.Fatal("超过间隔应重扫")
+	}
+	if !st.DuplicatesScanDue(1_000_100, true) {
+		t.Fatal("force 应跳过节流")
 	}
 }
 
@@ -78,13 +160,13 @@ func TestRepairDuplicateDischarge(t *testing.T) {
 	insert(2000, 3120, 575000, 78, 66)  // 另一段放电
 	insert(5000, 100, 900000, 50, 40)   // 起始电量/电量都与前面不同
 
-	if err := st.KVSet(kvDuplicateRepair, "0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.RepairDuplicateRecords(); err != nil {
+	res, err := st.RepairDuplicateRecords(1_000_000)
+	if err != nil {
 		t.Fatalf("RepairDuplicateRecords: %v", err)
 	}
-
+	if res.Sessions != 0 || res.Discharges != 1 {
+		t.Fatalf("清理结果 = %+v, want 1 放电", res)
+	}
 	if got := queryInt64(t, st, `SELECT COUNT(*) FROM discharge`); got != 3 {
 		t.Fatalf("清理后放电行数 = %d, want 3（删掉 1 条重复）", got)
 	}
@@ -93,6 +175,9 @@ func TestRepairDuplicateDischarge(t *testing.T) {
 	}
 	if got := queryInt64(t, st, `SELECT COUNT(*) FROM discharge WHERE end_ts = 1000`); got != 0 {
 		t.Fatal("较早的重复放电记录应被删除")
+	}
+	if got := queryInt64(t, st, `SELECT v FROM kv WHERE k = '`+kvDupRemovedDischarges+`'`); got != 1 {
+		t.Fatalf("dup 放电计数 = %d, want 1", got)
 	}
 }
 
@@ -110,5 +195,23 @@ func TestSameDischargeSessionBoundaries(t *testing.T) {
 	}
 	if sameDischargeSession(base, dischargeSig{endTs: 100050, secs: 3610, uah: 1000000, startCap: 41}) {
 		t.Fatal("起始电量不同不应判为同一次放电")
+	}
+}
+
+// 会话判重边界：结束电量差 1 个百分点仍是同一次，差 2 就不再合并；时刻/原因不同
+// 都不合并。
+func TestSameChargeSessionBoundaries(t *testing.T) {
+	base := sessionSig{startTs: 1000, endTs: 2000, startCap: 30, endCap: 40, valid: false, reason: "delta_lt_20"}
+	if !sameChargeSession(base, sessionSig{startTs: 1000, endTs: 2000, startCap: 30, endCap: 41, valid: false, reason: "delta_lt_20"}) {
+		t.Fatal("结束电量差 1 应判为同一次会话")
+	}
+	if sameChargeSession(base, sessionSig{startTs: 1000, endTs: 2000, startCap: 30, endCap: 42, valid: false, reason: "delta_lt_20"}) {
+		t.Fatal("结束电量差 2 不应合并")
+	}
+	if sameChargeSession(base, sessionSig{startTs: 1000, endTs: 2000, startCap: 30, endCap: 40, valid: true}) {
+		t.Fatal("有效性不同不应合并")
+	}
+	if sameChargeSession(base, sessionSig{startTs: 1000, endTs: 2200, startCap: 30, endCap: 40, valid: false, reason: "delta_lt_20"}) {
+		t.Fatal("结束时刻超出容差不应合并")
 	}
 }

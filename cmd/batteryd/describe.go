@@ -51,6 +51,9 @@ type Snapshot struct {
 	Calib *CalibInfo
 	// SessionsN 为 sessions 表总会话数，供 WebUI 设置页展示；0 表示未知/无会话。
 	SessionsN int64
+	// DupRepair 多 daemon 遗留重复记录的累计清理结果（时间 + 会话/放电条数）；
+	// 从未清理过时为 nil（JSON 省略，设置页不显示该行）。
+	DupRepair *dupRepairInfo
 }
 
 // 描述在 module.prop 里只能占一行：真实换行会把后半段写成非法键。两行换行只能

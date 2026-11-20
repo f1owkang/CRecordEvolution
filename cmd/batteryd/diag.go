@@ -63,8 +63,10 @@ type diagInput struct {
 	LastSampleTS int64
 	Now          int64
 	// Daemon 守护进程心跳；文件缺失/损坏时为 nil，诊断里整行省略
-	Daemon  *daemonInfo
-	LogTail []string
+	Daemon *daemonInfo
+	// DupRepair 重复记录清理结果；从未清理过时为 nil，诊断里整行省略
+	DupRepair *dupRepairInfo
+	LogTail   []string
 
 	Loc *time.Location
 }
@@ -76,6 +78,7 @@ func runDiag() error {
 		return err
 	}
 	defer a.st.Close()
+	a.repairDuplicatesIfStale()
 	fmt.Print(renderDiag(a.diagInput()))
 	return nil
 }
@@ -96,6 +99,7 @@ func (a *app) diagInput() diagInput {
 		ABI:          diagGetprop("ro.product.cpu.abi"),
 		Design:       d,
 		Snap:         snap,
+		DupRepair:    snap.DupRepair,
 		Now:          time.Now().Unix(),
 		Loc:          localNow().Location(),
 	}
@@ -319,6 +323,12 @@ func renderDiag(in diagInput) string {
 	if in.Daemon != nil {
 		line("daemon=%s age=%s stale=%d",
 			orDash(in.Daemon.Version), optAgeSec(in.Daemon.AgeSec), boolInt(in.Daemon.Stale))
+	}
+	// 重复记录清理（issue #12）：只有清理过才出现，便于确认历史重复已被处理。
+	if in.DupRepair != nil {
+		age := strings.Trim(strings.TrimSpace(diagAge(in.Now, in.DupRepair.TS)), "()")
+		line("dup_repair=sessions=%d discharges=%d age=%s",
+			in.DupRepair.Sessions, in.DupRepair.Discharges, orDash(age))
 	}
 	line("device=%s %s (%s)", orDash(in.Manufacturer), orDash(in.Model), orDash(in.Device))
 	line("calib=%s", diagCalibLine(in.Snap.Calib))

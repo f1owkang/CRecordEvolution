@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -205,12 +204,6 @@ func OpenStore(path string) (*Store, error) {
 	if err := st.repairSampleUnits(); err != nil {
 		_ = db.Close()
 		return nil, err
-	}
-	// 多 daemon 并发写库遗留的重复会话/放电行一次性清理（issue #12）。清理不影响
-	// 采样主链路：失败只记事件与 stderr，下次打开重试（标记未落）。
-	if err := st.RepairDuplicateRecords(); err != nil {
-		_ = st.InsertEvent("dup_repair_fail", err.Error())
-		fmt.Fprintf(os.Stderr, "batteryd: 重复记录清理失败：%v\n", err)
 	}
 	return st, nil
 }

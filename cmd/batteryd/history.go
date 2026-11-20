@@ -139,6 +139,7 @@ func runHistory(args []string) error {
 		return err
 	}
 	defer a.st.Close()
+	a.repairDuplicatesIfStale()
 
 	doc, err := buildHistoryDoc(a.st, opt, localNow())
 	if err != nil {

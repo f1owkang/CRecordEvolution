@@ -245,3 +245,16 @@ func TestEventCountsSince(t *testing.T) {
 		t.Fatalf("诊断事件摘要不应包含 detail: %q", out)
 	}
 }
+
+// 重复记录清理结果行：只有清理过才出现在 diag，供用户/维护者确认历史重复已处理。
+func TestRenderDiagDupRepairLine(t *testing.T) {
+	in := diagInput{Version: "1.3.10(39)", Loc: time.UTC, Now: 1_700_000_000}
+	if out := renderDiag(in); strings.Contains(out, "dup_repair=") {
+		t.Fatalf("从未清理不应输出 dup_repair 行:\n%s", out)
+	}
+	in.DupRepair = &dupRepairInfo{TS: 1_699_999_900, Sessions: 4, Discharges: 1}
+	out := renderDiag(in)
+	if !strings.Contains(out, "dup_repair=sessions=4 discharges=1 age=<1h") {
+		t.Fatalf("dup_repair 行不符:\n%s", out)
+	}
+}

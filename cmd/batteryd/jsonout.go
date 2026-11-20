@@ -103,6 +103,8 @@ type jsonDoc struct {
 	Quality *Quality `json:"quality,omitempty"`
 	// Calib 电流刻度校准诊断（采样节点 / 学习刻度 / 当前读数）；节点全缺失时省略
 	Calib *CalibInfo `json:"calib,omitempty"`
+	// DupRepair 多 daemon 遗留重复记录的累计清理结果；从未清理过时省略
+	DupRepair *dupRepairInfo `json:"dup_repair,omitempty"`
 	// Live 实时节点与进行中充电会话；四个实时节点全读不到时省略
 	Live *liveInfo `json:"live,omitempty"`
 	// Daemon 守护进程心跳（version/ts/age_sec/stale）；心跳文件缺失/损坏时省略
@@ -231,6 +233,7 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	}
 	doc.Quality = snap.Quality
 	doc.Calib = snap.Calib
+	doc.DupRepair = snap.DupRepair
 	doc.Live = live
 	doc.Daemon = daemon
 	// estimates 表存 µAh，此处换算为 mAh 展示

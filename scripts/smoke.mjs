@@ -172,6 +172,9 @@ const jsonDoc = {
     },
   },
   daemon: { version: '1.3.10(39)', ts: now, age_sec: 12, stale: true },
+  // 多 daemon 遗留重复记录清理结果（issue #12）：设置页据此显示清理行与
+  // 「循环当量可能偏高」提示。
+  dup_repair: { ts: now - day * 2, sessions: 4, discharges: 1 },
   recent: [
     { ts: now - day * 4, mah: 4620 },
     { ts: now - day * 3, mah: 4560 },
@@ -1121,6 +1124,20 @@ try {
   check(
     (await page.locator('#page_settings [data-field="daemon"]').innerText()).includes('restart'),
     '设置：daemon 待重启文案'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="dup_repair"]').count()) === 1,
+    '设置：重复记录清理行'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="dup_repair"]').innerText()).includes(
+      'Sessions 4'
+    ),
+    '设置：重复记录清理计数'
+  );
+  check(
+    (await page.locator('#page_settings [data-field="dup_note"]').count()) === 1,
+    '设置：循环当量偏高提示行'
   );
   check((await page.locator('#page_settings #diag').count()) === 1, '设置：诊断复制按钮');
   await page.click('#page_settings #diag');
