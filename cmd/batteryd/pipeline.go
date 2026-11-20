@@ -163,6 +163,17 @@ type Pipeline struct {
 	supLogged bool
 	// lastDisSampleTs 上次放电样本落库时刻（秒），用于 5 分钟降采样
 	lastDisSampleTs int64
+	// disProbeUAh/disProbeTs 满电旁路探测基线：status=Full 且放电会话未开账时，
+	// 用相邻两拍 charge_counter 差分判断电池是否真在放电（见 discharge.go）。
+	disProbeUAh int64
+	disProbeTs  int64
+	// disProbeDropUAh/disProbeTicks 连续可信下降的累计量与拍数：单拍回芯不算，
+	// 必须连续 2 拍下降且累计 ≥5mAh 才开账（真机满电充电期有单拍回芯）。
+	disProbeDropUAh int64
+	disProbeTicks   int
+	// disRiseStreak 满电旁路会话期间电量计连续回升的拍数：慢涓流单拍增量可能
+	// 低于 disBypassResumeUAh，连续 3 拍回升同样判为充电方向恢复。
+	disRiseStreak int
 
 	// notChargStreak status 连续非 Charging 的拍数（去抖计数，不持久化：
 	// 进程重启后从 0 重新计数，最多多等 3 拍才结算，无害）

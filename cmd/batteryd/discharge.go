@@ -3,9 +3,11 @@
 // 芯片内完成，不受负载电流毫秒级突变混叠影响——这也是 AccuBattery 类应用
 // 的取数路径。
 //
-// 已知取舍（初步版）：
-//   - 只在 status=Discharging 的拍累计：旁路供电机型（status=Full 但电池
-//     实际放电）会漏记，留待后续按带符号电流补判；
+// 已知取舍：
+//   - status=Full 时充电器仍在，仅当 charge_counter 单拍下降达到
+//     disBypassStartUAh 才按「满电旁路放电」累计（不依赖 current_now 符号，
+//     部分内核充电报负、放电报正）；该段起点 cap 通常是 100，隐含容量仍走
+//     原有掉幅门控且被 disCalMaxStart 排除在标定之外；
 //   - 电量计回修（差分反向或单跳 > disResyncUAh）只重置基线不计数；
 //   - 隐含容量 = 放出电量×100÷显示掉幅，掉幅 ≥ disMinEstCap 才给出，
 //     其余行仅作使用量记录，不参与任何估算通道。
@@ -43,6 +45,15 @@ const (
 	// 数百倍）。5 分钟一条对分窗分析足够（每窗格仍有多个采样点），
 	// 数据量降到与充电样本同量级。等于 midSegMaxDt，段判定仍连续。
 	disSampleGapSecs = 300
+	// 满电旁路放电：status=Full 时充电器还在，但高负载/旁路供电会让电池净放电。
+	// 方向只认电量计差分，不认 current_now 符号（部分内核充电报负、放电报正）。
+	// 真机满电充电期会出现单拍回芯（实测 5995→5987→5950mAh，而电流仍是充电方向），
+	// 所以开账要求连续 2 拍可信下降且累计 ≥disBypassStartUAh（≈300mA×1min），
+	// 单拍跳变只当回芯重置，不建会话；disBypassResumeUAh：会话期间单拍回升
+	// ≥2mAh 或慢涓流连续 3 拍回升视为充电方向恢复并结算。
+	disBypassStartUAh  = 5_000
+	disBypassMinTicks  = 2
+	disBypassResumeUAh = 2_000
 )
 
 // disState 放电会话状态；active 取 0/1 便于 kv 持久化。
@@ -57,14 +68,19 @@ type disState struct {
 	lastCounterTs  int64
 }
 
-// trackDischarge 每 Tick 首位调用：Discharging 差分累计，Charging 触发结算，
-// 其余状态保持会话等待（拔充后继续同一会话）。
+// trackDischarge 每 Tick 首位调用：按 status 与电量计方向推进放电会话。
+// Discharging 直接差分累计；Charging 触发结算；Full 交给 trackFullBypass 判
+// 旁路放电；其余状态保持会话等待（拔充后继续同一会话）。
 func (p *Pipeline) trackDischarge(status string) {
+	// 探测基线只在 Full 连续拍之间有意义；离开 Full 即作废，下次重新建立。
+	if status != "Full" {
+		p.resetDisProbe()
+	}
 	if p.dis.active == 1 && status == "Charging" {
 		p.settleDischarge()
 		return
 	}
-	if status != "Discharging" {
+	if status != "Discharging" && status != "Full" {
 		return
 	}
 	// charge_counter 缺失时一次性禁用：nodePath 对 miss 不做负缓存，
@@ -91,6 +107,10 @@ func (p *Pipeline) trackDischarge(status string) {
 	// samples.cc、放电差分校准全部小 1000 倍。
 	counterUAh := normCounterUAh(raw, p.fullUAh, capVal)
 	now := p.now().Unix()
+	if status == "Full" {
+		p.trackFullBypass(now, capVal, counterUAh)
+		return
+	}
 	// 放电样本按 disSampleGapSecs 降采样落库，供放电侧分窗分析
 	if now-p.lastDisSampleTs >= disSampleGapSecs {
 		p.lastDisSampleTs = now
@@ -116,6 +136,76 @@ func (p *Pipeline) trackDischarge(status string) {
 	p.dis.lastCounterUAh = counterUAh
 	p.dis.lastCounterTs = now
 	p.persistDis()
+}
+
+// trackFullBypass 处理 status=Full 时的放电：充电器仍在，但高负载/旁路供电会
+// 让电池净放电。只用电量计差分判方向（不信任 current_now 符号）：未开账时用
+// 相邻两拍建立探测基线，单拍下降达到 disBypassStartUAh 才认定真实放电；开账后
+// 单拍回升达到 disBypassResumeUAh 视为充电方向恢复并结算。
+func (p *Pipeline) trackFullBypass(now, capVal, counterUAh int64) {
+	if p.dis.active != 1 {
+		if p.disProbeUAh == 0 || p.disProbeTs == 0 {
+			p.disProbeUAh, p.disProbeTs = counterUAh, now
+			p.disProbeDropUAh, p.disProbeTicks = 0, 0
+			return
+		}
+		prevUAh, prevTs := p.disProbeUAh, p.disProbeTs
+		p.disProbeUAh, p.disProbeTs = counterUAh, now
+		d := counterUAh - prevUAh
+		if !plausibleDelta(d, now-prevTs) {
+			// 回芯/复位：不是真实放电，清空连续下降累计，下一拍重新数。
+			p.disProbeDropUAh, p.disProbeTicks = 0, 0
+			return
+		}
+		if d >= 0 {
+			p.disProbeDropUAh, p.disProbeTicks = 0, 0
+			return
+		}
+		p.disProbeDropUAh += -d
+		p.disProbeTicks++
+		// 真机满电充电期有单拍回芯（实测 -8/-48mAh 而电流仍是充电方向），
+		// 必须连续 ≥2 拍下降且累计 ≥5mAh 才认定为旁路放电。
+		if p.disProbeTicks < disBypassMinTicks || p.disProbeDropUAh < disBypassStartUAh {
+			return
+		}
+		// 满电下电量计确实在持续下降：开账（起点 cap 通常已是 100）。
+		p.dis = disState{active: 1, startTs: now, startCap: capVal, lastCounterUAh: counterUAh, lastCounterTs: now}
+		p.persistDis()
+		p.resetDisProbe()
+		p.log("[放电] 满电旁路会话开始 cap=%d%%", capVal)
+		return
+	}
+	if p.dis.lastCounterUAh == 0 {
+		p.dis.lastCounterUAh = counterUAh
+		p.dis.lastCounterTs = now
+		p.persistDis()
+		return
+	}
+	d := counterUAh - p.dis.lastCounterUAh
+	if d > 0 {
+		p.disRiseStreak++
+	} else {
+		p.disRiseStreak = 0
+	}
+	// 充电方向恢复：单拍明显回升，或慢涓流连续 3 拍回升（单拍增量可能低于
+	// disBypassResumeUAh）。结算按现有语义：掉幅不足时静默丢弃（不落行）。
+	if d >= disBypassResumeUAh || p.disRiseStreak >= 3 {
+		p.settleDischarge()
+		return
+	}
+	if plausibleDelta(d, now-p.dis.lastCounterTs) {
+		p.dis.accUAh -= d
+	}
+	p.dis.lastCounterUAh = counterUAh
+	p.dis.lastCounterTs = now
+	p.persistDis()
+}
+
+// resetDisProbe 清空满电旁路探测状态（离开 Full、开账或结算后调用）。
+func (p *Pipeline) resetDisProbe() {
+	p.disProbeUAh, p.disProbeTs = 0, 0
+	p.disProbeDropUAh, p.disProbeTicks = 0, 0
+	p.disRiseStreak = 0
 }
 
 // sampleDischarge 落一条放电样本（带符号电流，放电为负），供放电侧分窗分析。
@@ -243,6 +333,7 @@ func (p *Pipeline) persistDis() {
 
 func (p *Pipeline) clearDis() {
 	p.dis = disState{}
+	p.resetDisProbe()
 	for _, k := range []string{kvDisActive, kvDisStartTs, kvDisStartCap, kvDisAcc, kvDisLastCounterUAh, kvDisLastCounterTs} {
 		_ = p.st.KVSet(k, "0")
 	}
