@@ -95,7 +95,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 统一 JSX；不用 `h()`/`E()`，新代码拆小函数/组件，别把 `Overview`/`History` 重新写胖。**不引入 htm**（Apache-2.0 与 GPL-2.0-only 不兼容）。
 - 静态图标放 `webui/src/assets/icons/*.svg`，由 `app.css` 的 `mask-image` + `currentColor` 着色；组件里不内联 `<svg>`。图表 SVG 由 `charts.js` 运行时生成。底栏图标用 Material Symbols Rounded（outlined/filled，Apache-2.0，来源与许可记录在 `THIRD_PARTY_NOTICES.txt`）。
 - `webui/index.html` 只做入口壳；`public/boot.js` 在 `<head>` 同步加载；`/internal/insets.css` 用占位符交给 `vite.config.js`。
-- 源码按职责分：`i18n`、`core`、`charts`、`ui/`（context/components/overview/overviewModel/settings）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData）、`assets/icons/`、`useDocPolling`/`useUiPrefs`/`useCollapsingTopbar`、`main.jsx`；模块间 import/export，不退回全局变量。
+- 源码按职责分：`i18n`、`core`、`contrast`（颜色解析/WCAG 对比度）、`charts`、`ui/`（context/components/overview/overviewModel/settings）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData）、`assets/icons/`、`useDocPolling`/`useUiPrefs`/`useCollapsingTopbar`、`main.jsx`；模块间 import/export，不退回全局变量。
 - 可测纯逻辑放同级 `*Model.js`（如 `buildOverviewModel(doc, lang, t)`），取数与副作用放 `use*` hook，组件只编排渲染；`App` 只组合 hook。
 - `webroot/` 生成目录：不手改不提交；样式改 `webui/src/app.css`，逻辑改 `webui/src/`。
 - 用户数据只用 `textContent`/Preact children；唯一 `dangerouslySetInnerHTML` 是 `charts.js` 内部生成的数据驱动 SVG。
@@ -165,6 +165,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
   - MMRL / WebUI-X（MMRLApp/WebUI-X-Portable `3d87c20`）：`InternalPathHandler.kt` 的 `route("/internal/colors.css")` + `WebColors.kt`，**v212（2025-08-08）起**始终由 App 主题生成；当前 WebUI 引擎 `dev.mmrlx:webui.core` 闭源，拦截按旧版开源实现与 API 推断，未真机抓包。
   - Magisk（topjohnwu/Magisk `33bfff7`）：App **没有模块 WebUI 宿主**（无 `webroot`/`internal/insets.css`/`internal/colors.css` 处理），Magisk 只负责刷入；`webroot/` 只能被上述管理器打开。
 - 宿主的 `colors.css` 变量集合覆盖 `--primary/--onPrimary/--surfaceContainer*/--outlineVariant/--background/--onBackground/--error` 等（KSU/APatch 硬编码 45 个；MMRL 反射 `ColorScheme`，可能多 `--primaryFixed*`；`--shadow` 实际不存在，文档有笔误）；缺失时前端退回内置三套主题，设置里不显示取色档。
+- **宿主角色 token 不保证对比度，取色主题必须纠偏**：`--secondary`/`--tertiary` 由管理器自行映射，KernelSU(Miuix) + Monochrome 实测 `--tertiary=#000000`、`--secondary=#474747`，直接当图表线/会话柱会融进 `--card`（issue #13）。`applyThemeDocument` 在 `data-theme='my'` 时以 `--card`（含 AMOLED）为背景，对 `--accent/--blue/--purple/--orange/--rest-dot` 做 4.5:1 对比度纠偏（向 `--onSurface` 混合、保留色相，宿主值达标则不改），切回内置主题时移除内联覆盖；图表/徽章只引用这些 token，不要直接用宿主 `--tertiary`/`--secondary`。
 - **明暗方案必须从宿主 `--background` 的相对亮度推导**，不能用 `prefers-color-scheme`：KSU/APatch 的 WebView 没有随管理器 `color_mode` 设置 dark 标志，`matchMedia` 不可信。`data-scheme`、`color-scheme`、`setLightStatusBars`、AMOLED 是否生效都跟随推导结果。
 - head 里尽早 `ksu.enableEdgeToEdge(true)`，旧接口 `enableInsets(true)` 兜底；挂载时、350ms、`load` 各再调一次。
 - 回退链：`--safe-area-inset-*` → `--window-inset-*` → `env(safe-area-inset-*)` → 0。**不删 insets.css 请求，不写死 inset**。

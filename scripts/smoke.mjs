@@ -57,6 +57,20 @@ const COLOR_PALETTE_DARK =
   '--surfaceContainerHighest:#33353a;--outline:#8e9099;--outlineVariant:#44474f;' +
   '--shadow:#000000;--inverseSurface:#e2e2e9;--inverseOnSurface:#2f3034;' +
   '--inversePrimary:#425e9a;--surfaceBright:#37393e;--surfaceDim:#111318}';
+// Monochrome（issue #13 真机截图取值）：primary 近白但 secondary/tertiary 是深灰/纯黑，
+// 后者按角色直接当图表颜色会融进卡片底（#0b0b0d）。用于验证取色主题的对比度纠偏。
+const COLOR_PALETTE_MONO =
+  ':root{--primary:#ffffff;--onPrimary:#000000;--primaryContainer:#000000;' +
+  '--onPrimaryContainer:#e6e6e6;--secondary:#474747;--onSecondary:#ffffff;' +
+  '--secondaryContainer:#474747;--onSecondaryContainer:#e6e6e6;--tertiary:#000000;' +
+  '--onTertiary:#ffffff;--tertiaryContainer:#000000;--onTertiaryContainer:#e6e6e6;' +
+  '--error:#ffb4ab;--onError:#690005;--errorContainer:#93000a;--onErrorContainer:#ffdad6;' +
+  '--background:#000000;--onBackground:#e6e6e6;--surface:#000000;--onSurface:#e6e6e6;' +
+  '--surfaceVariant:#1f1f24;--onSurfaceVariant:#c6c6c6;--surfaceContainerLowest:#000000;' +
+  '--surfaceContainerLow:#0b0b0d;--surfaceContainer:#0b0b0d;--surfaceContainerHigh:#1f1f24;' +
+  '--surfaceContainerHighest:#2e2e2e;--outline:#5f6773;--outlineVariant:#1f1f24;' +
+  '--shadow:#000000;--inverseSurface:#e6e6e6;--inverseOnSurface:#000000;' +
+  '--inversePrimary:#000000;--surfaceBright:#2e2e2e;--surfaceDim:#000000}';
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -89,13 +103,22 @@ const server = createServer((req, res) => {
     res.end('light');
     return;
   }
+  if (url.pathname === '/__colors/mono') {
+    paletteMode = 'mono';
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('mono');
+    return;
+  }
   if (url.pathname === '/internal/colors.css') {
     res.writeHead(200, { 'content-type': 'text/css' });
     // 不支持取色的宿主返回空样式而不是 404，避免冒烟把 404 记为 console error；
     // 真实宿主无该路径时会自然 404，但探测只认 --primary 变量，行为一致。
-    res.end(
-      colorsMock ? (paletteMode === 'dark' ? COLOR_PALETTE_DARK : COLOR_PALETTE_LIGHT) : ':root{}'
-    );
+    const palettes = {
+      dark: COLOR_PALETTE_DARK,
+      mono: COLOR_PALETTE_MONO,
+      light: COLOR_PALETTE_LIGHT,
+    };
+    res.end(colorsMock ? palettes[paletteMode] || COLOR_PALETTE_LIGHT : ':root{}');
     return;
   }
   if (url.pathname === '/internal/insets.css') {
@@ -1465,6 +1488,97 @@ try {
   await page.waitForFunction(
     () => document.documentElement.getAttribute('data-bar') === 'floating'
   );
+  await page.request.get(base + '/__colors/light');
+
+  // Monochrome 调色板（issue #13）：宿主 --tertiary 纯黑、--secondary 深灰，按角色
+  // 直接当图表颜色会融进卡片底；取色主题必须把 accent/系列 token 纠偏到可读对比度。
+  await page.request.get(base + '/__colors/mono');
+  await page.evaluate(() => {
+    localStorage.setItem('cre_theme', 'my');
+    localStorage.setItem('cre_amoled', '1');
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#page_overview.is-active', { timeout: 15000 });
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'my');
+  await page.click('#nav_history');
+  await page.waitForSelector('#page_history.is-active');
+  await page.locator('#hist_mode_seg .seg-btn').nth(1).click();
+  await page.waitForSelector('#page_history .trend-wrap', { timeout: 15000 });
+  await page.waitForFunction(() => {
+    const hero = document.querySelectorAll('#page_history .trend-hero')[2];
+    return hero && hero.querySelectorAll('svg rect').length > 0;
+  });
+  const monoContrast = await page.evaluate(() => {
+    function parse(s) {
+      s = String(s || '')
+        .trim()
+        .toLowerCase();
+      if (s.charAt(0) === '#') {
+        let h = s.slice(1);
+        if (h.length === 3 || h.length === 4)
+          h = h
+            .split('')
+            .map((c) => c + c)
+            .join('');
+        return [
+          parseInt(h.slice(0, 2), 16),
+          parseInt(h.slice(2, 4), 16),
+          parseInt(h.slice(4, 6), 16),
+        ];
+      }
+      const m = s.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+      return m ? [+m[1], +m[2], +m[3]] : null;
+    }
+    function lin(v) {
+      v = v / 255;
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+    function lum(c) {
+      return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    }
+    function ratio(a, b) {
+      const ca = parse(a);
+      const cb = parse(b);
+      if (!ca || !cb) return null;
+      const la = lum(ca);
+      const lb = lum(cb);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    }
+    const root = getComputedStyle(document.documentElement);
+    const hero = document.querySelectorAll('#page_history .trend-hero')[2];
+    const bar = hero.querySelector('svg rect');
+    const card = getComputedStyle(hero).backgroundColor;
+    const blue = root.getPropertyValue('--blue').trim();
+    return {
+      scheme: document.documentElement.getAttribute('data-scheme'),
+      blue: blue,
+      blueRatio: ratio(blue, card),
+      card: card,
+      fill: getComputedStyle(bar).fill,
+      fillRatio: ratio(getComputedStyle(bar).fill, card),
+    };
+  });
+  check(monoContrast.scheme === 'dark', '取色：Monochrome 深色板推导', monoContrast.scheme);
+  check(
+    monoContrast.blueRatio != null && monoContrast.blueRatio >= 4.4,
+    '取色：Monochrome 系列色对卡片可读',
+    JSON.stringify(monoContrast)
+  );
+  check(
+    monoContrast.fillRatio != null && monoContrast.fillRatio >= 4.4,
+    '取色：Monochrome 会话柱不融进卡片底',
+    JSON.stringify({
+      fill: monoContrast.fill,
+      card: monoContrast.card,
+      ratio: monoContrast.fillRatio,
+    })
+  );
+  await shot(page, 'my-mono-trends.png');
+  // 会话柱在首屏之外：滚到 Sessions 卡片再截一张，便于人工核对柱色。
+  await appScrollTo(page, 760);
+  await sleep(250);
+  await shotNoScroll(page, 'my-mono-sessions.png');
+  await page.evaluate(() => localStorage.setItem('cre_amoled', '0'));
   await page.request.get(base + '/__colors/light');
 
   // 不支持取色的宿主（旧版本或缺调色板）：隐藏第 4 档，已存取色偏好降级回 auto。

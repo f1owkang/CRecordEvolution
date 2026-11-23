@@ -1,4 +1,5 @@
 import { translate } from './i18n.js';
+import { ensureContrast, parseCssColor, relativeLuminance } from './contrast.js';
 
 const CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
 const CMD_HISTORY = '/data/adb/modules/CRecordEvolution/bin/batteryd history';
@@ -483,36 +484,8 @@ function hostPaletteBackground() {
 // 宿主调色板的明暗方案必须从 --background 亮度推导：KSU/APatch 的 WebView
 // 没有随管理器主题设置 prefers-color-scheme，matchMedia 不可信。
 function cssColorLuminance(css) {
-  const s = String(css || '')
-    .trim()
-    .toLowerCase();
-  let r, g, b;
-  if (s.charAt(0) === '#') {
-    let h = s.slice(1);
-    if (h.length === 3 || h.length === 4)
-      h = h
-        .split('')
-        .map(function (c) {
-          return c + c;
-        })
-        .join('');
-    if (h.length !== 6 && h.length !== 8) return null;
-    r = parseInt(h.slice(0, 2), 16);
-    g = parseInt(h.slice(2, 4), 16);
-    b = parseInt(h.slice(4, 6), 16);
-  } else {
-    const m = s.match(/^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)/);
-    if (!m) return null;
-    r = +m[1];
-    g = +m[2];
-    b = +m[3];
-  }
-  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
-  function lin(v) {
-    v = v / 255;
-    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  }
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  const rgb = parseCssColor(css);
+  return rgb ? relativeLuminance(rgb) : null;
 }
 
 function paletteScheme() {
@@ -530,6 +503,51 @@ function storedAmoled() {
   return s === '1';
 }
 
+// 取色主题里 App token 与宿主角色 token 的映射（与 app.css 的 html[data-theme='my']
+// 保持一致）。宿主调色板不保证角色之间符合规范对比度：KernelSU(Miuix) 与
+// Monochrome 下 --tertiary 实测是 #000000、--secondary 是 #474747，图表线与
+// 会话柱会直接融进 #0b0b0d 的卡片底色（issue #13）。应用主题时以卡片底色为
+// 背景做一次纠偏，不足 4.5:1 就向 --onSurface 混合（保留色相），保证图表、
+// 徽章与时间轴圆点可见；只在 data-theme='my' 生效，内置主题仍用 app.css 手选配色。
+const PALETTE_CONTRAST_TOKENS = [
+  ['--accent', '--primary'],
+  ['--blue', '--tertiary'],
+  ['--purple', '--tertiary'],
+  ['--orange', '--secondary'],
+  ['--rest-dot', '--onSurface'],
+];
+const PALETTE_MIN_CONTRAST = 4.5;
+
+// 逐个候选读取可解析的颜色值：宿主缺某个角色时用下一个回退角色。
+function paletteColorValue(cs, names) {
+  for (let i = 0; i < names.length; i++) {
+    const value = cs.getPropertyValue(names[i]).trim();
+    if (parseCssColor(value)) return value;
+  }
+  return '';
+}
+
+function applyPaletteContrast(root) {
+  const style = root.style;
+  if (root.getAttribute('data-theme') !== 'my') {
+    for (let i = 0; i < PALETTE_CONTRAST_TOKENS.length; i++) {
+      style.removeProperty(PALETTE_CONTRAST_TOKENS[i][0]);
+    }
+    return;
+  }
+  const cs = getComputedStyle(root);
+  // 图表/徽章都落在卡片上：--card 已经叠过 AMOLED 纯黑，优先读它。
+  const bg = paletteColorValue(cs, ['--card', '--surfaceContainer', '--background']);
+  const toward = paletteColorValue(cs, ['--onSurface', '--onBackground']);
+  for (let i = 0; i < PALETTE_CONTRAST_TOKENS.length; i++) {
+    const token = PALETTE_CONTRAST_TOKENS[i][0];
+    const source = paletteColorValue(cs, [PALETTE_CONTRAST_TOKENS[i][1]]);
+    const fixed = ensureContrast(source, bg, toward, PALETTE_MIN_CONTRAST);
+    if (fixed) style.setProperty(token, fixed);
+    else style.removeProperty(token);
+  }
+}
+
 // theme: auto|light|dark|my。my = 宿主 Material You 取色，方案从 --background 亮度推导；
 // data-theme 保留 'my' 让 CSS 映射宿主变量，data-scheme 供 color-scheme 与状态栏使用。
 function applyThemeDocument(mode, amoled) {
@@ -539,6 +557,7 @@ function applyThemeDocument(mode, amoled) {
   root.setAttribute('data-theme', mode === 'my' ? 'my' : scheme);
   root.setAttribute('data-scheme', scheme);
   root.setAttribute('data-black', black ? '1' : '0');
+  applyPaletteContrast(root);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     // 用当前实际底色（含 Material You / AMOLED）同步状态栏，避免宿主取到旧色。
