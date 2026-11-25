@@ -202,6 +202,35 @@ func TestRenderDiagDaemonLine(t *testing.T) {
 	}
 }
 
+// 设计容量裁决行（issue #14）：常规 sysfs 情形整行省略；有口径分歧或手动
+// 覆盖时多打一行，带上采纳来源与两侧原始读数，方便真机确认。
+func TestRenderDiagDesignNote(t *testing.T) {
+	hasDesignLine := func(out string) bool {
+		for _, ln := range strings.Split(out, "\n") {
+			// 注意 kernel= 行里也有 "design=" 字样，必须按行首匹配。
+			if strings.HasPrefix(ln, "design=") {
+				return true
+			}
+		}
+		return false
+	}
+	base := diagInput{
+		Version: "1.3.10(39)", Loc: time.UTC,
+		Design: Design{HasDesign: true, DesignMah: 3220, HasFull: true, FullMah: 2825},
+	}
+	if out := renderDiag(base); hasDesignLine(out) {
+		t.Fatalf("常规设备不应输出 design= 行:\n%s", out)
+	}
+	base.DesignNote = "src=dtb design=3220mAh mismatch=1 sysfs=4508mAh dtb=3220mAh anchor=2825mAh"
+	out := renderDiag(base)
+	if !hasDesignLine(out) {
+		t.Fatalf("有裁决明细时应输出 design= 行:\n%s", out)
+	}
+	if !strings.Contains(out, "design=src=dtb design=3220mAh mismatch=1") {
+		t.Fatalf("裁决明细内容不符:\n%s", out)
+	}
+}
+
 // 结构化行本身超长时按 rune 截断并标注；日志行不得突破上限。
 func TestRenderDiagTruncates(t *testing.T) {
 	in := diagInput{Version: "1.3.6(35)", Loc: time.UTC}

@@ -109,7 +109,22 @@ WebUI 三页（概览 / 历史 / 设置）一览。截图中的电池数据为**
 > [!WARNING]
 > 已知不准的情况：
 > - 边玩边充时负载电流可能被算进充入电量，读数偏高；熄屏充电最准（满电后长时间高负载会识别并停计）；
-> - 缺 `cycle_count` / `charge_full_design` 的机型，相应字段会省略或改从设备树读设计容量，不影响其他功能。
+> - 缺 `cycle_count` 的机型该字段会省略；设计容量与电量计口径不一致时会与设备树交叉校验（见下文「设计容量」）。
+
+### 设计容量
+
+健康度 = 实测满充 ÷ 设计容量，两侧必须同口径。部分 vivo/iQOO 双电芯内核把**电池标签容量**（如 4508 mAh，按标签电压口径）写进 `charge_full_design`，而 `charge_full` / `charge_counter` 报的是串联整包的「单芯电荷量」（如 3220 mAh），直接相除会把健康电池打成 ~60%。模块因此会把 sysfs 值与其设备树 `vivo,bat-capacity-mah`（与电量计同口径）交叉校验，分歧超过 20% 时保留更接近实测满充容量的一侧；采纳后会推出 >110% 健康度的值一律拒绝。最终值同时用于健康度百分比、容量合理窗口、循环当量与「降到 80% 还需多久」。
+
+两个来源都不对时，把正确的单芯设计容量（mAh）写进 `data/design_mah` 并重启模块；删掉文件即恢复自动识别：
+
+```sh
+# 用 3220 mAh 作为（单芯口径的）设计容量
+echo 3220 > /data/adb/modules/CRecordEvolution/data/design_mah
+# 删掉覆盖，恢复自动识别
+rm /data/adb/modules/CRecordEvolution/data/design_mah
+```
+
+`batteryd diag` 会打印实际采纳的来源（`design=src=…`）。
 
 ## 常见问题
 

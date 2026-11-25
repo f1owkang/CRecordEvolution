@@ -237,39 +237,93 @@ func NormTempC(raw int64) float64 {
 	return c
 }
 
-// readDTBatteryCapacity 从设备树读取 vivo,bat-capacity-mah（µAh）。
-// VIVO/iQOO 等设备不把 charge_full_design 暴露到 sysfs，但设备树中有此值。
-// 通过 find 命令搜索 /proc/device-tree 下含 "bat-capacity-mah" 的属性。
-func readDTBatteryCapacity() (int64, error) {
-	// find 走绝对路径优先：守护进程由 service.sh exec 启动，PATH 未必含
-	// /system/bin；失败则退回 PATH 查找。两条都失败时安全降级（调用方按
-	// 设计容量缺失处理），不会阻断启动。
-	var out []byte
-	var err error
-	for _, bin := range []string{"/system/bin/find", "find"} {
-		out, err = exec.Command(bin, "/proc/device-tree/", "-name", "*bat-capacity-mah").Output()
-		if err == nil {
-			break
-		}
-	}
-	if err != nil {
-		return 0, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, p := range lines {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		data, rerr := os.ReadFile(p)
-		if rerr != nil || len(data) < 4 {
-			continue
-		}
-		// 设备树属性是 big-endian 32 位整数，单位 mAh，需转换为 µAh
-		v := binary.BigEndian.Uint32(data[:4])
-		if v > 0 {
-			return int64(v) * 1000, nil
-		}
-	}
-	return 0, fmt.Errorf("设备树中 bat-capacity-mah 无有效值")
+// dtbCapacityDirs 设备树根目录候选，按「真实路径优先」排列。多数内核把
+// /proc/device-tree 做成指向 /sys/firmware/devicetree/base 的符号链接，而
+// toybox/部分 busybox 的 find 默认不跟随起始路径的符号链接，直接搜索
+// /proc/device-tree 会返回空（issue #14 在 vivo V2463A 上实测）。
+var dtbCapacityDirs = []string{
+	"/sys/firmware/devicetree/base",
+	"/proc/device-tree",
 }
+
+// dtbFind 执行 find，可注入供测试替换。
+var dtbFind = func(bin string, args ...string) ([]byte, error) {
+	return exec.Command(bin, args...).Output()
+}
+
+// readDTBatteryCapacity 从设备树读取 vivo,bat-capacity-mah（µAh）。
+// VIVO/iQOO 等设备不把与 charge_counter 同口径的设计容量暴露到 sysfs，
+// 但设备树中有此值；部分机型 sysfs 的 charge_full_design 是电池标签容量
+// （不同口径），调用方用本值做交叉校验（见 design.go）。
+func readDTBatteryCapacity() (int64, error) {
+	for _, dir := range dtbCapacityDirs {
+		if _, err := os.Stat(dir); err != nil {
+			continue // 真实目录不存在时没必要跑 find（/proc/device-tree 的链接目标缺失）
+		}
+		out, err := findDTBCapacity(dir)
+		if err != nil {
+			continue
+		}
+		if v, ok := readDTBCapacityPaths(parseDTBFindOutput(out)); ok {
+			return v, nil
+		}
+	}
+	return 0, fmt.Errorf("设备树中未找到 bat-capacity-mah")
+}
+
+// findDTBCapacity 用 find 搜索设备树，返回 find 的原始输出（每行一个路径）。
+// find 走绝对路径优先：守护进程由 service.sh exec 启动，PATH 未必含
+// /system/bin；失败再退回 PATH 查找。-H 允许起始路径是符号链接；个别 ROM 的
+// find 不认 -H 时回退不带 -H 的调用，避免为了兼容反而读不到。
+func findDTBCapacity(dir string) ([]byte, error) {
+	var lastErr error
+	for _, args := range [][]string{
+		{"-H", dir, "-name", "*bat-capacity-mah"},
+		{dir, "-name", "*bat-capacity-mah"},
+	} {
+		for _, bin := range []string{"/system/bin/find", "find"} {
+			out, err := dtbFind(bin, args...)
+			if err == nil {
+				return out, nil
+			}
+			lastErr = err
+		}
+	}
+	return nil, lastErr
+}
+
+// parseDTBFindOutput 把 find 输出拆成路径列表（跳过空行）。
+func parseDTBFindOutput(out []byte) []string {
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// readDTBCapacityPaths 逐个读取设备树属性，返回首个有效值（µAh）。
+// 设备树属性是 big-endian 32 位整数，单位 mAh（0x0C94 = 3220 ⇒ 3220000µAh）。
+// 值必须落在合理容量范围：同名的字符串属性（"3220" 的 ASCII 会被读成
+// 0x33323230）或其它脏属性一律跳过，避免把垃圾值当设计容量放大 1000 倍。
+func readDTBCapacityPaths(paths []string) (int64, bool) {
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil || len(data) < 4 {
+			continue
+		}
+		v := binary.BigEndian.Uint32(data[:4])
+		if v < dtbCapacityMinMah || v > dtbCapacityMaxMah {
+			continue
+		}
+		return int64(v) * 1000, true
+	}
+	return 0, false
+}
+
+const (
+	// 设备树容量属性的合理范围（mAh）：手机电池，超出即视为非数值属性/脏值。
+	dtbCapacityMinMah = 100
+	dtbCapacityMaxMah = 30000
+)

@@ -111,7 +111,22 @@ Observations only, never affecting health: resting voltage, constant-current cha
 > [!WARNING]
 > Known inaccuracies:
 > - Using the phone while charging can count load current as charge input, so readings run high; screen-off charging is the most accurate (prolonged high-load use after reaching full is detected and stopped);
-> - Devices without `cycle_count` / `charge_full_design` have the corresponding fields omitted or read the design capacity from the device tree; nothing else is affected.
+> - Devices without `cycle_count` have that field omitted; a design capacity that disagrees with the fuel gauge is cross-checked against the device tree (see "Design capacity" below).
+
+### Design capacity
+
+Health is measured full-charge capacity ÷ design capacity, so both sides must use the same basis. Some vivo/iQOO dual-cell kernels put the *battery label* capacity (e.g. 4508 mAh at the label voltage) into `charge_full_design`, while `charge_full` / `charge_counter` report the single-cell charge of the series pack (e.g. 3220 mAh) — dividing them puts a healthy battery at ~60%. The module therefore cross-checks the sysfs value against the `vivo,bat-capacity-mah` device-tree property (same basis as the fuel gauge) and, when the two disagree by more than 20%, keeps the one closer to the measured full charge; a value that would imply more than 110% health is rejected. The chosen number feeds the health percentage, the plausible-capacity window, the cycle equivalent and the "weeks to 80%" projection.
+
+If both sources are wrong for your device, write the correct single-cell design capacity (mAh) to `data/design_mah` and restart the module; delete the file to go back to automatic detection:
+
+```sh
+# use 3220 mAh as the (single-cell) design capacity
+echo 3220 > /data/adb/modules/CRecordEvolution/data/design_mah
+# remove the override and go back to automatic detection
+rm /data/adb/modules/CRecordEvolution/data/design_mah
+```
+
+`batteryd diag` prints which source was used (`design=src=…`).
 
 ## FAQ
 

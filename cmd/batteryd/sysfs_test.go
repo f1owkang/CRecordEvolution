@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -279,3 +280,134 @@ func TestTickStrikeIgnoresSysfsTransient(t *testing.T) {
 type errStub struct{}
 
 func (errStub) Error() string { return "stub" }
+
+// stubDTBFind 替换 find 执行器，记录每次调用的参数（含 bin）。
+func stubDTBFind(t *testing.T, out map[string]string) *[]string {
+	t.Helper()
+	old := dtbFind
+	var calls []string
+	dtbFind = func(bin string, args ...string) ([]byte, error) {
+		calls = append(calls, bin+" "+strings.Join(args, " "))
+		// args = [-H, dir, -name, pattern] 或 [dir, -name, pattern]
+		dir := args[0]
+		if dir == "-H" {
+			dir = args[1]
+		}
+		if p, ok := out[dir]; ok {
+			return []byte(p), nil
+		}
+		return nil, errStub{}
+	}
+	t.Cleanup(func() { dtbFind = old })
+	return &calls
+}
+
+// issue #14 根因之一：/proc/device-tree 在多数内核上只是指向
+// /sys/firmware/devicetree/base 的符号链接，find 不跟随起始链接会返回空。
+// 必须优先搜真实目录，且 find 带 -H 兜底。
+func TestReadDTBatteryCapacityPrefersFirmwareDir(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "firmware", "devicetree", "base")
+	prop := filepath.Join(realDir, "soc", "i2c@89c000", "battery@55", "vivo,bat-capacity-mah")
+	writeFile(t, prop, string([]byte{0x00, 0x00, 0x0c, 0x94})) // 0x0C94 = 3220mAh
+
+	oldDirs := dtbCapacityDirs
+	dtbCapacityDirs = []string{realDir, filepath.Join(base, "missing")}
+	t.Cleanup(func() { dtbCapacityDirs = oldDirs })
+	calls := stubDTBFind(t, map[string]string{realDir: prop + "\n"})
+
+	v, err := readDTBatteryCapacity()
+	if err != nil || v != 3_220_000 {
+		t.Fatalf("应读到设备树 3220000µAh, got (%d,%v)", v, err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("命中真实目录后不应再试其它根目录, calls=%v", *calls)
+	}
+	if !strings.Contains((*calls)[0], "-H "+realDir) {
+		t.Fatalf("find 应带 -H 且搜索真实目录, got %q", (*calls)[0])
+	}
+}
+
+// 真实目录不存在时跳过它，回退到符号链接路径（老内核只有 /proc/device-tree）。
+func TestReadDTBatteryCapacityFallsBackToProcTree(t *testing.T) {
+	base := t.TempDir()
+	procDir := filepath.Join(base, "device-tree")
+	prop := filepath.Join(procDir, "soc", "battery@55", "vivo,bat-capacity-mah")
+	writeFile(t, prop, string([]byte{0x00, 0x00, 0x0c, 0x94}))
+
+	oldDirs := dtbCapacityDirs
+	dtbCapacityDirs = []string{filepath.Join(base, "absent"), procDir}
+	t.Cleanup(func() { dtbCapacityDirs = oldDirs })
+	calls := stubDTBFind(t, map[string]string{procDir: prop + "\n"})
+
+	v, err := readDTBatteryCapacity()
+	if err != nil || v != 3_220_000 {
+		t.Fatalf("应回退到第二根目录读到 3220000µAh, got (%d,%v)", v, err)
+	}
+	if len(*calls) == 0 || !strings.Contains((*calls)[0], procDir) {
+		t.Fatalf("不存在的根目录不应触发 find, calls=%v", *calls)
+	}
+}
+
+// find 不认 -H 的老 ROM/find 也要能读到：回退不带 -H 的调用。
+func TestReadDTBatteryCapacityWithoutFindH(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "base")
+	prop := filepath.Join(realDir, "battery@55", "vivo,bat-capacity-mah")
+	writeFile(t, prop, string([]byte{0x00, 0x00, 0x0c, 0x94}))
+
+	oldDirs, oldFind := dtbCapacityDirs, dtbFind
+	dtbCapacityDirs = []string{realDir}
+	t.Cleanup(func() {
+		dtbCapacityDirs, dtbFind = oldDirs, oldFind
+	})
+	seen := 0
+	dtbFind = func(bin string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if a == "-H" {
+				seen++
+				return nil, errStub{}
+			}
+		}
+		return []byte(prop + "\n"), nil
+	}
+
+	v, err := readDTBatteryCapacity()
+	if err != nil || v != 3_220_000 {
+		t.Fatalf("不带 -H 的回退调用应成功, got (%d,%v)", v, err)
+	}
+	if seen == 0 {
+		t.Fatal("应先尝试带 -H 的调用")
+	}
+}
+
+// 设备树里没有该属性时返回错误（调用方按设计容量缺失降级）。
+func TestReadDTBatteryCapacityNotFound(t *testing.T) {
+	oldDirs := dtbCapacityDirs
+	dtbCapacityDirs = []string{t.TempDir()}
+	t.Cleanup(func() { dtbCapacityDirs = oldDirs })
+	stubDTBFind(t, nil)
+
+	if v, err := readDTBatteryCapacity(); err == nil || v != 0 {
+		t.Fatalf("应返回错误与 0, got (%d,%v)", v, err)
+	}
+}
+
+// 大端 32 位、单位 mAh；0 值、短文件与非数值属性跳过，继续看下一个候选路径。
+func TestReadDTBCapacityPaths(t *testing.T) {
+	base := t.TempDir()
+	zero := filepath.Join(base, "zero")
+	short := filepath.Join(base, "short")
+	junk := filepath.Join(base, "junk")
+	good := filepath.Join(base, "good")
+	writeFile(t, zero, string([]byte{0, 0, 0, 0}))
+	writeFile(t, short, string([]byte{0, 0}))
+	// 字符串属性 "3220" 按 big-endian 解出 0x33323230，必须被范围门控拒绝。
+	writeFile(t, junk, "3220")
+	writeFile(t, good, string([]byte{0x00, 0x00, 0x0c, 0x94}))
+
+	got, ok := readDTBCapacityPaths([]string{filepath.Join(base, "absent"), zero, short, junk, good})
+	if !ok || got != 3_220_000 {
+		t.Fatalf("应跳过无效候选读到 3220000µAh, got (%d,%v)", got, ok)
+	}
+}

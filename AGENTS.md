@@ -208,7 +208,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - `charge_counter` 量纲也可能不守 ABI：荣耀 Magic7（issue #7）上 `charge_counter` 报 mAh、`current_now` 报 mA，而 `charge_full`/`charge_full_design` 仍是 µAh。**所有生产读取必须走 `normCounterUAh(raw, charge_full, cap%)`**（双锚点：`charge_full` 是 µAh 量纲、读数 < `full/500`，且 raw×1000 落在 `cap% × charge_full` 的 0.5~1.5 倍内 ⇒ ×1000；显示电量 0/缺失时一律不缩放，避免把 µAh 机低电量边缘读数放大 1000 倍），充电会话、放电差分、`samples.cc`、`sessions.cc`、diag 展示都不例外；只有迁移判定可用 `counterUnitDecided` 区分「确定 µAh / 确定 mAh / 无法判定」。**不要用相对比值判 counter 单位**：电流自校准的比值由 counter/积分反推，两路同时 milli 化时比值相消（≈1.4），会把错误刻度固化成 ×1；必须先归一 counter，电流刻度才能学到 ×1000（回归见 `TestIssue7CounterMilliampDevice`）。
 - 运行时自校准：充电结算时用「电量计差分 vs 会话期原始电流积分 `rawUAs`」反推 µA/原始单位，**不能用已缩放的 `accUAs` 反推**（否则 ×1000 与 ×1 来回震荡，回归见 `TestIssue6MilliampCurrentCalibration` 第二会话段）。比值须落在 10 的整数次幂 ±0.4 decade（≤2.5 倍偏差；<0.5 保证吸附区不重叠）且结算已采信电量计口径才学习；采信值写 kv `cur_scale`，事件 `cur_cal` 记落盘/变化、`cur_cal_fail` 记写库失败或比值不达标、`counter_scale` 记口径裁决。允许覆盖旧刻度（OTA 改单位后下个会话自动纠正）。
 - `sessions.cc` 存结算时采信的电量计增量 µAh（被门控拒绝也照存；0=无或未采信）；历史页「估算」优先由它折算，缺才回退积分。`sessions.ua` 仍是积分口径，两者不混用。
-- `NormTempC` 截断 `[-40, 80]°C`；`readDTBatteryCapacity` 在 `charge_full_design` 缺失时读设备树 `vivo,bat-capacity-mah`（绝对路径优先）；`current_now` 带符号读取（放电为负），其余节点严格非负。
+- `NormTempC` 截断 `[-40, 80]°C`；`current_now` 带符号读取（放电为负），其余节点严格非负。
+- **设计容量必须先做口径裁决再用**（issue #14）：vivo/iQOO 双电芯机把**电池标签容量**（4508 mAh）写进 `charge_full_design`，而 `charge_full`/`charge_counter`/各路估算是同一块电池的「单芯电荷量」（3220 mAh），直接相除会把健康度打成 ~60%。`resolveDesignCapacity`（`design.go`）按「手动 `data/design_mah` > 设备树 > 分歧裁决」产出唯一可信值 `a.designUAh`；健康度、`capacityInWindow`、`cycleEquiv`、`weeks_to_80`、`crRate`、ETA 全部共用它，**不要另取 `charge_full_design`**。设备树读取 `readDTBatteryCapacity`：根目录按 `/sys/firmware/devicetree/base` → `/proc/device-tree`（链接）顺序、find 带 `-H`（不认则回退不带 `-H`），结果按 kv `design_dtb_ua` 缓存（未找到按天节流重试，避免每次 `json` 轮询都跑 find）。分歧阈值取「较大值的 20%」（4508 vs 3220 是 28.6%，按较小值算成 40% 会漏判边界）；判定分歧后按「谁更接近实测锚（`charge_full`，缺失退已采信估算）」定向，且过一道「设计容量不得低于实测满充 ÷1.1」的物理门控，否则保留 sysfs 值。事件 `design_pick`（结果变化才写，靠 kv `design_log` 去重）/`design_missing` 进 diag 白名单；`diagInput.DesignNote`（由 `DesignChoice.DiagNote()` 生成）只在 diag 多打一行 `design=…`，不进模块描述与 JSON。**不要把 design 加进 `CapacityQuality` 互检**：设计容量是规格值不是当前容量测量，正常老化电池的 full < design 会被误报成口径不一致。
 
 ### 时间与存储
 
@@ -232,6 +233,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 充电实时卡的 ETA 用「本次会话平均电流」估算，CV 尾段电流自然衰减，估计值会偏乐观；旁路供电/极涓流或 `charge_full` 缺失时可能不显示，仅作参考，不参与任何结算。
 - Material You 调色板由宿主在**页面加载/主题组合时**生成并随 CSS 一起下发：WebUI 打开期间切换系统明暗或更换管理器配色不会重新取色（取色模式下的 `data-scheme` 也按加载时调色板的背景亮度固定，配色自洽）；重开 WebUI 即刷新（重挂 stylesheet 加 query 可重取，KSU/APatch 忽略 query）。KernelSU/SukiSU 未开启 Monet（`color_mode` 0~2 且非 Material 界面）时 `colors.css` 为空 → 取色档不出现，属于预期。不要为此引入远程请求。
 - 节点缺失时描述/JSON/once 按可用字段降级，不整体失败。
+- 设计容量口径分歧（issue #14）的自动裁决靠「谁更接近实测满充容量」定向：电池已明显老化时两侧设计值都高于实测，裁决会偏向较小的一侧（健康度偏高）；两侧都与本机无关（例如换了更大容量的电池）时只能手动写 `data/design_mah` 纠正。没有实测锚时不切换、保持 sysfs 值，`batteryd diag` 的 `design=` 行会标出 `mismatch=1`。
 - 满电旁路放电有两条边界：单拍回芯/抖动不单独开账，必须连续 ≥2 拍可信下降且累计 ≥5mAh（持续轻载会在多拍后累计到阈值）；旁路期间显示电量一直 100% 时只累计使用量、结算时掉幅 <5 点不落行（没有容量掉幅可展示）。放电样本仍只在 `status=Discharging` 时落库，旁路段不进 samples。
 - 多 daemon 并发写库还会把 `charged_ua_total` 成倍累加（循环当量偏高），该 kv 是累计吞吐、无法可靠拆回单进程值：`dup_repair` 只按事件累计数提示「循环当量可能偏高」，不重算、不影响容量估算。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。

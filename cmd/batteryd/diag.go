@@ -50,6 +50,9 @@ type diagInput struct {
 
 	Design Design
 	Snap   Snapshot
+	// DesignNote 是设计容量裁决摘要（issue #14）：常规 sysfs 情形为空，诊断里
+	// 整行省略；有口径分歧/手动覆盖时打印采纳来源与原始读数。
+	DesignNote string
 
 	Status     string
 	Cap        *int64
@@ -98,6 +101,7 @@ func (a *app) diagInput() diagInput {
 		SDK:          diagGetprop("ro.build.version.sdk"),
 		ABI:          diagGetprop("ro.product.cpu.abi"),
 		Design:       d,
+		DesignNote:   a.designInfo.DiagNote(),
 		Snap:         snap,
 		DupRepair:    snap.DupRepair,
 		Now:          time.Now().Unix(),
@@ -140,6 +144,8 @@ func (a *app) diagInput() diagInput {
 		"quality_warn", "quality_stale",
 		// 升级期一次性的 cc 量纲迁移：进白名单才能在诊断里看到「历史数据没迁移」
 		"cc_unit_repair", "cc_unit_repair_fail",
+		// 设计容量裁决（issue #14）：sysfs 与设备树口径分歧时靠它确认采纳值
+		"design_pick", "design_missing",
 	}); err == nil && ok {
 		in.LastEvent = &diagEvent{Kind: kind, Detail: diagClean(detail, diagEventDetailMax), TS: ts}
 	}
@@ -350,6 +356,11 @@ func renderDiag(in diagInput) string {
 	line("kernel=full=%s design=%s cycles=%s",
 		designMah(in.Design.HasFull, in.Design.FullMah), designMah(in.Design.HasDesign, in.Design.DesignMah),
 		designCycles(in.Design))
+	// 设计容量裁决明细（issue #14）：只在来源不是常规 sysfs 值、或两侧口径
+	// 分歧时出现，正常设备的诊断输出保持原样。
+	if in.DesignNote != "" {
+		line("design=%s", in.DesignNote)
+	}
 	for _, s := range in.Sessions {
 		line("%s", diagSessionLine(s, in.Loc))
 	}

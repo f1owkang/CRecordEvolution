@@ -142,7 +142,9 @@ type app struct {
 	st        *Store
 	est       Estimator
 	designUAh int64
-	cellCount int
+	// designInfo 记录可信设计容量的来源与裁决明细（issue #14），仅 diag 输出。
+	designInfo DesignChoice
+	cellCount  int
 
 	nodePaths    map[string]string
 	lastPruneDay int64
@@ -207,23 +209,29 @@ func newApp() (*app, error) {
 	repairCounterUnitsOnUpgrade(st, fs)
 	// 出厂设计容量缺失/为 0 时不阻断启动：描述省略相应段，实测估算会因无法计算
 	// 设计容量窗口而保持「学习期」，但内核读数（满充容量/循环次数）仍可正常展示。
-	designUAh := int64(0)
+	sysfsDesignUAh := int64(0)
 	if node, err := fs.FindNode("charge_full_design"); err == nil {
 		if v, rerr := fs.ReadInt(node); rerr == nil {
-			designUAh = v
+			sysfsDesignUAh = v
 		}
 	}
-	// Fallback: 部分设备（如 VIVO/iQOO）内核不把设计容量暴露到 sysfs，
-	// 但在设备树 (DTB) 中存储了 vivo,bat-capacity-mah。
-	if designUAh <= 0 {
-		if v, err := readDTBatteryCapacity(); err == nil && v > 0 {
-			designUAh = v
-			_ = st.InsertEvent("design_dt", fmt.Sprintf("从设备树读取设计容量 %dµAh", v))
-		}
+	// 实测锚：charge_full 与设计容量、各路估算同为「单芯电荷量」口径，是
+	// sysfs 与设备树设计容量口径分歧时唯一可定向的观测证据；读不到时退回
+	// 已采信的实测估算（见 design.go）。
+	anchorUAh := int64(0)
+	if v, ok := readRawNodeValue(fs, "charge_full"); ok {
+		anchorUAh = v
 	}
-	if designUAh <= 0 {
-		_ = st.InsertEvent("design_missing", "charge_full_design 缺失或无效，实测估算停用")
+	if anchorUAh <= 0 {
+		anchorUAh = kvInt(st, kvKeyEmaUAh)
 	}
+	// 部分机型（vivo/iQOO 双电芯）的 charge_full_design 是电池标签容量，与
+	// charge_full/charge_counter 不同口径（issue #14），必须与设备树的
+	// vivo,bat-capacity-mah 交叉校验后才能当健康度分母，否则会打出 ~60% 这类
+	// 假健康度；data/design_mah 可手动覆盖。
+	design := resolveDesignCapacity(st, dataDir, sysfsDesignUAh, anchorUAh, time.Now().Unix())
+	logDesignChoice(st, design)
+	designUAh := design.UAh
 	// 双电芯检测：读 voltage_now，超过 5V 判定为串联双电芯（实际电压 ≈ 单电芯 × 2）。
 	// 阈值定 5V：高压单电芯截止 4.45~4.53V（OPPO/一加系常见），静息+满电不得超过
 	// ~4.6V；双电芯串联最低 ≈ 2×3.4V = 6.8V。5V 两侧各留充足余量，杜绝把高压
@@ -247,14 +255,15 @@ func newApp() (*app, error) {
 	propPath := filepath.Join(moddir, "module.prop")
 	version, _ := readModuleVersion(propPath)
 	return &app{
-		moddir:    moddir,
-		propPath:  propPath,
-		version:   version,
-		fs:        fs,
-		st:        st,
-		est:       est,
-		designUAh: designUAh,
-		cellCount: cellCount,
+		moddir:     moddir,
+		propPath:   propPath,
+		version:    version,
+		fs:         fs,
+		st:         st,
+		est:        est,
+		designUAh:  designUAh,
+		designInfo: design,
+		cellCount:  cellCount,
 	}, nil
 }
 
@@ -388,8 +397,9 @@ func (a *app) basics() Design {
 	// 内核 charge_full / charge_full_design 按原值展示，不乘电芯数：
 	// charge_full 在双电芯机上已是整包值（以 charge_counter/charge_full ≈
 	// capacity% 校验），再乘会翻倍；而 healthPct 两侧同乘 cellCount 属分子分母
-	// 约掉、结果不变（no-op），并不能修 200% 之类口径不一致。双电芯口径差异
-	// 需单独处理，此处保持原值。
+	// 约掉、结果不变（no-op），并不能修 200% 之类口径不一致。
+	// 双电芯口径差异只落到「设计容量」一个量上：a.designUAh 已是裁决后的
+	// 可信值（design.go），健康度/窗口/循环当量全部共用它。
 	d := Design{DesignMah: a.designUAh / 1000, HasDesign: a.designUAh > 0}
 	if full, err := a.readIntNode("charge_full"); err == nil {
 		d.FullMah = full / 1000
