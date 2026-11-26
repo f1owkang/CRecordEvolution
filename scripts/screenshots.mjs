@@ -317,9 +317,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function shoot(page, name) {
   await page.evaluate(() => {
-    const el = document.getElementById('app');
-    if (el) el.scrollTop = 0;
-    else window.scrollTo(0, 0);
+    // 竖直滚动发生在当前 .page 内，#app 只是横向 pager；点开录时浏览器可能把
+    // 第一张卡片滚进视野，截图前必须把当前页拉回顶部（顶栏也会随之展开）。
+    const pageEl = document.querySelector('.page.is-active');
+    if (pageEl) pageEl.scrollTop = 0;
+    const app = document.getElementById('app');
+    if (app) app.scrollTop = 0;
   });
   await sleep(350);
   // scale:'css'：按 CSS 像素输出 390 宽（DSF=2 只用于渲染锐度）
