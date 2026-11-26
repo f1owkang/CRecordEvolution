@@ -78,7 +78,7 @@ func localNow() time.Time {
 var channel = "stable"
 
 const (
-	usageText = "用法: batteryd <daemon|once|json|history|diag> [options]\n"
+	usageText = "用法: batteryd <daemon|once|json|history|diag|design> [options]\n"
 
 	refreshRetryMax  = 10
 	refreshRetryWait = 30 * time.Second
@@ -123,6 +123,8 @@ func main() {
 		err = runHistory(os.Args[2:])
 	case "diag":
 		err = runDiag()
+	case "design":
+		err = runDesign(os.Args[2:])
 	default:
 		printUsage(os.Stderr)
 		os.Exit(2)
