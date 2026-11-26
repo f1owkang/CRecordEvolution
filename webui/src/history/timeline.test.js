@@ -29,6 +29,8 @@ describe('toTimelineRow 记录行', () => {
     expect(row.statusOk).toBe(true);
     expect(row.invalid).toBe(false);
     expect(row.sub).toEqual(['估算 4600 mAh', '温度 31 ℃', '历时 60 分钟']);
+    expect(row.soc).toEqual({ from: 20, to: 80, lo: 20, hi: 80 });
+    expect(row.socText).toBe('电量 20% → 80%');
     expect(row.detail.length).toBeGreaterThan(0);
   });
 
@@ -72,7 +74,34 @@ describe('toTimelineRow 记录行', () => {
     expect(row.title).toBe('放电记录');
     expect(row.primary).toBe('2100 mAh');
     expect(row.status).toBe('已记录');
-    expect(row.sub).toContain('80→58%');
+    expect(row.sub).toEqual(['80→58%', '历时 90 分钟']);
+    // 区间条与充电共用同一套尺寸，起止值仍由文字/aria 承担
+    expect(row.soc).toEqual({ from: 80, to: 58, lo: 58, hi: 80 });
+    expect(row.socText).toBe('电量 80% → 58%');
+  });
+
+  it('没有起止电量时不生成区间条，退回纯文字', () => {
+    const row = toTimelineRow(
+      { kind: 'charge', charge: { start_ts: 0, end_ts: 60, delta_pct: 25, valid: true } },
+      t,
+      'zh'
+    );
+    expect(row.soc).toBeNull();
+    expect(row.socText).toBeUndefined();
+    expect(row.primary).toBe('电量 +25%');
+  });
+
+  it('越界电量夹到 0~100，区间条不会画出轨道', () => {
+    const row = toTimelineRow(
+      {
+        kind: 'discharge',
+        discharge: { ts: 0, secs: 3600, uah_mah: 100, start_cap: 130, end_cap: -5 },
+      },
+      t,
+      'zh'
+    );
+    expect(row.soc).toEqual({ from: 100, to: 0, lo: 0, hi: 100 });
+    expect(row.socText).toBe('电量 130% → -5%');
   });
 
   it('未知事件返回 null，不生成空行', () => {

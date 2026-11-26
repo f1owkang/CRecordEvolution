@@ -120,7 +120,7 @@ function buildTrendModel(trends, t, lang, sel) {
   const sesRows = sessions.slice().sort(function (a, b) {
     return Number(a.end_ts) - Number(b.end_ts);
   });
-  const sesBig = sesRows.length ? svgBars(sesRows, CHART_W, CHART_H, 'var(--blue)', sel.ses) : '';
+  const sesBig = sesRows.length ? svgBars(sesRows, CHART_W, CHART_H, 'var(--accent)', sel.ses) : '';
   let sesVal = sesRows.length
     ? plural(
         lang,
@@ -156,7 +156,7 @@ function buildTrendModel(trends, t, lang, sel) {
   const disPair = chartPair(
     disPoints,
     function (height, selected) {
-      return svgTsLine(disAsc, CHART_W, height, 'var(--accent)', 'uah_mah', null, selected);
+      return svgTsLine(disAsc, CHART_W, height, 'var(--orange)', 'uah_mah', null, selected);
     },
     tileSel(sel, 'discharge')
   );

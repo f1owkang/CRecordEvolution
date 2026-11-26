@@ -195,9 +195,9 @@ const jsonDoc = {
     },
   },
   daemon: { version: '1.3.10(39)', ts: now, age_sec: 12, stale: true },
-  // 多 daemon 遗留重复记录清理结果（issue #12）：设置页据此显示清理行与
-  // 「循环当量可能偏高」提示。
-  dup_repair: { ts: now - day * 2, sessions: 4, discharges: 1 },
+  // 多 daemon 遗留重复记录清理结果（issue #12）：仅保留在 JSON 里，WebUI 不再展示，
+  // 这里保留字段用于断言设置页不会重新长出这两行。
+  dup_repair: { ts: now - day * 2, sessions: 4, discharges: 1, charge_mah: 2300 },
   recent: [
     { ts: now - day * 4, mah: 4620 },
     { ts: now - day * 3, mah: 4560 },
@@ -501,7 +501,12 @@ try {
   await page.waitForSelector('#page_overview.is-active', { timeout: 15000 });
   await page.waitForSelector('#page_overview .hero-line', { timeout: 15000 });
   await sleep(300);
-  check((await page.locator('#page_overview .cell').count()) >= 6, '概览：指标格渲染');
+  check((await page.locator('#page_overview .cell').count()) >= 8, '概览：指标格渲染');
+  const ovText = await page.locator('#page_overview').innerText();
+  check(
+    ovText.includes('Cycle equivalent') && ovText.includes('Internal resistance'),
+    '概览：恢复 2×3 指标格（循环当量/内阻）'
+  );
   check(
     (await page.locator('#page_overview .hero-line').innerText()).includes('%'),
     '概览：健康度百分比'
@@ -815,17 +820,70 @@ try {
   await page.click('#nav_history');
   await page.waitForSelector('#page_history.is-active');
   await page.waitForSelector('#page_history .tl-item', { timeout: 15000 });
-  check((await page.locator('#page_history .hist-stat').count()) === 6, '历史：六张摘要卡');
+  check((await page.locator('#page_history .hist-stat').count()) === 3, '历史：三张关键摘要卡');
   const statTexts = await page.locator('#page_history .hist-stat').allInnerTexts();
   check(
-    statTexts.some((s) => s.includes('mAh')),
-    '历史：摘要含充入容量'
+    statTexts.some((s) => s.includes('Valid sessions')),
+    '历史：摘要含有效会话'
   );
   check(
-    statTexts.some((s) => s.includes('min')),
-    '历史：摘要含平均时长'
+    statTexts.some((s) => s.includes('Charged') && s.includes('12345')),
+    '历史：摘要含累计充入'
+  );
+  check(
+    statTexts.some((s) => s.includes('Avg charge') && s.includes('2345')),
+    '历史：摘要含平均每次充入'
   );
   check((await page.locator('#page_history .tl-item').count()) >= 3, '历史：时间轴记录');
+  check((await page.locator('#page_history .tl-soc').count()) >= 3, '历史：记录带 SOC 区间条');
+  const socBar = await page.evaluate(() => {
+    function info(item) {
+      const bar = item && item.querySelector('.tl-soc');
+      if (!bar) return null;
+      const track = bar.querySelector('.tl-soc-track');
+      const level = bar.querySelector('.tl-soc-level');
+      const delta = bar.querySelector('.tl-soc-add, .tl-soc-lost');
+      const tr = track.getBoundingClientRect();
+      const lr = level.getBoundingClientRect();
+      const dr = delta.getBoundingClientRect();
+      return {
+        hidden: bar.getAttribute('aria-hidden'),
+        level: lr.width / tr.width,
+        inside: dr.left >= tr.left - 0.5 && dr.right <= tr.right + 0.5 && dr.height >= 4,
+        kind: String(delta.className),
+        color: delta.classList.contains('tl-soc-add')
+          ? getComputedStyle(delta).backgroundColor
+          : getComputedStyle(delta).borderTopColor,
+      };
+    }
+    return {
+      charge: info(document.querySelector('#page_history .tl-item.charge')),
+      discharge: info(document.querySelector('#page_history .tl-item.discharge')),
+    };
+  });
+  check(
+    socBar.charge &&
+      socBar.charge.hidden === 'true' &&
+      socBar.charge.level > 0.3 &&
+      socBar.charge.inside &&
+      socBar.charge.kind.includes('tl-soc-add'),
+    '历史：充电条显示当前电量 + 实心新增段',
+    JSON.stringify(socBar.charge)
+  );
+  check(
+    socBar.discharge &&
+      socBar.discharge.hidden === 'true' &&
+      socBar.discharge.level > 0.3 &&
+      socBar.discharge.inside &&
+      socBar.discharge.kind.includes('tl-soc-lost'),
+    '历史：放电条显示当前电量 + 空心消耗段',
+    JSON.stringify(socBar.discharge)
+  );
+  check(
+    socBar.charge && socBar.discharge && socBar.charge.color !== socBar.discharge.color,
+    '历史：充放电颜色区分',
+    socBar.charge && socBar.discharge ? socBar.charge.color + ' / ' + socBar.discharge.color : ''
+  );
   check((await page.locator('#page_history .hist-chips--single').count()) === 1, '历史：筛选单行');
   check(
     (await page.locator('#page_history .hist-chips').getAttribute('aria-label')) ===
@@ -1149,18 +1207,17 @@ try {
     '设置：daemon 待重启文案'
   );
   check(
-    (await page.locator('#page_settings [data-field="dup_repair"]').count()) === 1,
-    '设置：重复记录清理行'
+    (await page.locator('#page_settings [data-field="dup_repair"]').count()) === 0 &&
+      (await page.locator('#page_settings [data-field="dup_note"]').count()) === 0,
+    '设置：不再显示重复清理/循环当量行'
   );
   check(
-    (await page.locator('#page_settings [data-field="dup_repair"]').innerText()).includes(
-      'Sessions 4'
-    ),
-    '设置：重复记录清理计数'
+    (await page.locator('#page_settings [data-field="rmoh"]').count()) === 0,
+    '设置：内阻仍只在概览指标格'
   );
   check(
-    (await page.locator('#page_settings [data-field="dup_note"]').count()) === 1,
-    '设置：循环当量偏高提示行'
+    (await page.locator('#page_settings #design_input').count()) === 0,
+    '设置：不再显示设计容量入口'
   );
   check((await page.locator('#page_settings #diag').count()) === 1, '设置：诊断复制按钮');
   await page.click('#page_settings #diag');

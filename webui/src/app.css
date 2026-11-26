@@ -744,7 +744,7 @@ html[data-bar='classic'] .page {
   grid-template-columns: 16px minmax(0, 1fr);
   gap: 7px;
   content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
+  contain-intrinsic-size: auto 100px;
 }
 .tl-rail {
   position: relative;
@@ -770,11 +770,11 @@ html[data-bar='classic'] .page {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--blue);
+  background: var(--accent);
   box-shadow: 0 0 0 3px var(--bg);
 }
 .tl-item.discharge .tl-dot {
-  background: var(--accent);
+  background: var(--orange);
 }
 .tl-item.is-invalid .tl-dot {
   background: var(--faint);
@@ -851,6 +851,52 @@ html[data-theme='light'] .pill.warn {
   font-weight: 700;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
+}
+/* 记录里的 SOC 条：淡色当前电量 + 本次变化段。充电=实心绿（新增）、放电=空心
+   橙（已消耗），方向不靠颜色也能从实心/空心区分；无效会话整段置灰。 */
+.tl-soc {
+  margin-top: 5px;
+}
+.tl-soc-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.tl-soc-level {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 999px;
+  /* 用中性灰画「电池已含电量」：18% 透明在浅色主题里和空轨道几乎同色，改成
+     --mute 实体色，保证和空轨道一眼能分开；深色下也不抢绿/橙变化段。 */
+  background: var(--mute);
+  opacity: 0.85;
+}
+.tl-soc-add,
+.tl-soc-lost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  box-sizing: border-box;
+}
+.tl-soc-add {
+  background: var(--accent);
+}
+.tl-soc-lost {
+  border: 1.5px solid var(--orange);
+}
+.tl-item.is-invalid .tl-soc-level {
+  opacity: 0.07;
+}
+.tl-item.is-invalid .tl-soc-add {
+  background: var(--faint);
+}
+.tl-item.is-invalid .tl-soc-lost {
+  border-color: var(--faint);
 }
 .tl-sub {
   display: flex;
@@ -1154,7 +1200,9 @@ html[data-theme='light'] .pill.warn {
   font-size: 11px;
   color: var(--mute);
   max-width: 64%;
-  word-break: break-all;
+  /* 只在必要时换行，并优先在 / 处断开（break-all 会把 current_now 拆成两截）。 */
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 .set-divider {
   height: 1px;
