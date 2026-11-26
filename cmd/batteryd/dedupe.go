@@ -29,6 +29,10 @@ const (
 	kvDupRepairTs          = "dup_repair_ts"
 	kvDupRemovedSessions   = "dup_removed_sessions"
 	kvDupRemovedDischarges = "dup_removed_discharges"
+	// kvDupRemovedUAs 因删重复会话而扣减的累计充入电量（µA·s），与
+	// charged_ua_total 同单位：多 daemon 各自把同一会话的积分加进吞吐，
+	// 保留最后写入的一行后，被删行的 ua 就是多算的那部分，可安全扣回。
+	kvDupRemovedUAs = "dup_removed_uas"
 
 	// dupScanMinInterval 两次重复扫描的最小间隔（秒）。
 	dupScanMinInterval int64 = 300
@@ -38,6 +42,8 @@ const (
 type dupResult struct {
 	Sessions   int64
 	Discharges int64
+	// ChargeUAs 本次因删除重复会话而扣减的充入电量（µA·s）。
+	ChargeUAs int64
 }
 
 // Removed 本趟是否真的删掉了行。
@@ -49,6 +55,8 @@ type dupRepairInfo struct {
 	TS         int64 `json:"ts"`
 	Sessions   int64 `json:"sessions"`
 	Discharges int64 `json:"discharges"`
+	// ChargeMah 累计扣减的充入电量（mAh，µA·s 折算），仅用于展示清理效果。
+	ChargeMah int64 `json:"charge_mah,omitempty"`
 }
 
 // DuplicatesScanDue 判断是否该扫描重复记录：force 用于 daemon 启动（每次都扫），
@@ -75,6 +83,7 @@ func (s *Store) DupRepairInfo() *dupRepairInfo {
 		TS:         ts,
 		Sessions:   kvInt(s, kvDupRemovedSessions),
 		Discharges: kvInt(s, kvDupRemovedDischarges),
+		ChargeMah:  kvInt(s, kvDupRemovedUAs) / (3600 * 1000),
 	}
 }
 
@@ -85,6 +94,8 @@ type sessionSig struct {
 	startCap, endCap int64
 	valid            bool
 	reason           string
+	// uAs 会话纵积分电量（µA·s）：删除重复行时据此扣回 charged_ua_total。
+	uAs int64
 }
 
 // dischargeSig 是放电去重所需的列（end_ts 为主键）。
@@ -183,7 +194,7 @@ func scanSessionSig(rows *sql.Rows) (sessionSig, error) {
 	var v sessionSig
 	var valid int64
 	var reason sql.NullString
-	if err := rows.Scan(&v.id, &v.startTs, &v.endTs, &v.startCap, &v.endCap, &valid, &reason); err != nil {
+	if err := rows.Scan(&v.id, &v.startTs, &v.endTs, &v.startCap, &v.endCap, &valid, &reason, &v.uAs); err != nil {
 		return sessionSig{}, err
 	}
 	v.valid = valid == 1
@@ -204,6 +215,7 @@ func (s *Store) RepairDuplicateRecords(now int64) (dupResult, error) {
 	var res dupResult
 	prevSessions := kvInt(s, kvDupRemovedSessions)
 	prevDischarges := kvInt(s, kvDupRemovedDischarges)
+	prevUAs := kvInt(s, kvDupRemovedUAs)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -211,13 +223,30 @@ func (s *Store) RepairDuplicateRecords(now int64) (dupResult, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// 事务内读当前累计吞吐：删除重复会话后要把它们多算的积分扣回，否则
+	// 循环当量会一直带着多 daemon 的倍数（issue #12 遗留）。
+	prevTotalUAs := int64(0)
+	var totalRaw sql.NullString
+	if err := tx.QueryRow(`SELECT v FROM kv WHERE k = ?`, kvChargedTotal).Scan(&totalRaw); err == nil && totalRaw.Valid {
+		prevTotalUAs, _ = strconv.ParseInt(totalRaw.String, 10, 64)
+	}
+
 	// 会话：90 天窗口内行数不多，取出关键列在 Go 里配对，避免复杂 SQL。
-	sessions, err := queryAll(tx, `SELECT id, start_ts, end_ts, start_cap, end_cap, valid, invalid_reason
+	sessions, err := queryAll(tx, `SELECT id, start_ts, end_ts, start_cap, end_cap, valid, invalid_reason, ua
 		FROM sessions ORDER BY start_ts, id`, scanSessionSig)
 	if err != nil {
 		return res, fmt.Errorf("读取会话失败：%w", err)
 	}
 	removeIDs := duplicateSessionIDs(sessions)
+	removeSet := make(map[int64]bool, len(removeIDs))
+	for _, id := range removeIDs {
+		removeSet[id] = true
+	}
+	for _, row := range sessions {
+		if removeSet[row.id] && row.uAs > 0 {
+			res.ChargeUAs += row.uAs
+		}
+	}
 	for _, id := range removeIDs {
 		if _, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id); err != nil {
 			return res, fmt.Errorf("删除重复会话 id=%d 失败：%w", id, err)
@@ -247,8 +276,21 @@ func (s *Store) RepairDuplicateRecords(now int64) (dupResult, error) {
 			kvDupRepairTs:          now,
 			kvDupRemovedSessions:   prevSessions + res.Sessions,
 			kvDupRemovedDischarges: prevDischarges + res.Discharges,
+			kvDupRemovedUAs:        prevUAs + res.ChargeUAs,
 		} {
 			if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`, k, strconv.FormatInt(v, 10)); err != nil {
+				return res, err
+			}
+		}
+		// 扣回被删重复会话多算的充入电量；浮充段（不落会话）若也被多进程累加，
+		// 这里扣不到，循环当量可能仍略偏高，但不会再是 daemon 倍数级。
+		if res.ChargeUAs > 0 && prevTotalUAs > 0 {
+			newTotal := prevTotalUAs - res.ChargeUAs
+			if newTotal < 0 {
+				newTotal = 0
+			}
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`,
+				kvChargedTotal, strconv.FormatInt(newTotal, 10)); err != nil {
 				return res, err
 			}
 		}
@@ -257,7 +299,11 @@ func (s *Store) RepairDuplicateRecords(now int64) (dupResult, error) {
 		return res, err
 	}
 	if res.Removed() {
-		_ = s.InsertEvent("dup_repair", fmt.Sprintf("会话 %d 条 / 放电 %d 条", res.Sessions, res.Discharges))
+		detail := fmt.Sprintf("会话 %d 条 / 放电 %d 条", res.Sessions, res.Discharges)
+		if res.ChargeUAs > 0 {
+			detail += fmt.Sprintf("，扣减充入 %dmAh", res.ChargeUAs/(3600*1000))
+		}
+		_ = s.InsertEvent("dup_repair", detail)
 	}
 	return res, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -116,6 +117,55 @@ func TestRepairDuplicateRecordsReruns(t *testing.T) {
 	info := st.DupRepairInfo()
 	if info == nil || info.Sessions != 2 {
 		t.Fatalf("累计删除数应累加到 2, got %+v", info)
+	}
+}
+
+// 删除重复会话时同步扣回 charged_ua_total：多 daemon 各自把同一会话的积分
+// 加进吞吐，保留最后写入那行后，被删行的 ua 就是多算的部分（issue #12 遗留的
+// 循环当量偏高）。扣减必须与删除同事务、且重复执行不二次扣减。
+func TestRepairDuplicateDeductsChargedTotal(t *testing.T) {
+	st := openTestStore(t, filepath.Join(t.TempDir(), "battery.db"))
+	defer st.Close()
+
+	const total = int64(10_000_000_000)
+	if err := st.KVSet(kvChargedTotal, strconv.FormatInt(total, 10)); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(endTs, ua int64) {
+		t.Helper()
+		if _, err := st.InsertSession(Session{
+			StartTs: 1000, EndTs: endTs, StartCap: 30, EndCap: 40,
+			AccUAs: ua, AvgI: 10, Valid: false, InvalidReason: "delta_lt_20",
+		}); err != nil {
+			t.Fatalf("InsertSession: %v", err)
+		}
+	}
+	// 同一会话的三行（多 daemon 各结算一次）：3.6e6 µA·s = 1mAh。
+	insert(2000, 3_600_000)
+	insert(2002, 7_200_000)
+	insert(2004, 10_800_000)
+
+	res, err := st.RepairDuplicateRecords(1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Sessions != 2 || res.ChargeUAs != 3_600_000+7_200_000 {
+		t.Fatalf("清理结果 = %+v, want 2 会话 + 10.8e6 µA·s", res)
+	}
+	wantTotal := total - res.ChargeUAs
+	if got := kvInt(st, kvChargedTotal); got != wantTotal {
+		t.Fatalf("charged_ua_total = %d, want %d（扣回被删会话的充入）", got, wantTotal)
+	}
+	info := st.DupRepairInfo()
+	if info == nil || info.ChargeMah != 3 {
+		t.Fatalf("dup_repair 扣减展示 = %+v, want charge_mah=3", info)
+	}
+	// 二次扫描没有可删行 → 不得再扣。
+	if res2, err := st.RepairDuplicateRecords(1_000_300); err != nil || res2.Removed() {
+		t.Fatalf("二次扫描 = %+v err=%v", res2, err)
+	}
+	if got := kvInt(st, kvChargedTotal); got != wantTotal {
+		t.Fatalf("二次扫描不应再扣 charged_ua_total: %d", got)
 	}
 }
 
