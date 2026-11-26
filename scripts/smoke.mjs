@@ -146,7 +146,7 @@ const day = 86400;
 
 const jsonDoc = {
   channel: 'stable',
-  version: '1.3.10(39)',
+  version: '1.4.0(40)',
   design_mah: 5000,
   full_mah: 4800,
   cycles: 210,
@@ -194,7 +194,7 @@ const jsonDoc = {
       eta_min: 42,
     },
   },
-  daemon: { version: '1.3.10(39)', ts: now, age_sec: 12, stale: true },
+  daemon: { version: '1.4.0(40)', ts: now, age_sec: 12, stale: true },
   // 多 daemon 遗留重复记录清理结果（issue #12）：仅保留在 JSON 里，WebUI 不再展示，
   // 这里保留字段用于断言设置页不会重新长出这两行。
   dup_repair: { ts: now - day * 2, sessions: 4, discharges: 1, charge_mah: 2300 },
@@ -318,7 +318,7 @@ const SMOKE_DATA = {
   json: jsonDoc,
   diag:
     'CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）\n' +
-    'module=1.3.10(39) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
+    'module=1.4.0(40) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
     'device=OnePlus PJE110 (aston)\n' +
     'calib=x1000 ma I_node=/sys/class/power_supply/battery/current_now\n' +
     'est=5273mAh samples=12 cycleEq=1.42\n' +
@@ -1246,7 +1246,7 @@ try {
     '设置：关于通道/版本胶囊'
   );
   check(
-    (await page.locator('#page_settings [data-field="version"]').innerText()).includes('1.3.10'),
+    (await page.locator('#page_settings [data-field="version"]').innerText()).includes('1.4.0'),
     '设置：关于版本信息'
   );
   await page.locator('#theme_seg .seg-btn').nth(1).click();

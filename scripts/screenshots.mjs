@@ -70,7 +70,7 @@ const day = 86400;
 // —— 虚构演示数据：数值自洽（估算 4520mAh / 设计 5000mAh ≈ 90%，当前 76% 充电中）——
 const jsonDoc = {
   channel: 'stable',
-  version: '1.3.10(39)',
+  version: '1.4.0(40)',
   design_mah: 5000,
   full_mah: 4820,
   cycles: 232,
@@ -116,7 +116,7 @@ const jsonDoc = {
       eta_min: 42,
     },
   },
-  daemon: { version: '1.3.10(39)', ts: now, age_sec: 12 },
+  daemon: { version: '1.4.0(40)', ts: now, age_sec: 12 },
   recent: [
     { ts: now - day * 24, mah: 4680 },
     { ts: now - day * 21, mah: 4655 },
@@ -237,7 +237,7 @@ const DEMO = {
   json: jsonDoc,
   diag:
     'CRecordEvolution diag（已脱敏：无序列号/IMEI/MAC/账号）\n' +
-    'module=1.3.10(39) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
+    'module=1.4.0(40) channel=stable root=KernelSU android=16(sdk36) abi=arm64\n' +
     'device=OnePlus PJE110 (aston)\n' +
     'calib=x1000 ma I_node=/sys/class/power_supply/battery/current_now\n' +
     'est=4520mAh samples=46 cycleEq=1.68\n' +
