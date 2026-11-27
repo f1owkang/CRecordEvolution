@@ -179,6 +179,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 > ML 版显示的 ± 是 RLS 相对不确定度指标，不是严格的统计置信区间。
 
+## 参与贡献
+
+欢迎提交 issue 与 PR。本地构建/测试命令与提交规范见 [`CONTRIBUTING.md`](.github/CONTRIBUTING.md)，漏洞请按 [`SECURITY.md`](.github/SECURITY.md) 私下报告；请遵循 [`CODE_OF_CONDUCT.md`](.github/CODE_OF_CONDUCT.md)。
+
+反馈电池或估算问题时，请附上脱敏后的 `batteryd diag` 输出（设置 → 复制诊断），不要只发截图。
+
 ## 贡献者
 
 ChargingRecord Evolution 生态由以下贡献者共同打造（排名不分先后）：

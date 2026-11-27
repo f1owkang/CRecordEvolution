@@ -181,6 +181,12 @@ Adoption varies: Lin 2022 (CCCT) and He & Shin (resting voltage) are the method 
 
 > The ± shown by the ML build is an RLS relative-uncertainty indicator, not a strict statistical confidence interval.
 
+## Contributing
+
+Issues and pull requests are welcome. Read [`CONTRIBUTING.md`](.github/CONTRIBUTING.md) for the local build/test commands and commit style, report vulnerabilities privately as described in [`SECURITY.md`](.github/SECURITY.md), and follow the [`CODE_OF_CONDUCT.md`](.github/CODE_OF_CONDUCT.md).
+
+When reporting a battery or estimate issue, attach the redacted `batteryd diag` output (Settings → Copy diagnostics) instead of screenshots only.
+
 ## Contributors
 
 ChargingRecord Evolution is built by the following contributors (in no particular order):

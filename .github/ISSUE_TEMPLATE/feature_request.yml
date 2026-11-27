@@ -1,6 +1,7 @@
 name: Feature request / 功能建议
 description: 建议新的统计口径、WebUI 功能或安装/诊断体验改进
 title: "[Feature] "
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:

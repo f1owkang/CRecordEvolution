@@ -1,6 +1,7 @@
 name: Bug report / 问题反馈
 description: 电池估算、WebUI 或安装异常时，用脱敏诊断快速定位
 title: "[Bug] "
+labels: ["bug"]
 body:
   - type: markdown
     attributes:

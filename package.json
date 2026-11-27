@@ -2,6 +2,7 @@
   "name": "cre-record-evolution-webui",
   "version": "1.4.0",
   "private": true,
+  "license": "GPL-2.0-only",
   "type": "module",
   "packageManager": "pnpm@11.28.5",
   "engines": {
