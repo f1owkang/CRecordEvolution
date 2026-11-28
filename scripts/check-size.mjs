@@ -6,8 +6,8 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { ROOT } from './lib/root.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const OUT = join(ROOT, 'webroot');
 const LIMIT = 50 * 1024;
 const CODE_EXT = new Set(['.js', '.css']);

@@ -8,10 +8,10 @@
  */
 import { createServer } from 'node:http';
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright-core';
+import { ROOT } from './lib/root.mjs';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const WEBROOT = join(ROOT, 'webroot');
 const OUT = join(ROOT, '.github', 'images');
 

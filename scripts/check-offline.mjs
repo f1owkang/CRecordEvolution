@@ -6,10 +6,12 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { ROOT } from './lib/root.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const OUT = join(ROOT, 'webroot');
-const TEXT_EXT = new Set(['.js', '.css', '.html', '.txt', '.json']);
+// .svg 也要扫描：图标/图表里可以内嵌 <image href>、<script> 或远程 URL，
+// 之前只扫 js/css/html/txt/json 会让构建产物里的 SVG 成为离线守卫盲区。
+const TEXT_EXT = new Set(['.js', '.css', '.html', '.txt', '.json', '.svg']);
 
 // SVG 命名空间不是网络请求；只放行这一处固定字符串。
 const ALLOWED_URL = /^https?:\/\/www\.w3\.org\//;
@@ -22,6 +24,9 @@ const RULES = [
   ['importScripts', /\bimportScripts\s*\(/g],
   ['remote import', /\b(?:import|from)\s*\(?\s*['"]https?:\/\//g],
   ['remote url', /https?:\/\/[^\s"'`<>)\\]+/g],
+  // 协议相对 URL（//host/path）：既不是 https?:// 也不一定带 src/href 属性，
+  // 放在引号/括号/等号之后、紧跟域名才算，避免把 JS 行注释（// ...）当命中。
+  ['protocol-relative url', /['"(=]\s*\/\/[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}/g],
   ['external html attr', /\b(?:src|href)\s*=\s*['"](?:https?:)?\/\//g],
 ];
 
@@ -50,9 +55,12 @@ if (
 }
 
 const violations = [];
-for (const p of walk(OUT)) {
+const files = walk(OUT);
+let scanned = 0;
+for (const p of files) {
   const ext = p.slice(p.lastIndexOf('.'));
   if (!TEXT_EXT.has(ext)) continue;
+  scanned++;
   const text = readFileSync(p, 'utf8');
   for (const [name, re] of RULES) {
     re.lastIndex = 0;
@@ -73,4 +81,6 @@ if (violations.length) {
   }
   process.exit(1);
 }
-console.log(`离线检查通过：${walk(OUT).length} 个产物文件，无远程请求/外部 URL/远程 import`);
+console.log(
+  `离线检查通过：${files.length} 个产物文件（扫描 ${scanned} 个文本/SVG），无远程请求/外部 URL/远程 import`
+);
