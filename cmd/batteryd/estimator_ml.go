@@ -12,11 +12,17 @@ const (
 	kvKeyRlsPSym   = "rls_p_sym"
 	kvKeyRatioHist = "ratio_hist"
 	kvKeySFullHist = "sfull_hist"
+	// kvKeyRatioOutlierStreak 连续被 IQR 判离群的会话数：连续离群说明基线已漂移
+	// 到新工况（单位纠正/换电池/校准把 EMA 拖走），只拒收不学习会死锁——hist 与
+	// EMA 都不变，之后每次会话都会同样离群。连续达 outlierEscape 次后放行一次并
+	// 重置比值历史，让模型重新收敛。
+	kvKeyRatioOutlierStreak = "ratio_outlier_streak"
 
 	rlsLambda     = 0.99
 	rlsP0         = 100
 	ratioHistCap  = 40
 	iqrMinSamples = 8
+	outlierEscape = 3
 	clipLo        = 0.7
 	clipHi        = 1.3
 
@@ -41,6 +47,7 @@ func (l *Learning) ResetModel() {
 	_ = l.kv.KVSet(kvKeyRlsPSym, "")
 	_ = l.kv.KVSet(kvKeyRatioHist, "")
 	_ = l.kv.KVSet(kvKeySFullHist, "")
+	_ = l.kv.KVSet(kvKeyRatioOutlierStreak, "0")
 	_ = l.kv.KVSet(kvKeySamples, "0")
 }
 
@@ -69,8 +76,24 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	if len(hist) >= iqrMinSamples {
 		lo, hi := iqrBounds(hist)
 		if r < lo || r > hi {
-			return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "outlier"}}
+			streak := kvInt(l.kv, kvKeyRatioOutlierStreak) + 1
+			if streak < outlierEscape {
+				if err := l.kv.KVSet(kvKeyRatioOutlierStreak, strconv.FormatInt(streak, 10)); err != nil {
+					return EstUpdate{}, err
+				}
+				return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "outlier"}}
+			}
+			// 连续离群达阈值：本次比值作为新工况种子，丢弃旧分布。否则旧 hist
+			// 与冻结的 EMA 会让之后每次会话都同样离群（永远学不到新基线）。
+			hist = nil
+			if err := l.kv.KVSet(kvKeyRatioOutlierStreak, "0"); err != nil {
+				return EstUpdate{}, err
+			}
 		}
+	}
+	// 本次通过门控：清零连续离群计数（单次偶发离群不跨会话累计）。
+	if kvInt(l.kv, kvKeyRatioOutlierStreak) != 0 {
+		_ = l.kv.KVSet(kvKeyRatioOutlierStreak, "0")
 	}
 
 	phi := mlPhi(sr.Session, l.cellCount)

@@ -14,7 +14,13 @@ const (
 	icaSearchLoUVBase = 3_500_000 // 单电芯主峰搜索域下沿（µV）
 	icaSearchHiUVBase = 4_250_000 // 单电芯主峰搜索域上沿（µV）
 	icaMinProminence  = 1.20      // 显著性门槛：平滑峰值须超域内均值×此系数（自主选定）
-	kvICAPeakBase     = "ica_peak_base"
+	// icaMaxGapSecs 相邻样本最大可信间隔：recordCCCT 会把同一会话的多个恒流段
+	// 拼成一个切片交给 ICA，段间可能是任意长的非 CC 区间；若照常把
+	// UA×整个 gap 记进到达电压桶，连接点可凭非 CC 区间的电量伪造主峰
+	// （600s × 2A ≈ 330mAh，远大于 10mV 桶的真实 dQ），首个会话还会把伪峰写成
+	// ica_peak_base。取与 midwin 一致的 300s 段界口径。
+	icaMaxGapSecs int64 = 300
+	kvICAPeakBase       = "ica_peak_base"
 )
 
 // 由 initICAVoltage 按电芯数缩放；默认值为单电芯。
@@ -46,6 +52,11 @@ func FindPeak(rows []SampleRow) (peakUV int64, peakH float64, ok bool) {
 		prev, cur := rows[i-1], rows[i]
 		dt := cur.TS - prev.TS
 		if dt <= 0 || cur.UV < prev.UV || cur.UA < 0 {
+			continue
+		}
+		if dt > icaMaxGapSecs {
+			// 段间拼接/重启/停充间隙：连接点不累计，避免把非 CC 区间电量记进
+			// 到达电压桶伪造主峰。
 			continue
 		}
 		b := cur.UV / icaBinUV

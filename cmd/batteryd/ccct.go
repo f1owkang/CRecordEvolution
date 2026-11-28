@@ -39,9 +39,13 @@ func locateWindowCross(rows []SampleRow, seg CCSeg) (lo, hi SampleRow, crossed b
 		if !haveLo {
 			if r.UV < ccctWinLo {
 				belowLo = true
-			} else if r.UV >= ccctWinLo {
+			} else if r.UV < ccctWinHi {
 				lo = r
 				haveLo = true
+			} else {
+				// 首个样本已越过窗上沿：整窗在单个采样间隔内被跨过，没有窗内
+				// 锚点，耗时会退化成 1 拍且不可信，判为未跨越。
+				return SampleRow{}, SampleRow{}, false
 			}
 			continue
 		}
