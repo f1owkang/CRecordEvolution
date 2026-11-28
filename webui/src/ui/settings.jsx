@@ -66,6 +66,17 @@ function calibItems(doc, t) {
   ];
 }
 
+// 诊断复制的结果提示只存 i18n key（渲染时再翻译），切语言后提示立即更新；
+// 已翻译字符串存进 state 会在切换语言后停留在旧语言。
+function diagOutcome(result, copied) {
+  const out = String((result && result.stdout) || '').trim();
+  if (!result || Number(result.errno) !== 0 || !out) {
+    return { busy: false, message: { key: 'diag_error' }, text: '', error: true };
+  }
+  if (copied) return { busy: false, message: { key: 'diag_copied' }, text: '', error: false };
+  return { busy: false, message: { key: 'diag_copy_fail' }, text: out, error: true };
+}
+
 // 诊断复制：按钮 + 结果提示；剪贴板失败时回退成可选中的只读文本框（长按复制）。
 function diagItem(t, diag, onCopy) {
   const control = (
@@ -75,7 +86,7 @@ function diagItem(t, diag, onCopy) {
       </button>
       {diag.message ? (
         <div id="diag-status" class={'diag-msg' + (diag.error ? ' is-err' : '')} role="status">
-          {diag.message}
+          {t(diag.message.key, diag.message.vars)}
         </div>
       ) : null}
       {diag.text ? <textarea id="diag-text" class="diag-text" readOnly value={diag.text} /> : null}
@@ -262,23 +273,20 @@ function SettingsSection({ title, items }) {
 }
 
 // 复制诊断：Go 侧生成脱敏短文本 → 剪贴板；失败时把文本放进只读 textarea 兜底。
-function useDiagCopy(t) {
-  const [diag, setDiag] = useState({ busy: false, message: '', text: '', error: false });
+// 提示状态只存 {key}，翻译发生在渲染时（切语言立即生效）。
+function useDiagCopy() {
+  const [diag, setDiag] = useState({ busy: false, message: null, text: '', error: false });
   function copyDiag() {
     if (diag.busy) return;
-    setDiag({ busy: true, message: '', text: '', error: false });
+    setDiag({ busy: true, message: null, text: '', error: false });
     run(CMD_DIAG).then(function (r) {
-      const out = String(r.stdout || '').trim();
-      if (Number(r.errno) !== 0 || !out) {
-        setDiag({ busy: false, message: t('diag_error'), text: '', error: true });
+      const out = String((r && r.stdout) || '').trim();
+      if (!r || Number(r.errno) !== 0 || !out) {
+        setDiag(diagOutcome(r, false));
         return;
       }
       copyText(out).then(function (ok) {
-        setDiag(
-          ok
-            ? { busy: false, message: t('diag_copied'), text: '', error: false }
-            : { busy: false, message: t('diag_copy_fail'), text: out, error: true }
-        );
+        setDiag(diagOutcome(r, ok));
       });
     });
   }
@@ -342,7 +350,7 @@ function Settings(props) {
   const doc = props.doc || {};
   const channelKey = CHANNEL_KEY[doc.channel];
   const channel = channelKey ? t(channelKey) : doc.channel || '—';
-  const { diag, copyDiag } = useDiagCopy(t);
+  const { diag, copyDiag } = useDiagCopy();
   const dataRows = dataItems(doc, channel, t);
   dataRows.push(diagItem(t, diag, copyDiag));
   const sections = [
@@ -359,4 +367,4 @@ function Settings(props) {
     </section>
   );
 }
-export { Settings };
+export { Settings, diagOutcome };

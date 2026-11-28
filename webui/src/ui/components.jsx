@@ -2,6 +2,7 @@ import { toChildArray } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import { translate } from '../i18n.js';
 import { useTr } from './context.js';
+import { createSnapRestore } from './snapRestore.js';
 
 function Icon({ name }) {
   return <span class={'icon icon-' + name} aria-hidden="true" />;
@@ -66,14 +67,26 @@ function Dock(props) {
     const inner = innerRef.current;
     const app = document.getElementById('app');
     if (!inner || !app) return undefined;
-    let snapTimer = 0;
+    // snap 关闭/恢复的计时器与样式收拢在控制器里：任何路径结束都能恢复，
+    // 不会因为 startDrag 重入或「只点不拖」永久停在 scrollSnapType:none。
+    const snap = createSnapRestore({
+      app: app,
+      setTimer: function (fn, ms) {
+        return setTimeout(fn, ms);
+      },
+      clearTimer: function (id) {
+        clearTimeout(id);
+      },
+    });
 
     function slotWidth() {
       return inner.clientWidth / 3 || 1;
     }
 
     function startDrag(x, id) {
-      clearTimeout(snapTimer);
+      // 上一次「同页平滑吸附」可能还留着恢复 snap 的计时器：先恢复再清，
+      // 否则这一下只点不拖（settleDrag 未移动早退）会让 #app 永久停在 none。
+      snap.restore();
       dragRef.current = {
         id: id,
         x: x,
@@ -105,6 +118,8 @@ function Dock(props) {
       if (!drag) return;
       dragRef.current = null;
       if (!drag.moved) {
+        // 没拖动也可能带着上一次的待恢复计时器：这里再兜底恢复一次。
+        snap.restore();
         suppressClick.current = false;
         return;
       }
@@ -115,13 +130,10 @@ function Dock(props) {
       app.style.scrollSnapType = 'none';
       if (target === pageRef.current) {
         app.scrollTo({ left: target * width, behavior: 'smooth' });
-        clearTimeout(snapTimer);
-        snapTimer = setTimeout(function () {
-          app.style.scrollSnapType = '';
-        }, 380);
+        snap.hold(380);
       } else {
         // 切页交给 App 的 Miuix 弹簧动画，snap 由它在动画结束时恢复。
-        clearTimeout(snapTimer);
+        snap.release();
         navRef.current(target);
       }
       setTimeout(function () {
@@ -206,7 +218,7 @@ function Dock(props) {
       inner.removeEventListener('touchend', onTouchEnd);
       inner.removeEventListener('touchcancel', onTouchCancel);
       inner.removeEventListener('click', onClickCapture, true);
-      clearTimeout(snapTimer);
+      snap.release();
     };
   }, []);
 
