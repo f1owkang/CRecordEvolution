@@ -31,8 +31,11 @@ const (
 	kvDisImpliedUAh = "dis_implied_ua"
 
 	disResyncUAh = 100_000 // 单次差分超 100mAh 判电量计回修，只重置基线
-	disMinRowCap = 5       // 显示掉幅 <5 个百分点不落行
-	disMinEstCap = 10      // 显示掉幅 <10 个百分点不给隐含容量
+	// disResyncMaxDt 回修判据只用于短间隔：休眠/重启造成的长间隙里真实放电也可以
+	// 远超 100mAh，交给 plausibleDelta 的 25A 物理上界兜底。
+	disResyncMaxDt int64 = 120
+	disMinRowCap         = 5  // 显示掉幅 <5 个百分点不落行
+	disMinEstCap         = 10 // 显示掉幅 <10 个百分点不给隐含容量
 	// disCalMinCap 校准用掉幅门限：显示百分比→mAh 映射非线性，掉幅越大越把
 	// 局部非线性平滑掉（同区间配对下 30 点以上掉幅的行隐含值离散约 ±5%）。
 	disCalMinCap = 30
@@ -66,6 +69,13 @@ type disState struct {
 	accUAh         int64
 	lastCounterUAh int64
 	lastCounterTs  int64
+}
+
+// disCounterJumpResync 判本拍电量计差分是否属于「回修跳变」：短间隔内单跳幅值
+// 超过 disResyncUAh（100mAh）既非真实负载（短拍要 6A 以上）也非休眠累计，只重置
+// 基线不计数。长间隔不设此限，由 plausibleDelta 的 25A 物理上界兜底。
+func disCounterJumpResync(d, dt int64) bool {
+	return dt > 0 && dt <= disResyncMaxDt && absI64(d) > disResyncUAh
 }
 
 // trackDischarge 每 Tick 首位调用：按 status 与电量计方向推进放电会话。
@@ -129,8 +139,16 @@ func (p *Pipeline) trackDischarge(status string) {
 		return
 	}
 	// 放出电量＝逐拍可信增量之和：零/负增量（电量计抖动）与休眠长间隙都照记，
-	// 只有 Δ/Δt 反推电流超界的跳变（回修/复位）才跳过。
-	if d := counterUAh - p.dis.lastCounterUAh; plausibleDelta(d, now-p.dis.lastCounterTs) {
+	// 只有回修跳变（短拍超阈值、差分反向）才跳过/只重定基线。
+	d := counterUAh - p.dis.lastCounterUAh
+	dt := now - p.dis.lastCounterTs
+	switch {
+	case d > 0:
+		// 放电期读数回升（回芯/回修）：只重定基线，不冲减已累计的放出电量；
+		// 若实际已转充电，status 会在下一拍触发结算。
+	case disCounterJumpResync(d, dt):
+		// 短拍巨幅跳变：电量计回修，跳过本拍不计数。
+	case plausibleDelta(d, dt):
 		p.dis.accUAh -= d // 放电时计数下降，故取负增量为放出电量
 	}
 	p.dis.lastCounterUAh = counterUAh
@@ -193,7 +211,8 @@ func (p *Pipeline) trackFullBypass(now, capVal, counterUAh int64) {
 		p.settleDischarge()
 		return
 	}
-	if plausibleDelta(d, now-p.dis.lastCounterTs) {
+	if plausibleDelta(d, now-p.dis.lastCounterTs) &&
+		!disCounterJumpResync(d, now-p.dis.lastCounterTs) {
 		p.dis.accUAh -= d
 	}
 	p.dis.lastCounterUAh = counterUAh
@@ -315,26 +334,35 @@ func (p *Pipeline) restoreDischarge() {
 	}
 }
 
+// persistDis 原子写放电会话状态：逐键写在中途被杀会留下 acc 与基线时间不一致的
+// 混合态，恢复后下一拍会把同一区间重复计一次。放电记录属旁路观测，失败只落事件
+// 不影响充电主链路。
 func (p *Pipeline) persistDis() {
-	_ = p.st.KVSet(kvDisActive, "1")
-	for _, kv := range []struct {
-		k string
-		v int64
-	}{
-		{kvDisStartTs, p.dis.startTs},
-		{kvDisStartCap, p.dis.startCap},
-		{kvDisAcc, p.dis.accUAh},
-		{kvDisLastCounterUAh, p.dis.lastCounterUAh},
-		{kvDisLastCounterTs, p.dis.lastCounterTs},
-	} {
-		_ = p.st.KVSet(kv.k, strconv.FormatInt(kv.v, 10))
+	pairs := [][2]string{
+		{kvDisActive, "1"},
+		{kvDisStartTs, strconv.FormatInt(p.dis.startTs, 10)},
+		{kvDisStartCap, strconv.FormatInt(p.dis.startCap, 10)},
+		{kvDisAcc, strconv.FormatInt(p.dis.accUAh, 10)},
+		{kvDisLastCounterUAh, strconv.FormatInt(p.dis.lastCounterUAh, 10)},
+		{kvDisLastCounterTs, strconv.FormatInt(p.dis.lastCounterTs, 10)},
+	}
+	if err := p.st.KVSetMany(pairs); err != nil {
+		_ = p.st.InsertEvent("dis_persist_fail", err.Error())
 	}
 }
 
 func (p *Pipeline) clearDis() {
 	p.dis = disState{}
 	p.resetDisProbe()
-	for _, k := range []string{kvDisActive, kvDisStartTs, kvDisStartCap, kvDisAcc, kvDisLastCounterUAh, kvDisLastCounterTs} {
-		_ = p.st.KVSet(k, "0")
+	pairs := [][2]string{
+		{kvDisActive, "0"},
+		{kvDisStartTs, "0"},
+		{kvDisStartCap, "0"},
+		{kvDisAcc, "0"},
+		{kvDisLastCounterUAh, "0"},
+		{kvDisLastCounterTs, "0"},
+	}
+	if err := p.st.KVSetMany(pairs); err != nil {
+		_ = p.st.InsertEvent("dis_persist_fail", err.Error())
 	}
 }
