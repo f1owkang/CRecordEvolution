@@ -33,7 +33,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin
 
 pnpm install --frozen-lockfile
 pnpm run verify   # build → 离线扫描 → 50KB gzip 上限
-pnpm run test:ui  # vitest 纯逻辑单测（overviewModel/trendsModel/timeline，node 环境，不进产物）
+pnpm run test:ui  # vitest 纯逻辑单测（派生模型、时间轴、图表、命令拼装/请求代际、轮询调度、prefs/lang、snap 恢复；node 环境，不进产物）
 pnpm run smoke    # 无头 Edge/Chrome + mock 宿主，三页/分页/趋势/gate 截图
 pnpm run shots    # 重新生成 README 的 8 张截图（390×844 深色；会覆盖 .github/images/）
 pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:check 只检查不写
@@ -42,7 +42,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - Go 版本以 `go.mod` 为准；SQLite 用纯 Go 的 `modernc.org/sqlite`（无 CGO，Windows 可直接跑测试）；Node/pnpm 版本由 `package.json` 固定。
 - 真机数据回放：`CRE_MIDWIN_DB` / `CRE_REPLAY_DB` 指向导出的 `battery.db` 时会跑中段/放电校准与重复记录清理的回放用例（复制到临时库、不改原文件）；未设置或文件缺失自动 skip。`CRE_REPLAY_DB` 用例会打印 sessions/discharge 清理前后的行数。
 - `bin/batteryd`、`webroot/`、`node_modules/`、`artifacts/` 都不提交。Vite root 在 `webui/`，入口 `webui/index.html`，产物固定到 `webroot/`；`pnpm run dev` 起本地开发服务器。
-- **产物两条硬约束**：完全离线（CI 扫描 `fetch`/`XMLHttpRequest`/远程 URL/远程 import）与 gzip ≤50KB（`scripts/check-size.mjs`）；改依赖或大段代码后先跑 `pnpm run verify`。`build.modulePreload.polyfill` 必须保持关闭（它会注入 `fetch`）。
+- **产物两条硬约束**：完全离线（CI 扫描 `fetch`/`XMLHttpRequest`/远程 URL/远程 import）与 gzip ≤50KB（`scripts/check-size.mjs`）；改依赖或大段代码后先跑 `pnpm run verify`。`build.modulePreload.polyfill` 必须保持关闭（它会注入 `fetch`）。`check-offline.mjs` 同时扫描 `.svg` 与协议相对 URL（`//host/path`，JS 行注释不算命中），新增产物类型时记得把它加进 `TEXT_EXT`。
+- `scripts/` 里的仓库根路径统一从 `scripts/lib/root.mjs` 取（`fileURLToPath`）：`new URL('..', import.meta.url).pathname` 在含空格/中文的检出路径会保留 `%20` 并多出 Windows 盘符前缀，导致误报 `webroot/` 缺失。
 
 ### WebUI 冒烟检查
 
@@ -83,6 +84,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - **安装确认按风险分级**（2026-11 issue #9 讨论后定稿）：首次安装、普通升级（versionCode 变大）、同版本同通道重刷都直接安装，不读音量键（管理器自己已有安装确认，KernelSU/APatch 有模块信息弹窗；Magisk App/recovery 无，但普通安装仍不额外打断）。只有检测到**降级**（目标 versionCode 更小）或 **stable ↔ ML 跨通道**时，才打印「已安装 vX(code) 通道 → 本次 vY(code) 通道」并要求音量键确认（音量+ 继续 / 音量- 取消，30 秒超时取消）。
 - 通道判定：`module.prop` 有 `updateJson=` 行 = stable，没有 = ML（CI 打包 ML 时删掉该行）；`versionCode` 非数字/读不到时不比较。
 - 应用内安装与恢复模式用同一套按键，**不按 BOOTMODE/管理器类型跳过**（2026-10 实机确认 LSPosed/Zygisk 系在 App 内也能读音量键）。只有读不到 `getevent`/`timeout` 时才自动安装，绝不能误取消；风险场景同样打印警告后继续。
+- **恢复模式（原位安装）无法判定降级/跨通道、也无法保留旧数据**：Magisk/KernelSU 的 installer 在 source `customize.sh` 之前先 `rm -rf` 安装目录再解压，此时 `$oldmod == $MODPATH`、`$oldprop` 已是本次包。安装器必须显式打印该限制，不能假装检查过。
+- 升级保留旧 `data/` 时：先按 `<oldmod>/data/batteryd.lock` 里的 pid 尽力优雅结束旧 daemon（确认 `/proc/<pid>/cmdline` 含 batteryd），再复制到 `$MODPATH/data.new.<pid>` 成功后整体 `mv` 替换、失败清理；`-shm` 不复制（按新库重建），`-wal` 必须保留。不能直接 `cp -a` 到正式目录（旧 daemon 仍在写 WAL 时可能拷到撕裂状态，失败还会留半份 data）。
 - `read_key` 只采纳 `DOWN`，忽略 `UP`/`SYN`（否则一次按键的抬起会被当成两次）。回归：风险确认时按一次取消。
 - `SKIPUNZIP=0` 时已解压到 `$MODPATH`，不要重复 `unzip`，仅缺 `module.prop` 时兜底一次。
 - 只发 arm64：用 `$ARCH` 门控（缺失跳过），非 arm64 直接失败。
@@ -95,7 +98,11 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 统一 JSX；不用 `h()`/`E()`，新代码拆小函数/组件，别把 `Overview`/`History` 重新写胖。**不引入 htm**（Apache-2.0 与 GPL-2.0-only 不兼容）。
 - 静态图标放 `webui/src/assets/icons/*.svg`，由 `app.css` 的 `mask-image` + `currentColor` 着色；组件里不内联 `<svg>`。图表 SVG 由 `charts.js` 运行时生成。底栏图标用 Material Symbols Rounded（outlined/filled，Apache-2.0，来源与许可记录在 `THIRD_PARTY_NOTICES.txt`）。
 - `webui/index.html` 只做入口壳；`public/boot.js` 在 `<head>` 同步加载；`/internal/insets.css` 用占位符交给 `vite.config.js`。
-- 源码按职责分：`i18n`、`core`、`contrast`（颜色解析/WCAG 对比度）、`charts`、`ui/`（context/components/overview/overviewModel/settings）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData）、`assets/icons/`、`useDocPolling`/`useUiPrefs`/`useCollapsingTopbar`、`main.jsx`；模块间 import/export，不退回全局变量。
+- 源码按职责分：`i18n`、`core`、`contrast`（颜色解析/WCAG 对比度）、`charts`、`prefs`（localStorage 偏好读写）、`langPref`（`data/lang` 解析/竞态裁决）、`pollScheduler`（单链轮询调度）、`ui/`（context/components/overview/overviewModel/settings/snapRestore）、`history/`（History/HistoryControls/HistorySummary/TimelineList/timeline/trends/useHistoryData/historyCommand/historyView）、`assets/icons/`、`useDocPolling`/`useUiPrefs`/`useCollapsingTopbar`、`main.jsx`；模块间 import/export，不退回全局变量。
+- 取数与命令拼接的复用层：`core.runJsonDoc`/`parseJsonResult` 是「执行命令 → errno/stdout/JSON/结构校验」的唯一实现（概览轮询与历史页共用，错误统一 `{key,vars}` 走 i18n）；`historyCommand.buildHistoryCmd` 只接受枚举/安全正整数并填固定模板，`--before` 必须来自 `Number.isSafeInteger`；请求落地用 `createHistoryRequestTracker` 的「代际 + 参数键」双校验，追加分页在整页重载在途时直接忽略。
+- `core.run` 的三种 exec 传输（cbName → promise → directCb）：cbName 若宿主返回 thenable 直接采纳，否则 4s 观察窗后交棒；所有 settle 路径经 `setRelease` 清理 `window['__cr_cb_*']`，不得留下全局回调。`syncModuleLang` 入参先过 `zh|en` 白名单再拼常量命令。
+- 轮询只用 `pollScheduler.createPollScheduler`（代际令牌保证任何时刻最多一个待定 timer、隐藏时不取数也不排程、stop 后旧链无副作用）；不要再在 hook 里手写 setTimeout 链。`useDocPolling` 只负责取数/去重/退避参数。
+- 偏好读写统一 `prefs.readPref`/`writePref`（含白名单与 storage 异常兜底），默认值与白名单逐字保持；`useUiPrefs` 用 `langTouched` 作废迟到的 `data/lang` 响应，`charts.pickPairs` 跳过 null/'' 缺值（`Number(null)=0` 会造出 ts=0 假点），底栏 snap 的关闭/恢复只经 `ui/snapRestore` 控制器。
 - 可测纯逻辑放同级 `*Model.js`（如 `buildOverviewModel(doc, lang, t)`），取数与副作用放 `use*` hook，组件只编排渲染；`App` 只组合 hook。
 - `webroot/` 生成目录：不手改不提交；样式改 `webui/src/app.css`，逻辑改 `webui/src/`。
 - 用户数据只用 `textContent`/Preact children；唯一 `dangerouslySetInnerHTML` 是 `charts.js` 内部生成的数据驱动 SVG。
@@ -112,7 +119,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - Go 用 `uiText`/`uiKV`；WebUI 用 `LANGS` + `LangCtx` 的 `t()`/`plural()`（两份字典同时补 key，组件禁止硬编码中文）；shell 用 `L()`/`T`。内部日志、events、stderr 保持中文。
 - 数字与复合单位留空格（`%d mAh`、`%d ℃`）；中文百分号/量词紧跟数字（`健康 92%`、`循环 210次`）。英文描述用 ` | `、中文用「｜」；日期按语言分流（`fmtTs`/`fmtRange`）。
 - 英文单复数必须走 `plural(lang, n, oneKey, manyKey)`（如 `hist_records_count_one` + `hist_records_count`），不要手写 `{n} records` 让 1 条显示成 "1 records"。
-- 模块描述是两行状态卡：`💚 内核 : 92% - 6700 mAh • ♻️ 循环 : 301次` / `📏 实测 : 90% - 6300 mAh • 🌡️ 温度 : 41.1℃`（英文 `Kernel`/`Cycles`/`Actual`/`Temp`；`Kernel` 与 `Actual` 同为 6 字符、字宽几乎相等，所以第一列数值不靠字体相关的补位也能对齐；其余标签 `满充`/`设计`/`Full charge`/`Design`）。分段固定为「图标 标签 : 数值」，格间中文/英文都用 ` • `，数值内 `% - mAh`。**对齐靠 `descRuneEm`（Roboto Regular 实测字宽，em 千分位）＋ Compose 字距 `descLetterEm`（KSU/Magisk bodyMedium 0.25sp/14sp、APatch bodySmall 0.4sp/12sp，每字符都加）**：同列标签补空格让数值同列、第一格补到等宽让 ` • ` 同列、行尾补到等宽；中文标签等宽天然对齐，英文 `Kernel`/`Measured`、`Cycles`/`Temp` 靠字宽差补位（残差 <1 空格 ≈1.5dp，OEM 字体可能略差）。KernelSU/APatch 写**转义 `\n`**（java-properties 会还原成真实 LF，Android 的 `PrecomputedText` 只按 `\n` 切段，U+2028 不换行）；Magisk 不还原转义，退化成单行「行1 · 行2」且不补位。管理器按 `/data/adb/ksu`、`/data/adb/apatch`、`/data/adb/magisk` 探测（测试用 `managerKindForDesc` 覆盖）。**宽度自适应**：`descAvailableEm()` 读 `wm size`（优先 Override size）、`wm density`（优先 Override density）与 `settings get system font_scale`，按 `(dp−64)/font_scale/14sp` 折成可用 em（进程内缓存一次；读不到按 360dp）。标签逐级裁剪：全标签 → 紧凑（去掉循环/温度标签，只留图标）→ 仅图标。实测阈值（em 千分位，中文/英文）：全标签 19569/21656、紧凑 16669/17696、仅图标 13877/13956；即 393dp 屏两者全标签，360dp 屏中文全标签、英文紧凑，360dp+1.15× 字体中文紧凑、英文仅图标。描述不再带 ML 前缀（通道见 Version 字段的 `-ML` 后缀），宽度只按状态卡计算。**`module.prop` 不得写真实 CR/LF**（`WriteModuleProp` 负责清洗）。
+- 模块描述是两行状态卡：`💚 内核 : 92% - 6700 mAh • ♻️ 循环 : 301次` / `📏 实测 : 90% - 6300 mAh • 🌡️ 温度 : 41.1℃`（英文 `Kernel`/`Cycles`/`Actual`/`Temp`；`Kernel` 与 `Actual` 同为 6 字符、字宽几乎相等，所以第一列数值不靠字体相关的补位也能对齐；其余标签 `满充`/`设计`/`Full charge`/`Design`）。分段固定为「图标 标签 : 数值」，格间中文/英文都用 ` • `，数值内 `% - mAh`。**对齐靠 `descRuneEm`（Roboto Regular 实测字宽，em 千分位）＋ Compose 字距 `descLetterEm`（KSU/Magisk bodyMedium 0.25sp/14sp、APatch bodySmall 0.4sp/12sp，每字符都加）**：同列标签补空格让数值同列、第一格补到等宽让 ` • ` 同列、行尾补到等宽；中文标签等宽天然对齐，英文 `Kernel`/`Measured`、`Cycles`/`Temp` 靠字宽差补位（残差 <1 空格 ≈1.5dp，OEM 字体可能略差）。KernelSU/APatch 写**转义 `\n`**（java-properties 会还原成真实 LF，Android 的 `PrecomputedText` 只按 `\n` 切段，U+2028 不换行）；Magisk 不还原转义，退化成单行「行1 · 行2」且不补位。管理器按 `/data/adb/ksu`、`/data/adb/ap`（APatch 的规范工作目录；历史误写的 `/data/adb/apatch` 仅作兼容回退）、`/data/adb/magisk` 探测，描述排版与 diag 共用 `manager.go`（测试用 `managerKindForDesc` 覆盖）。**宽度自适应**：`descAvailableEm()` 读 `wm size`（优先 Override size）、`wm density`（优先 Override density）与 `settings get system font_scale`，按 `(dp−64)/font_scale/14sp` 折成可用 em（进程内缓存一次；读不到按 360dp）。标签逐级裁剪：全标签 → 紧凑（去掉循环/温度标签，只留图标）→ 仅图标。实测阈值（em 千分位，中文/英文）：全标签 19569/21656、紧凑 16669/17696、仅图标 13877/13956；即 393dp 屏两者全标签，360dp 屏中文全标签、英文紧凑，360dp+1.15× 字体中文紧凑、英文仅图标。描述不再带 ML 前缀（通道见 Version 字段的 `-ML` 后缀），宽度只按状态卡计算。**`module.prop` 不得写真实 CR/LF**（`WriteModuleProp` 负责清洗）。
 
 ### 文档
 
@@ -175,7 +182,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 三页与设置项
 
 - 概览：健康度主卡（容量行下方温度行 `temp_c`，缺失整行省略）、充电中实时卡（`live`）、容量/循环/估算/循环当量/内阻/趋势/可信度（前 6 个指标格按 2×3 排列，后两张整行卡）、估算趋势图。充电实时卡只在 `live.charging` 存在或 `status=Charging` 时渲染，显示实时电流/功率/电压、本次会话进度与预计充满，字段缺失逐段省略；电流/功率符号按上面的「充电正、放电负」约定显示（放电中不显示预计充满）；会话进度与预计充满**合并为一行**（`.charge-meta`，`nowrap`，390dp 不溢出，smoke 断言 `scrollWidth` 与单行高度）。充电期轮询 15s、其余 60s（`POLL_CHARGE`/`POLL_BASE`），`chargeActive()` 是两处共用的唯一判据。`contentFP` 按 0.1℃ 纳入 `temp_c`，剔除 `calib.raw_current`/`current_ua`（每次 json 都变、不展示），并把 `live` 按显示粒度取整（电流 10mA、功率 0.1W、电压 0.01V、会话 1mAh/60s），否则实时值会被去重冻结；`recent` 与 `trend_mah_per_week` 共用最近 200 点窗口；趋势显著时 JSON 给 `trend_from_mah`/`trend_to_mah`（窗口首/末点容量），前端直接连两端点画虚线，不要下发斜率让前端外推。
-- 历史：三张摘要卡（有效会话/总充入/平均每次充入）；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；每条记录在主数值下带 SOC 条：中性灰 `--mute` 85% 表示当前电量（0→会话结束电量），充电叠加**实心绿**新增段（起→止），放电叠加**空心橙**消耗段（止→起），所以「已存在电量」不再显示成空白、方向也不只靠颜色区分；无效会话整段置灰；条对读屏 `aria-hidden`，起止值由可见文字与卡片 aria-label 承担。充放电都不改「SOC 百分点变化」口径；趋势视图为容量与充电会话大图 + **长期容量档案**大图（`trends.archive`，每日汇总、不受范围筛选影响，永久保留）+ 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；详情渐进展开。时间轴条目用 `content-visibility: auto` + `contain-intrinsic-size: auto 100px` 跳过离屏渲染；修改列表高度/分页时必须回归滚动位置与「加载更早」，避免 intrinsic 估算造成 scrollHeight 跳变。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
+- 历史：三张摘要卡（有效会话/总充入/平均每次充入）；记录视图按日期分组时间轴（范围+类型合并成一行 chip：7/30/90 天、全部/充电/放电，分页「加载更早」）；每条记录在主数值下带 SOC 条：中性灰 `--mute` 85% 表示当前电量（0→会话结束电量），充电叠加**实心绿**新增段（起→止），放电叠加**空心橙**消耗段（止→起），所以「已存在电量」不再显示成空白、方向也不只靠颜色区分；无效会话整段置灰；条对读屏 `aria-hidden`，起止值由可见文字与卡片 aria-label 承担。充放电都不改「SOC 百分点变化」口径；趋势视图为容量与充电会话大图 + **长期容量档案**大图（`trends.archive`，每日汇总、不受范围筛选影响，永久保留）+ 放电/静置/CCCT/ICA 小多图（小图点按展开）；大图与展开图都支持点按数据点读数并高亮（`charts.js` 接受可选选中索引，只拼内部数值）；**会话柱的选中态不画高亮圈**：选中柱保持系列色、其余柱用运行时算出的低强调色 `--chart-dim`（`core.js` 把 `--accent` 朝 `--card` 混合：深色/纯黑压到 3:1 下限，浅色用更淡的 1.8:1 container 色调，让选中柱成为唯一焦点；无选中时全部用系列色），再点同一柱取消选中（柱图命中槽铺满整张图，没有空白可点）；柱角 `rx=4` 对齐 M3 shape 的 extra-small 4dp 下限。详情渐进展开。时间轴条目用 `content-visibility: auto` + `contain-intrinsic-size: auto 100px` 跳过离屏渲染；修改列表高度/分页时必须回归滚动位置与「加载更早」，避免 intrinsic 估算造成 scrollHeight 跳变。**切到别的页再回来不重载**：分页、展开详情、滚动位置都保留（只有首次激活、切天数/筛选/视图、手动刷新才 `load(true)`）；「加载更早」失败时在列表底部渲染错误行 + 重试（`err.reset` 决定重试整页还是同一页游标），首屏失败仍用空态错误样式。
 - 设置：外观（主题/纯黑/取色/语言/底栏）、手动刷新、数据信息（会话/采样统计、含采样节点与电流刻度诊断，末尾「复制诊断」）、关于（品牌卡 + 版本/通道/许可/第三方）。`json` 的 `sessions` 只有最近 10 条，「会话数」必须用顶层 `sessions_n`；会话条目 `start_cap`/`end_cap`，趋势卡与时间轴百分比是 **SOC 百分点变化**（70%→97% 是 27 个点），不是容量增长。`daemon.stale` 为 true 时数据区追加一行「已升级，重启后生效」（`data-field="daemon"`），不 stale 时该行不出现。
 - 底栏悬浮胶囊 / 贴底（`cre_barmode`，默认悬浮）；**`classic` 按 Material 3 Navigation bar 规范**：容器 `--nav-bg`（内置=卡片色，取色=`surfaceContainer`）、高 80dp、图标 24dp、label 12sp/500、激活指示器 64×32dp 全圆角 `--nav-ind-bg`（取色=`secondaryContainer`）、激活图标 `onSecondaryContainer`、激活 label `onSurface`、未激活 `onSurfaceVariant`；悬浮态沿用原胶囊但选中底/字改用同一组 token。`cre_theme` 为 `auto|light|dark|my`（`my` 仅宿主提供 M3 调色板时可选中，明暗从调色板 `--background` 亮度推导，`data-scheme` 承载方案）；`cre_amoled` 为独立纯黑开关（只在解析为深色时把底色压到 `#000`，浅色不受影响；`data-black` 属性承载）；`cre_lang`。切页保存/恢复滚动；顶栏不提供刷新按钮，手动刷新只在设置页用页内「立即刷新」（其余靠 15s/60s 轮询）。
 
@@ -189,16 +196,20 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 ### 采样与会话结算
 
 - 采样间隔：充电期 15s，其余 60s；满电后不回封账，CV 尾段由 `tickTailCharge` 延续累计，电流停歇去抖后结算。
-- **daemon 必须单实例**：结算幂等只在单进程内成立（`settle()` 先置 `sess_active=0` 再落库），多进程会各自从 kv 恢复同一会话并重复结算，历史里出现整行重复（issue #12）。入口先对 `<moddir>/data/batteryd.lock` 加 flock，拿不到锁安静退出；再按 `/proc/*/comm` + `exe` 回收本模块其它 batteryd 进程（兜住没有锁的旧版本）。不要在 `service.sh` 里再加一份无条件启动。
-- 会话电量双口径：电量计差分（首选）与电流积分。两者差 3 倍以上时用容量参考（设计容量，缺失用 `charge_full`）做 0.5~1.5 倍窗口裁决：只有「电量计在窗内、积分在窗外」才保留电量计，否则回退积分；3 倍失配裁决时写 `counter_scale` 事件。
+- **daemon 必须单实例**：结算幂等只在单进程内成立（`settle()` 先置 `sess_active=0` 再落库），多进程会各自从 kv 恢复同一会话并重复结算，历史里出现整行重复（issue #12）。入口先对 `<moddir>/data/batteryd.lock` 加 flock，拿不到锁安静退出；再按 `/proc/*/comm` + `exe` + **`cmdline`**（只回收无参数或 `daemon` 的进程，`json/once/diag/history/design` 是同二进制的子命令、不能当旧 daemon 杀掉）回收本模块其它 batteryd 进程（兜住没有锁的旧版本）。不要在 `service.sh` 里再加一份无条件启动。
+- 会话电量双口径：电量计差分（首选）与电流积分。两者差 3 倍以上时用容量参考（设计容量，缺失用 `charge_full`）做 0.5~1.5 倍窗口裁决：只有「电量计在窗内、积分在窗外」才保留电量计，否则回退积分；3 倍失配裁决时写 `counter_scale` 事件。`counterHole`（电量计开账后才可用、增量只覆盖部分区间）必须随会话 kv 持久化（`sess_cc_hole`），否则重启恢复会把半段增量当全程采信。
 - `chargeSuppressed`：满电后高负载时内核仍报 Charging 且电流为正，但端电压较充电峰值回落 >`30mV × 电芯数`，视为直供假电流，不计入会话电量与吞吐（只作用于积分口径）。
+- **结算完成要立刻刷新描述**：`TickOutcome.SessionSettled` 必须在 daemon 主循环被消费（结算发生在状态翻转后的去抖拍，`status != lastStatus` 早已为假），否则模块描述里的「实测」会落后一整个充放电周期。状态翻转/周期到点先把电芯数与设计容量重检同步给 Pipeline（`SetCellCount`/`SetEstimator`/`SetDesignUAh`）再跑本拍。
+- 静置计数 `restStreak` 在非 Discharging 的拍必须清零（放 `Tick` 入口）：否则计数跨充电周期冻结，拔充第 1 拍就满足 ≥3 拍门槛、==10 拍的收敛指纹点永远命中不了。`rest_points` 是展示观测，写失败只记 `rest_fail` 事件、**不得**升级成 `SettleError`（否则一次 SQLITE_BUSY 就永久停采）。
+- 放电累计的短拍回修判据：间隔 ≤`disResyncMaxDt`(120s) 且单跳幅值 >`disResyncUAh`(100mAh) 视为电量计回修，只重定基线不计数；长间隙（休眠/重启）仍按 25A 物理上界放行。放电期读数回升只重定基线，不冲减已累计放出电量。
 
 ### 容量估计、校准与趋势
 
 - 构建注入 `main.channel` 选择 stable/ml Estimator。
 - 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)`；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc`（实为 counter 读数）差分；有 counter 的样本里缺 counter 的旧区间直接跳过，整批无 counter 才回退积分。隐含值必须过 `capacityInWindow`，最近采信值存 kv `mid_implied_ua`。
 - 放电通道 `discharge`：读 `charge_counter` 差分累计，转充电即结算；样本按 5 分钟降采样。门控：掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`；按 1/10 权重并入 EMA，采信值存 `dis_implied_ua`。不经 `current_now`，是四路中最稳的一路。**status=Full 时充电器仍在，但旁路供电/高负载会让电池净放电**：用相邻两拍 charge_counter 差分判方向（连续 ≥2 拍可信下降且累计 ≥5mAh≈300mA·min 才开账，单拍回芯不算——真机满电充电期实测单拍 -8/-48mAh 而电流仍充电；单拍回升 ≥2mAh 或慢涓流连续 3 拍回升视为充电恢复并结算），不依赖 `current_now` 符号（部分内核充电报负）；起点 cap 通常是 100，隐含容量仍走原掉幅门控且被 `disCalMaxStart` 排除在标定外。
-- 质量哨兵 `quality`：ema/mid/dis/full 四路互检，互差 >40% 判不一致，结论翻转才写 `quality_warn`；可用路数 <2 时省略 `quality`。mid/dis 带时间戳（`mid_implied_ts`/`dis_implied_ts`），超 90 天不参与互检；缺 ts 的旧库首次读取按「当天」回填并宽限一次。时效判定在结算侧 `checkQuality`（写 ts、落 `quality_stale`）与 `stats()` JSON 出口（只读过滤）共用同一纯函数，改一处必须同步另一处。只记事件，不改 JSON 契约。
+- ML 估算器的 IQR 离群门必须能自愈：连续 `outlierEscape`(3) 次判离群说明基线已漂移到新工况（单位纠正/换电池/校准拖动 EMA），此时放行一次并重置 `ratio_hist`；只拒收不学习会让 hist 与 EMA 同时冻结，之后每次会话都同样离群（永久锁死，估算/校准/特征全停摆）。
+- ICA 主峰 `FindPeak` 对相邻样本间隔 >`icaMaxGapSecs`(300s) 的连接点不累计：`recordCCCT` 会把同一会话的多个恒流段拼成一片交给 ICA，段间非 CC 区间的 `UA×gap` 可达数百 mAh，足以伪造主峰并被写成 `ica_peak_base`。CCCT 定位窗的锚点必须落在窗内（首个 ≥WinLo 样本若已越过 WinHi，整窗在单拍内被跨过，判为未跨越、不采信）。
 - 趋势 `trend`：三态 `insufficient|stable|significant`，显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃（单次估算噪声远大于真实周衰减）。
 
 ### sysfs 与单位
@@ -217,7 +228,9 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - SQLite 十一表：kv/sessions/estimates/daily/resistance/rest_points/events/samples/ccct/ica_peaks/discharge；`PruneBefore` 清理 90 天明细，**`daily`（长期容量档案）不清理**。WAL + `wal_autocheckpoint=256` + 每日 `wal_checkpoint(TRUNCATE)`。
 - daemon 每 tick（循环前先写一次）原子写 `data/daemon.json`（临时文件 + rename，`{version,pid,ts}`）；`json`/`diag` 读它判断「已升级但旧 daemon 仍常驻」。心跳写失败静默，绝不阻塞采样；`json` 的 `daemon` 与 diag 的 `daemon=` 行都按文件缺失整体省略（旧版兼容）。
 - 旧库升级做幂等修复：`repairSampleUnits` 按 25A 上界把误判样本 ÷1000（kv `samples_unit_repair`）；`RepairCounterUnits` 按「counter 读数 + charge_full + 显示电量」判定 mAh 口径机型，把历史 `samples.cc`/`sessions.cc`/`discharge.uah`/`discharge.implied` 与进行中会话 kv 一次性 ×1000（kv `counter_unit_repair`）；`RepairDuplicateRecords` 清理多 daemon 并发写库留下的重复会话/放电行（按起止电量 + 起止时刻 ±180s/±1% 配对，保留最后写入的一行）。它与前两者不同：**不是一次性迁移，而是可重跑的自愈**——daemon 启动强制扫一次，`json`/`diag`/`once`/`history` 检测到心跳 stale（旧 daemon 仍驻留，还会继续写进新的重复行）时按 `dupScanMinInterval`（5 分钟）节流重扫；删除、扫描时刻（kv `dup_scan_ts`）与累计计数（`dup_repair_ts`/`dup_removed_sessions`/`dup_removed_discharges`/`dup_removed_uas`）在同一事务，失败只记事件，下次触发重试。**删除重复会话时按它们的 `ua` 从 `charged_ua_total` 扣回多算的充入**（多 daemon 各加一遍），循环当量不再带 daemon 倍数；不落会话的浮充吞吐无法拆分，可能仍略偏高。迁移以 kv `counter_unit_epoch`（新代码首次启动时刻）为截止，**只处理该时刻之前写入的行**：后续启动复用同一 epoch 重试也不会碰到已归一的新行；读不到节点/量纲不确定时本次不判定、不落终态标记，下次启动重试。不迁移 estimates/ema/mid_implied（可能来自积分口径）；`samples`/`sessions` 补 `cc` 列（旧行默认 0）。
-- `module.prop` 的实时 description 用临时文件 + rename 原子写回，不要改成 sed。
+- 多语句写必须全有或全无：`Store.withTx` 统一事务回滚（`InsertEstimate` 的 estimates+daily、`PruneBefore` 的九条 DELETE、回填的 daily+kv 标记都在事务内），会话/放电状态用 `KVSetMany` 一次事务写多键（逐键写中途被杀会留下 acc 已更新、时间基线未更新的混合态，恢复后重复计同一区间）。
+- `module.prop`/`data/design_mah` 等文件写入统一走 `atomicWriteFile`（**同目录唯一临时文件** + rename）：daemon 刷新、action 的 `once`、`design set` 是多进程写者，固定 `<path>.tmp` 会互相截断/误报失败。不要改回固定 `.tmp` 或 sed。
+- `txKVInt` 只把「键缺失/值非法」当缺失，读库错误必须上抛：迁移完成标记一旦在读失败时落盘，进行中会话的 cc 会永久停在小 1000 倍口径。
 
 ### 关键数值与口径（勿随意改）
 
@@ -237,7 +250,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 满电旁路放电有两条边界：单拍回芯/抖动不单独开账，必须连续 ≥2 拍可信下降且累计 ≥5mAh（持续轻载会在多拍后累计到阈值）；旁路期间显示电量一直 100% 时只累计使用量、结算时掉幅 <5 点不落行（没有容量掉幅可展示）。放电样本仍只在 `status=Discharging` 时落库，旁路段不进 samples。
 - 多 daemon 并发写库还会把 `charged_ua_total` 成倍累加：重复清理删除会话时会按被删行的 `ua` 扣回（累计值记 kv `dup_removed_uas`，事件保留、WebUI 不展示），循环当量不再带 daemon 倍数；但**不落会话的浮充吞吐**（满电直供时仍在计）无法可靠拆分，清理后可能仍略偏高，不影响容量估算。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。
-- 长期容量档案（`daily`）取「当日最后一笔采信估算」，只做只读派生，不参与结算/校准/互检；升级后首次启动把仍在 90 天窗口内的 `estimates` 回填一次（kv `daily_backfill`），更早的历史在升级前已被清理、无法补回；回填失败只告警不阻断采样，下次启动重试。
+- 长期容量档案（`daily`）取「当日最后一笔采信估算」，只做只读派生，不参与结算/校准/互检；升级后首次启动把仍在 90 天窗口内的 `estimates` 回填一次（kv `daily_backfill`），更早的历史在升级前已被清理、无法补回；回填失败只告警不阻断采样，下次启动重试。回填**不能因为 daily 已有行就跳过**（首次回填失败后 daemon 会先写出一条 daily，旧逻辑会直接落完成标记、让历史点永不进档案）：必须按 estimates 重新聚合覆盖写（`n` 取聚合点数、非累加），可安全重试。
 - 电流刻度自校准只在充电结算发生：学到新刻度会按新刻度重算该会话积分电量/平均电流/倍率（`sessions.ua`、`avg_i`、`c_rate`），并按比例回填该区间的 `samples.ua`、`resistance.mo` 与 `ica_peak_base`（事件 `cur_backfill`/`cur_backfill_fail`/`cur_backfill_skip`）；仅当旧有效刻度可确定（已学 >0，或 `anchorScaleUA(charge_full)`=1/1000）才回填。回填不覆盖 `charged_ua_total` 与历史行；无 counter 的机型缺标尺无法自校准；已发布库的坏基准无法自动识别。
 
 ## 安全注意事项
