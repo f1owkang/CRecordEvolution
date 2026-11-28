@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ensureContrast, contrastRatio, parseCssColor, relativeLuminance } from './contrast.js';
+import {
+  contrastRatio,
+  dimToContrast,
+  ensureContrast,
+  parseCssColor,
+  relativeLuminance,
+} from './contrast.js';
 
 describe('parseCssColor', () => {
   it('解析 3/4/6/8 位十六进制', () => {
@@ -69,5 +75,51 @@ describe('ensureContrast 取色主题纠偏', () => {
   it('颜色或背景无法解析时返回 null', () => {
     expect(ensureContrast('var(--tertiary)', '#0b0b0d', '#e6e6e6', 4.5)).toBeNull();
     expect(ensureContrast('#000000', 'var(--card)', '#e6e6e6', 4.5)).toBeNull();
+  });
+});
+
+describe('dimToContrast 低强调色', () => {
+  it('深色底上把白色压到 3:1 的最深一档', () => {
+    const dim = dimToContrast('#ffffff', '#0b0b0d', 3);
+    expect(dim).toMatch(/^#[0-9a-f]{6}$/);
+    const ratio = contrastRatio(dim, '#0b0b0d');
+    expect(ratio).toBeGreaterThanOrEqual(3);
+    expect(ratio).toBeLessThan(3.4);
+    expect(dim).not.toBe('#ffffff');
+  });
+
+  it('浅色底上把深绿朝白色提亮到 3:1，方向与深色底相反', () => {
+    const dim = dimToContrast('#1a7f37', '#ffffff', 3);
+    expect(dim).toMatch(/^#[0-9a-f]{6}$/);
+    const ratio = contrastRatio(dim, '#ffffff');
+    expect(ratio).toBeGreaterThanOrEqual(3);
+    expect(ratio).toBeLessThan(3.4);
+    expect(relativeLuminance(parseCssColor(dim))).toBeGreaterThan(
+      relativeLuminance(parseCssColor('#1a7f37'))
+    );
+  });
+
+  it('彩色强调色同样压到刚过阈值', () => {
+    const dim = dimToContrast('#4ade80', '#151a23', 3);
+    const ratio = contrastRatio(dim, '#151a23');
+    expect(ratio).toBeGreaterThanOrEqual(3);
+    expect(ratio).toBeLessThan(3.4);
+  });
+
+  it('浅色的 1.8:1 container 档比 3:1 更浅', () => {
+    const light = dimToContrast('#1a7f37', '#ffffff', 1.8);
+    const deep = dimToContrast('#1a7f37', '#ffffff', 3);
+    expect(relativeLuminance(parseCssColor(light))).toBeGreaterThan(
+      relativeLuminance(parseCssColor(deep))
+    );
+    const ratio = contrastRatio(light, '#ffffff');
+    expect(ratio).toBeGreaterThanOrEqual(1.8);
+    expect(ratio).toBeLessThan(2.1);
+  });
+
+  it('前景本身低于阈值或颜色无效时返回 null', () => {
+    expect(dimToContrast('#333333', '#0b0b0d', 3)).toBeNull();
+    expect(dimToContrast('var(--accent)', '#0b0b0d', 3)).toBeNull();
+    expect(dimToContrast('#ffffff', 'var(--card)', 3)).toBeNull();
   });
 });

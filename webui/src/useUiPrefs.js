@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   AMOLED_KEY,
   BAR_KEY,
@@ -15,6 +15,8 @@ import {
   storedThemeMode,
   syncModuleLang,
 } from './core.js';
+import { writePref } from './prefs.js';
+import { adoptModuleLang, parseModuleLang } from './langPref.js';
 
 const HAS_HOST_EXEC = hasExec();
 
@@ -25,6 +27,8 @@ function useUiPrefs() {
   const [themeMode, setThemeMode] = useState(storedThemeMode());
   const [amoled, setAmoledState] = useState(storedAmoled());
   const [barMode, setBarMode] = useState(storedBarMode());
+  // 用户是否手动切过语言：挂载时 cat data/lang 的迟到响应不能覆盖用户刚选的档位。
+  const langTouched = useRef(false);
   // null = 尚未探测完；true/false = 宿主是否注入 Material You 调色板。
   const [dynamicColor, setDynamicColor] = useState(null);
 
@@ -104,21 +108,16 @@ function useUiPrefs() {
   );
 
   // 挂载时读安装器写入的 data/lang，优先级高于 localStorage 与 navigator。
+  // 用户在挂载后手动切过语言（langTouched）时，迟到的响应必须丢弃，也不能再写 localStorage。
   useEffect(function () {
     if (!HAS_HOST_EXEC) return;
     run('cat ' + LANG_FILE).then(
       function (r) {
-        if (!r || Number(r.errno) !== 0) return;
-        const v = String(r.stdout || '')
-          .trim()
-          .toLowerCase();
-        const parsed = v.indexOf('zh') === 0 ? 'zh' : v.indexOf('en') === 0 ? 'en' : '';
-        if (!parsed) return;
+        const parsed = parseModuleLang(r);
+        if (!adoptModuleLang(langTouched.current, parsed)) return;
         setLang(function (prev) {
           if (prev === parsed) return prev;
-          try {
-            localStorage.setItem(LANG_KEY, parsed);
-          } catch (e) {}
+          writePref(LANG_KEY, parsed);
           return parsed;
         });
       },
@@ -128,11 +127,11 @@ function useUiPrefs() {
 
   function changeLang(next) {
     if (next !== 'zh' && next !== 'en') return;
+    // 用户点过语言档就算“已表达偏好”：之后 data/lang 的迟到响应一律作废。
+    langTouched.current = true;
     if (next === lang) return;
     setLang(next);
-    try {
-      localStorage.setItem(LANG_KEY, next);
-    } catch (e) {}
+    writePref(LANG_KEY, next);
     syncModuleLang(next);
   }
 
@@ -140,24 +139,18 @@ function useUiPrefs() {
     if (next !== 'auto' && next !== 'light' && next !== 'dark' && next !== 'my') return;
     if (next === 'my' && dynamicColor !== true) return;
     setThemeMode(next);
-    try {
-      localStorage.setItem(THEME_KEY, next);
-    } catch (e) {}
+    writePref(THEME_KEY, next);
   }
 
   function changeAmoled(next) {
     setAmoledState(!!next);
-    try {
-      localStorage.setItem(AMOLED_KEY, next ? '1' : '0');
-    } catch (e) {}
+    writePref(AMOLED_KEY, next ? '1' : '0');
   }
 
   function changeBar(next) {
     if (next !== 'floating' && next !== 'classic') return;
     setBarMode(next);
-    try {
-      localStorage.setItem(BAR_KEY, next);
-    } catch (e) {}
+    writePref(BAR_KEY, next);
   }
 
   return {

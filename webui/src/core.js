@@ -1,5 +1,6 @@
 import { translate } from './i18n.js';
-import { ensureContrast, parseCssColor, relativeLuminance } from './contrast.js';
+import { dimToContrast, ensureContrast, parseCssColor, relativeLuminance } from './contrast.js';
+import { readPref } from './prefs.js';
 
 const CMD_JSON = '/data/adb/modules/CRecordEvolution/bin/batteryd json';
 const CMD_HISTORY = '/data/adb/modules/CRecordEvolution/bin/batteryd history';
@@ -18,6 +19,9 @@ const POLL_BASE = 60000,
   POLL_CHARGE = 15000,
   POLL_MAX = 300000,
   TIMEOUT_MS = 15000;
+// cbName 传输的观察窗：宿主 exec 既不回包又没有返回 thenable 时，等这么久仍无回调
+// 就交棒给下一种传输（promiseExec/directCbExec），不必耗到总超时。
+const CB_OBSERVE_MS = 4000;
 const CHART_W = 320,
   CHART_H = 110;
 const MONTHS_EN = [
@@ -231,28 +235,71 @@ function requestEdgeToEdge() {
   }
 }
 
-function cbNameExec(host, cmd) {
+// 宿主 exec 的三种常见协议：cbName（exec(cmd,'{}',函数名)，宿主按全局名回调）、
+// promise（exec(cmd) 返回 Promise）、directCb（exec(cmd, 回调)）。依次尝试。
+//
+// cbName 的两个坑：
+// 1. 有的宿主只返回 Promise 而不认第三个参数——返回 thenable 时直接采纳它的结果，
+//    不再傻等回调；没有返回 thenable 才进观察窗，给回调型宿主留 CB_OBSERVE_MS。
+// 2. window[name] 是全局回调，任何一次 settle（成功/失败/被放弃/总超时）都必须删掉，
+//    否则泄漏在全局；run() 通过 setRelease 注册最终清理，覆盖总超时与后续传输成功。
+function cbNameExec(host, cmd, setRelease) {
   return new Promise(function (resolve) {
     const name = '__cr_cb_' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
     let done = false;
-    window[name] = function (errno, stdout, stderr) {
-      if (done) return;
-      done = true;
+    let observeTimer = 0;
+
+    function cleanup() {
       try {
         delete window[name];
       } catch (e) {
         window[name] = undefined;
       }
-      resolve(normalize(errno, stdout, stderr));
-    };
-    try {
-      host.exec(cmd, '{}', name);
-    } catch (e) {
-      if (!done) {
-        done = true;
-        resolve({ errno: -1, stdout: '', stderr: String(e) });
-      }
     }
+
+    function finish(result) {
+      if (done) return;
+      done = true;
+      if (observeTimer) {
+        clearTimeout(observeTimer);
+        observeTimer = 0;
+      }
+      cleanup();
+      resolve(result);
+    }
+
+    // 最终 settle（总超时或后续传输成功）时由 run() 统一兜底清理。
+    if (setRelease) setRelease(cleanup);
+    window[name] = function (errno, stdout, stderr) {
+      finish(normalize(errno, stdout, stderr));
+    };
+
+    let ret;
+    try {
+      ret = host.exec(cmd, '{}', name);
+    } catch (e) {
+      finish({ errno: -1, stdout: '', stderr: String(e) });
+      return;
+    }
+    if (ret && typeof ret.then === 'function') {
+      // promise-only 宿主：采纳返回值；null/非对象按 errno -1 交棒下一种传输。
+      ret.then(
+        function (r) {
+          finish(r && typeof r === 'object' ? normalize(r) : { errno: -1, stdout: '', stderr: '' });
+        },
+        function () {
+          finish({ errno: -1, stdout: '', stderr: '' });
+        }
+      );
+      return;
+    }
+    // 回调型宿主可能在 exec 内同步回包，此时已经 finish，不能再留一个空转的观察窗计时器。
+    if (done) return;
+    // 回调型宿主：观察窗内回调优先（回调到达即 finish 并清掉计时器），窗内没回包就交棒。
+    observeTimer = setTimeout(function () {
+      observeTimer = 0;
+      finish({ errno: -1, stdout: '', stderr: '' });
+    }, CB_OBSERVE_MS);
   });
 }
 
@@ -298,20 +345,43 @@ function run(cmd) {
   const kinds = [cbNameExec, promiseExec, directCbExec];
   return new Promise(function (resolve) {
     let settled = false;
-    const timer = setTimeout(function () {
-      if (!settled) {
-        settled = true;
-        resolve({ errno: -1, stdout: '', stderr: 'timeout' });
+    let timer = 0;
+    const releases = [];
+
+    function setRelease(fn) {
+      if (typeof fn === 'function') releases.push(fn);
+    }
+
+    // 统一收尾：先跑完所有已注册的宿主侧清理（全局回调名），再交付最终结果；
+    // 成功、失败、总超时、后续传输成功都走这里，因此不会有 window[name] 残留。
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = 0;
       }
+      while (releases.length) {
+        const release = releases.pop();
+        try {
+          release();
+        } catch (e) {
+          /* 清理失败不改变传输结果 */
+        }
+      }
+      resolve(result);
+    }
+
+    timer = setTimeout(function () {
+      settle({ errno: -1, stdout: '', stderr: 'timeout' });
     }, TIMEOUT_MS);
+
     function attempt(i) {
       if (settled) return;
-      kinds[i](host, cmd).then(function (r) {
+      kinds[i](host, cmd, setRelease).then(function (r) {
         if (settled) return;
         if (r && Number(r.errno) !== -1) {
-          settled = true;
-          clearTimeout(timer);
-          resolve(r);
+          settle(r);
           return;
         }
         if (i + 1 < kinds.length) {
@@ -320,18 +390,45 @@ function run(cmd) {
           }, 350);
           return;
         }
-        settled = true;
-        clearTimeout(timer);
-        resolve({ errno: -1, stdout: '', stderr: '' });
+        settle({ errno: -1, stdout: '', stderr: '' });
       });
     }
     attempt(0);
   });
 }
 
+// 固定命令结果的统一校验：errno → stdout → JSON → 对象结构。返回 {doc} 或
+// {error:{key,vars}}；错误 key 与 i18n 字典一致（err_run/err_noout/err_json/err_struct），
+// 不会把 "empty/json/struct/errno" 这类裸 token 透给用户。
+function parseJsonResult(result) {
+  if (!result || Number(result.errno) !== 0) {
+    const errno = result && result.errno != null ? result.errno : -1;
+    const detail = (result && result.stderr) || 'errno ' + errno;
+    return { error: { key: 'err_run', vars: { detail: detail } } };
+  }
+  const stdout = String(result.stdout || '').trim();
+  if (!stdout) return { error: { key: 'err_noout' } };
+  let doc;
+  try {
+    doc = JSON.parse(stdout);
+  } catch (e) {
+    return { error: { key: 'err_json' } };
+  }
+  if (!doc || typeof doc !== 'object') return { error: { key: 'err_struct' } };
+  return { doc: doc };
+}
+
+// 执行一条固定命令并校验 JSON：概览轮询与历史页共用同一套错误模型。
+function runJsonDoc(cmd) {
+  return run(cmd).then(parseJsonResult);
+}
+
 let langSyncBusy = false;
 let langPending = null;
 function syncModuleLang(lang) {
+  // 入参必须先过白名单：这是拼进 root shell 的命令，任何非 zh/en 值（如 'en; id'）
+  // 直接丢弃，命令保持常量模板。
+  if (lang !== 'zh' && lang !== 'en') return;
   // 连续快速切换时排队最后一次，避免旧写请求先完成覆盖新选择
   if (langSyncBusy) {
     langPending = lang;
@@ -440,11 +537,7 @@ function fpDaemon(daemon) {
 }
 
 function storedThemeMode() {
-  let s = null;
-  try {
-    s = localStorage.getItem(THEME_KEY);
-  } catch (e) {}
-  return s === 'light' || s === 'dark' || s === 'my' ? s : 'auto';
+  return readPref(THEME_KEY, ['light', 'dark', 'my'], 'auto');
 }
 
 function systemTheme() {
@@ -462,12 +555,14 @@ function resolvedTheme(mode) {
 // 宿主取色能力探测：MMRL/WebUI-X 通过 /internal/colors.css 注入 M3 调色板
 // （--primary/--background 等）；官方 KernelSU/APatch 不提供，探测为空即降级。
 // 必须读 computed style：变量由宿主样式表在 :root 上定义，不是内联声明。
+// 除空值外还要求 --background 可解析：paletteScheme() 依赖它的亮度推导明暗，
+// 解析不了说明宿主注入的不是可用调色板（不能静默退回不可信的 matchMedia）。
 function hostColorSupported() {
   try {
     const cs = getComputedStyle(document.documentElement);
     const primary = cs.getPropertyValue('--primary').trim();
     const background = cs.getPropertyValue('--background').trim();
-    return !!(primary && background);
+    return !!(primary && parseCssColor(background));
   } catch (e) {
     return false;
   }
@@ -496,11 +591,7 @@ function paletteScheme() {
 // 纯黑背景是独立开关（cre_amoled），只在解析出的深色主题上叠加：
 // 这样 auto 仍跟随系统，浅色不会被压黑，也无需把主题档位扩成四档。
 function storedAmoled() {
-  let s = null;
-  try {
-    s = localStorage.getItem(AMOLED_KEY);
-  } catch (e) {}
-  return s === '1';
+  return readPref(AMOLED_KEY, ['1'], '0') === '1';
 }
 
 // 取色主题里 App token 与宿主角色 token 的映射（与 app.css 的 html[data-theme='my']
@@ -548,6 +639,24 @@ function applyPaletteContrast(root) {
   }
 }
 
+// 未选中柱的低强调色：由 --accent 朝 --card 混合到低强调档位。深色/纯黑主题
+// 压到 3:1 下限（再暗就会融进卡片底）；浅色主题用更淡的 container 色调
+// （1.8:1），让选中柱的深色成为唯一焦点，未选中柱退成背景层——无选中时仍全部
+// 用满色系列色，所以默认状态的数据可读性不受影响。
+const CHART_DIM_MIN_CONTRAST = 3;
+const CHART_DIM_MIN_CONTRAST_LIGHT = 1.8;
+
+function applyChartDim(root) {
+  const cs = getComputedStyle(root);
+  const bg = paletteColorValue(cs, ['--card', '--surfaceContainer', '--background']);
+  const accent = paletteColorValue(cs, ['--accent']);
+  const light = root.getAttribute('data-scheme') === 'light';
+  const min = light ? CHART_DIM_MIN_CONTRAST_LIGHT : CHART_DIM_MIN_CONTRAST;
+  const dim = dimToContrast(accent, bg, min);
+  if (dim) root.style.setProperty('--chart-dim', dim);
+  else root.style.removeProperty('--chart-dim');
+}
+
 // theme: auto|light|dark|my。my = 宿主 Material You 取色，方案从 --background 亮度推导；
 // data-theme 保留 'my' 让 CSS 映射宿主变量，data-scheme 供 color-scheme 与状态栏使用。
 function applyThemeDocument(mode, amoled) {
@@ -558,6 +667,7 @@ function applyThemeDocument(mode, amoled) {
   root.setAttribute('data-scheme', scheme);
   root.setAttribute('data-black', black ? '1' : '0');
   applyPaletteContrast(root);
+  applyChartDim(root);
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     // 用当前实际底色（含 Material You / AMOLED）同步状态栏，避免宿主取到旧色。
@@ -577,26 +687,15 @@ function applyThemeDocument(mode, amoled) {
 }
 
 function storedBarMode() {
-  let s = null;
-  try {
-    s = localStorage.getItem(BAR_KEY);
-  } catch (e) {}
-  return s === 'classic' ? 'classic' : 'floating';
+  return readPref(BAR_KEY, ['classic'], 'floating');
 }
 
 function storedHistMode() {
-  let s = null;
-  try {
-    s = localStorage.getItem(HIST_MODE_KEY);
-  } catch (e) {}
-  return s === 'trends' ? 'trends' : 'records';
+  return readPref(HIST_MODE_KEY, ['trends'], 'records');
 }
 
 function storedHistDays() {
-  let s = null;
-  try {
-    s = Number(localStorage.getItem(HIST_DAYS_KEY));
-  } catch (e) {}
+  const s = Number(readPref(HIST_DAYS_KEY, ['7', '30', '90'], '30'));
   return s === 7 || s === 30 || s === 90 ? s : 30;
 }
 
@@ -656,6 +755,7 @@ export {
   POLL_BASE,
   POLL_CHARGE,
   POLL_MAX,
+  CB_OBSERVE_MS,
   CHART_W,
   CHART_H,
   CHANNEL_KEY,
@@ -682,6 +782,8 @@ export {
   hasExec,
   requestEdgeToEdge,
   run,
+  runJsonDoc,
+  parseJsonResult,
   copyText,
   syncModuleLang,
 };

@@ -9,7 +9,9 @@ import {
   contentFP,
   hasExec,
   run,
+  runJsonDoc,
 } from './core.js';
+import { createPollScheduler } from './pollScheduler.js';
 
 const HAS_HOST_EXEC = hasExec();
 
@@ -24,8 +26,8 @@ function useDocFetch() {
   const fetchInFlight = useRef(null);
 
   // 所有取数失败分支共用的收尾：置错误并返回 false。
-  const fail = useCallback(function (key, vars) {
-    setErr({ key, vars });
+  const fail = useCallback(function (error) {
+    setErr(error);
     return false;
   }, []);
 
@@ -38,17 +40,10 @@ function useDocFetch() {
           return fetchDoc(true);
         });
       }
-      const request = run(CMD_JSON).then(function (r) {
-        if (r.errno !== 0) return fail('err_run', { detail: r.stderr || 'errno ' + r.errno });
-        const stdout = String(r.stdout || '').trim();
-        if (!stdout) return fail('err_noout');
-        let data;
-        try {
-          data = JSON.parse(stdout);
-        } catch (e) {
-          return fail('err_json');
-        }
-        if (!data || typeof data !== 'object') return fail('err_struct');
+      // errno/stdout/JSON/结构校验走 core 的共用解析，错误模型与历史页一致。
+      const request = runJsonDoc(CMD_JSON).then(function (parsed) {
+        if (parsed.error) return fail(parsed.error);
+        const data = parsed.doc;
         lastDoc.current = data;
         const fp = contentFP(data);
         if (!force && fp === lastFP.current) {
@@ -69,7 +64,7 @@ function useDocFetch() {
         },
         function (e) {
           fetchInFlight.current = null;
-          return fail('err_render', { msg: String((e && e.message) || e) });
+          return fail({ key: 'err_render', vars: { msg: String((e && e.message) || e) } });
         }
       );
       return fetchInFlight.current;
@@ -81,46 +76,44 @@ function useDocFetch() {
 }
 
 // 轮询：成功时按最新 doc 判定步长（充电中 15s，其余 60s），失败按 ×2 退避到 POLL_MAX；
-// 页面隐藏时 fetchDoc 直接跳过。resetRef 暴露 reset()，供手动刷新立即重排下一次轮询。
+// 页面隐藏时不取数也不排下一次，回到前台由 visibilitychange → reset 重启。
+// resetRef 暴露 reset()，供手动刷新立即重排下一次轮询。
 function usePolling(fetch, resetRef, lastDoc) {
   useEffect(
     function () {
-      if (!HAS_HOST_EXEC) return;
-      let timer = null;
-      let delay = 0;
-      function tick() {
-        timer = setTimeout(function () {
-          timer = null;
-          fetch(false).then(function (ok) {
-            // 每次取数后在「下一次」调度前重算步长：doc 变化（进入/退出充电）
-            // 只要发生在这一轮，下一次等待就按新状态切换。
-            delay = ok
-              ? chargeActive(lastDoc.current)
-                ? POLL_CHARGE
-                : POLL_BASE
-              : Math.min((delay || POLL_BASE) * 2, POLL_MAX);
-            tick();
-          });
-        }, delay);
-      }
-      function reset() {
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
-        delay = 0;
-        tick();
-      }
-      resetRef.current = reset;
-      tick();
+      if (!HAS_HOST_EXEC) return undefined;
+      const scheduler = createPollScheduler({
+        poll: function () {
+          return fetch(false);
+        },
+        // 每次取数后在「下一次」调度前重算步长：doc 变化（进入/退出充电）
+        // 只要发生在这一轮，下一次等待就按新状态切换。
+        nextDelay: function (ok, previousDelay) {
+          if (ok) return chargeActive(lastDoc.current) ? POLL_CHARGE : POLL_BASE;
+          return Math.min((previousDelay || POLL_BASE) * 2, POLL_MAX);
+        },
+        isHidden: function () {
+          return !!document.hidden;
+        },
+        setTimer: function (fn, ms) {
+          return setTimeout(fn, ms);
+        },
+        clearTimer: function (id) {
+          clearTimeout(id);
+        },
+      });
+      resetRef.current = function () {
+        scheduler.reset();
+      };
+      scheduler.reset();
       function onVisibility() {
-        if (!document.hidden) reset();
+        if (!document.hidden) scheduler.reset();
       }
       document.addEventListener('visibilitychange', onVisibility);
       return function () {
-        if (timer) clearTimeout(timer);
         document.removeEventListener('visibilitychange', onVisibility);
         resetRef.current = null;
+        scheduler.stop();
       };
     },
     [fetch, resetRef, lastDoc]

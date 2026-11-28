@@ -104,4 +104,29 @@ function ensureContrast(fg, bg, toward, minRatio) {
   return rgbToHex(out);
 }
 
-export { parseCssColor, relativeLuminance, contrastRatio, ensureContrast };
+// 把 fg 朝 bg 方向混合到「对比度刚好不低于 minRatio」的最深一档，用作低强调色
+// （例如未选中的柱）：既最大化与主色的层次差，又守住非文本图形 3:1 的下限。
+// fg 本身已低于阈值（再由调用方负责纠偏）或颜色无法解析时返回 null。
+function dimToContrast(fg, bg, minRatio) {
+  const f = typeof fg === 'object' && fg ? fg : parseCssColor(fg);
+  const b = typeof bg === 'object' && bg ? bg : parseCssColor(bg);
+  const min = Number(minRatio);
+  if (!f || !b || !isFinite(min) || min <= 1) return null;
+  if (contrastRatio(f, b) < min) return null;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (contrastRatio(mixRgb(f, b, mid), b) >= min) lo = mid;
+    else hi = mid;
+  }
+  // 8 位取整可能把结果压到阈值下一点，逐步回退到原始色，保证返回值仍 ≥ min。
+  for (let i = 0; i < 12; i++) {
+    const hex = rgbToHex(mixRgb(f, b, lo));
+    if (contrastRatio(hex, b) >= min) return hex;
+    lo = Math.max(0, lo - 0.02);
+  }
+  return rgbToHex(f);
+}
+
+export { parseCssColor, relativeLuminance, contrastRatio, ensureContrast, dimToContrast };
