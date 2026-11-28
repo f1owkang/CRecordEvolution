@@ -6,10 +6,10 @@
  */
 import { createServer } from 'node:http';
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize } from 'node:path';
 import { chromium } from 'playwright-core';
+import { ROOT } from './lib/root.mjs';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const WEBROOT = join(ROOT, 'webroot');
 const SHOTS = join(ROOT, 'artifacts', 'smoke');
 
@@ -1144,6 +1144,59 @@ try {
   check((await archiveHero.locator('circle.pt-sel').count()) === 1, '趋势：长期档案点按高亮');
   await archiveHero.locator('.chart').click({ position: { x: 4, y: 4 } });
 
+  // 会话柱选中态（issue #13 新反馈）：去掉高亮圈；选中柱满色、其余柱淡化；
+  // 再点同一柱取消选中（柱图命中槽铺满整张图，没有空白区域可点）。
+  const sesHero = page.locator('#page_history .trend-hero').nth(2);
+  const barCount = await sesHero.locator('rect.bar').count();
+  check(barCount >= 2, '趋势：会话柱渲染', String(barCount));
+  await sesHero.locator('rect.pt[data-i="1"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => {
+      const el = document
+        .querySelectorAll('#page_history .trend-hero')[2]
+        .querySelector('.trend-det');
+      return el && /SOC/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
+  const sesSel = await sesHero.evaluate((el) => {
+    const bars = [...el.querySelectorAll('rect.bar')];
+    return {
+      dimmed: bars.filter((b) => /--chart-dim/.test(b.getAttribute('style') || '')).length,
+      full: bars.filter((b) => /--accent/.test(b.getAttribute('style') || '')).length,
+      rings: el.querySelectorAll('circle.pt-sel').length,
+      dim: getComputedStyle(document.documentElement).getPropertyValue('--chart-dim').trim(),
+    };
+  });
+  check(
+    sesSel.dimmed === barCount - 1 && sesSel.full === 1,
+    '趋势：选中会话柱用系列色、其余用低强调色',
+    JSON.stringify(sesSel)
+  );
+  check(sesSel.rings === 0, '趋势：会话柱不再画高亮圈', String(sesSel.rings));
+  check(/^#[0-9a-f]{6}$/.test(sesSel.dim), '趋势：低强调色由主题计算', sesSel.dim);
+  await sesHero.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shotNoScroll(page, 'trends-session-select.png');
+  await sesHero.locator('rect.pt[data-i="1"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => {
+      const el = document
+        .querySelectorAll('#page_history .trend-hero')[2]
+        .querySelector('.trend-det');
+      return el && !/SOC/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
+  const sesReset = await sesHero.evaluate(
+    (el) => el.querySelectorAll('rect.bar[style*="chart-dim"]').length
+  );
+  check(sesReset === 0, '趋势：再点同一会话柱取消选中', String(sesReset));
+  await shotNoScroll(page, 'trends-session-clear.png');
+  await appScrollTo(page, 0);
+  await sleep(150);
+
   await page.locator('#page_history .trend-tile').first().click();
   await page.waitForSelector('#page_history .trend-tile.is-open .trend-big', { timeout: 5000 });
   check(true, '趋势：小图展开大图');
@@ -1606,6 +1659,7 @@ try {
     const bar = hero.querySelector('svg rect');
     const card = getComputedStyle(hero).backgroundColor;
     const blue = root.getPropertyValue('--blue').trim();
+    const dim = root.getPropertyValue('--chart-dim').trim();
     return {
       scheme: document.documentElement.getAttribute('data-scheme'),
       blue: blue,
@@ -1613,6 +1667,8 @@ try {
       card: card,
       fill: getComputedStyle(bar).fill,
       fillRatio: ratio(getComputedStyle(bar).fill, card),
+      dim: dim,
+      dimRatio: ratio(dim, card),
     };
   });
   check(monoContrast.scheme === 'dark', '取色：Monochrome 深色板推导', monoContrast.scheme);
@@ -1630,11 +1686,35 @@ try {
       ratio: monoContrast.fillRatio,
     })
   );
+  // 低强调色由 --accent 朝 --card 混合到 3:1 下限：既拉开选中层次，又不把未选中柱压没。
+  check(
+    monoContrast.dimRatio != null && monoContrast.dimRatio >= 2.9 && monoContrast.dimRatio < 3.5,
+    '取色：低强调色收敛到 3:1 下限',
+    JSON.stringify({ dim: monoContrast.dim, ratio: monoContrast.dimRatio })
+  );
   await shot(page, 'my-mono-trends.png');
   // 会话柱在首屏之外：滚到 Sessions 卡片再截一张，便于人工核对柱色。
   await appScrollTo(page, 760);
   await sleep(250);
   await shotNoScroll(page, 'my-mono-sessions.png');
+  // 深色/AMOLED 下的选中态视觉核对：选中柱满色、其余柱淡化，且不再有高亮圈。
+  const monoHero = page.locator('#page_history .trend-hero').nth(2);
+  await monoHero.locator('rect.pt[data-i="1"]').dispatchEvent('click');
+  await page.waitForFunction(
+    () => {
+      const el = document
+        .querySelectorAll('#page_history .trend-hero')[2]
+        .querySelector('.trend-det');
+      return el && /SOC|电量/.test(el.textContent);
+    },
+    null,
+    { timeout: 3000 }
+  );
+  const darkDim = await monoHero.locator('rect.bar[style*="chart-dim"]').count();
+  check(darkDim === 2, '趋势：深色会话柱选中后其余用低强调色', String(darkDim));
+  await monoHero.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shotNoScroll(page, 'trends-session-dark.png');
+  await monoHero.locator('rect.pt[data-i="1"]').dispatchEvent('click');
   await page.evaluate(() => localStorage.setItem('cre_amoled', '0'));
   await page.request.get(base + '/__colors/light');
 

@@ -120,7 +120,9 @@ function buildTrendModel(trends, t, lang, sel) {
   const sesRows = sessions.slice().sort(function (a, b) {
     return Number(a.end_ts) - Number(b.end_ts);
   });
-  const sesBig = sesRows.length ? svgBars(sesRows, CHART_W, CHART_H, 'var(--accent)', sel.ses) : '';
+  const sesBig = sesRows.length
+    ? svgBars(sesRows, CHART_W, CHART_H, 'var(--accent)', sel.ses, 'var(--chart-dim)')
+    : '';
   let sesVal = sesRows.length
     ? plural(
         lang,

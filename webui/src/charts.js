@@ -137,16 +137,23 @@ function selIndex(sel, count) {
   return i;
 }
 
+// 取 {x,y} 数值对：null/undefined/空串缺失值直接跳过（Number(null)=0 会造出
+// ts=0 的假点并污染量程），其余可转成有限数的才计入。
 function pickPairs(rows, kx, ky) {
   let out = [],
     i,
     r,
+    xv,
+    yv,
     x,
     y;
   for (i = 0; i < rows.length; i++) {
     r = rows[i];
-    x = Number(r == null ? null : r[kx]);
-    y = Number(r == null ? null : r[ky]);
+    xv = r == null ? null : r[kx];
+    yv = r == null ? null : r[ky];
+    if (xv == null || xv === '' || yv == null || yv === '') continue;
+    x = Number(xv);
+    y = Number(yv);
     if (isFinite(x) && isFinite(y)) out.push({ x: x, y: y, row: r });
   }
   return out;
@@ -315,7 +322,10 @@ function svgScatter(data, w, h, color, sel) {
 
 // sessions delta 条形：每条会话一个 <rect>，高度按 delta_pct 占比；仅 1 条也渲染。
 // 可见柱不接事件，命中用铺满槽位的透明 <rect>（data-i 与传入的升序数组对齐）。
-function svgBars(data, w, h, color, sel) {
+// 选中态：选中柱保持系列色，其余柱改用调用方传入的低强调色（core.js 按 3:1 下限
+// 从 --accent 算出的 --chart-dim），不画高亮圈——圈是折线/散点定位单点的记号。
+// 无选中时全部用系列色；rx=4 对齐 M3 shape 的 extra-small 4dp 圆角下限。
+function svgBars(data, w, h, color, sel, dimColor) {
   const rows = Array.isArray(data) ? data : [];
   let vals = [],
     i,
@@ -328,18 +338,20 @@ function svgBars(data, w, h, color, sel) {
   let mx = minMax(vals).max;
   if (!(mx > 0)) mx = 1;
   const slot = w / vals.length;
-  const bw = Math.min(slot * 0.62, 26);
+  // 槽位的 75% 给柱、25% 留分隔：会话最多 120 个时柱宽仍有 2px（320 宽画布）、
+  // 间隔约 0.7px，密而不粘；少数据时用 26px 上限避免柱子过宽。
+  const bw = Math.min(slot * 0.75, 26);
   const si = selIndex(sel, vals.length);
   let rects = '',
-    hits = '',
-    ring = '';
+    hits = '';
   for (i = 0; i < vals.length; i++) {
     let bh = Math.max((vals[i] / mx) * (h - 6), 2);
     let bx = i * slot + (slot - bw) / 2;
     let by = h - bh;
-    if (i === si) ring = selRing((i * slot + slot / 2).toFixed(1), by.toFixed(1), w, h);
+    // 只有一个选中项：选中柱用系列色，其余用低强调色
+    const fill = si >= 0 && i !== si && dimColor ? dimColor : color;
     rects +=
-      '<rect x="' +
+      '<rect class="bar" x="' +
       bx.toFixed(1) +
       '" y="' +
       by.toFixed(1) +
@@ -347,8 +359,8 @@ function svgBars(data, w, h, color, sel) {
       bw.toFixed(1) +
       '" height="' +
       bh.toFixed(1) +
-      '" rx="3" style="fill:' +
-      color +
+      '" rx="4" style="fill:' +
+      fill +
       '" pointer-events="none"/>';
     hits +=
       '<rect class="pt" data-i="' +
@@ -361,7 +373,7 @@ function svgBars(data, w, h, color, sel) {
       h +
       '" fill="transparent"/>';
   }
-  return svgOpen(w, h) + chartBase(w, h) + rects + hits + ring + '</svg>';
+  return svgOpen(w, h) + chartBase(w, h) + rects + hits + '</svg>';
 }
 
 // ts→key 通用曲线：自动 min/max 归一化；refY 有效时纳入取值范围并以虚线画出参考线；

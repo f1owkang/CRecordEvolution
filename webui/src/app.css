@@ -78,6 +78,9 @@ button:focus-visible {
   --btn-fg: #fff;
   --chart-base: #232a36;
   --chart-ref: #6e7681;
+  /* 未选中会话柱的低强调色：运行时由 core.js 按 --accent 与 --card 重算为 3:1
+     下限；这里只作为 JS 执行前的回退，选不选中都不参与首屏。 */
+  --chart-dim: var(--mute);
   --purple: #d2a8ff;
   --orange: #ffa657;
   --rest-dot: #e6edf3;

@@ -138,8 +138,10 @@ function TrendsView({ trends, openTile, onToggleTile }) {
   function selectArchive(index) {
     setSel((old) => ({ ...old, archive: index }));
   }
+  // 会话柱没有可点空白（命中槽铺满整张图），再点同一柱即取消选中；
+  // 选中状态下其他柱已淡化，重复点按不会让人误以为没响应。
   function selectSes(index) {
-    setSel((old) => ({ ...old, ses: index }));
+    setSel((old) => ({ ...old, ses: old.ses === index ? null : index }));
   }
   function selectTile(index) {
     setSel((old) =>
