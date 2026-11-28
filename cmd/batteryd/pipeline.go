@@ -60,6 +60,9 @@ const (
 	kvSessCounterAccUAh  = "sess_cc_acc"
 	kvSessCounterLastUAh = "sess_cc_last"
 	kvSessCounterTs      = "sess_cc_ts"
+	// kvSessCounterHole 会话期电量计是否「开账后才可用」（增量只覆盖部分区间）：
+	// 内存状态必须持久化，否则重启恢复后会把半段增量当全程采信，隐含容量偏低。
+	kvSessCounterHole = "sess_cc_hole"
 	// kvSessRawUAs 会话期「原始电流读数绝对值 × dt」累计（原始单位·秒），只用于
 	// 反推 µA/原始单位；不能用被当前刻度缩放过的 accUAs 反推（见 currentcal.go）。
 	kvSessRawUAs = "sess_raw_uas"
@@ -238,6 +241,19 @@ func (p *Pipeline) setFullUAh(v int64) { p.fullUAh = v }
 // SetCellCount 更新 Pipeline 的电芯数（由 redetectCellCount 触发）。
 func (p *Pipeline) SetCellCount(n int) { p.cellCount = n }
 
+// SetEstimator 替换会话结算使用的估算器：main 的周期重检在电芯数变化时会
+// 重建 ML 估算器，必须同步给已创建的 Pipeline，否则结算仍在用启动时的旧实例
+// （ML 的电压归一化依赖电芯数）。
+func (p *Pipeline) SetEstimator(est Estimator) {
+	if est != nil {
+		p.est = est
+	}
+}
+
+// SetDesignUAh 更新设计容量：data/design_mah 的手动覆盖或 sysfs/设备树口径裁决
+// 变化后由 main 同步，健康度窗口/倍率/终点预测都以它为准。
+func (p *Pipeline) SetDesignUAh(v int64) { p.designUAh = v }
+
 func kvText(st KVStore, key string) string {
 	v, _ := st.KVGet(key)
 	return v
@@ -253,7 +269,13 @@ func kvFloat(st KVStore, key string) float64 {
 	return f
 }
 
+// absI64 取绝对值。math.MinInt64 取负会溢出回自身（结果仍为负），按物理上界
+// 饱和到 MaxInt64：调用方都用它做过限/幅值比较，饱和后仍按「极大」处理，
+// 不会把异常读数误判成小电流。
 func absI64(v int64) int64 {
+	if v == math.MinInt64 {
+		return math.MaxInt64
+	}
 	if v < 0 {
 		return -v
 	}
@@ -295,6 +317,7 @@ func (p *Pipeline) restoreSession() {
 		counterAccUAh:  kvInt(p.st, kvSessCounterAccUAh),
 		counterLastUAh: kvInt(p.st, kvSessCounterLastUAh),
 		counterTs:      kvInt(p.st, kvSessCounterTs),
+		counterHole:    kvInt(p.st, kvSessCounterHole) == 1,
 		rawUAs:         kvInt(p.st, kvSessRawUAs),
 		// 电量计增量带上读数时刻一起恢复：重启间隙的增量按 Δ/Δt 反推电流判
 		// 可信后照常计入（物理上合理的长间隙不丢电量）；电量计在开账后才可用
@@ -390,6 +413,13 @@ const notChargDebounce = 3
 // Tick 按当前 status 推进一拍采样与会话状态机。
 func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 	outcome := TickOutcome{}
+	// 静置计数只在连续静置放电期间累加：非 Discharging 的拍一律清零。放在入口
+	// 而不是只放 tickResting 里——充电/尾段/去抖分支都会在此之前 return，计数
+	// 会跨充电周期冻结，拔充后第 1 拍就满足 ≥3 拍门槛（早期点提前落库），且
+	// ==10 拍的收敛指纹点再也命中不了。
+	if status != "Discharging" {
+		p.restStreak = 0
+	}
 	// 转入放电即复位充电峰值：下次插入重新建立，避免跨充电周期沿用旧峰值
 	if status == "Discharging" {
 		p.peakChargeUV = 0
@@ -401,7 +431,7 @@ func (p *Pipeline) Tick(status string) (TickOutcome, error) {
 		// 回到 Charging：去抖计数清零，原会话（若在去抖等待期）原样继续
 		p.notChargStreak = 0
 		p.logDeb = false
-		return outcome, p.tickCharging(&outcome)
+		return outcome, p.tickCharging()
 	}
 	// 非充电状态但电池电流仍在正向灌入（CV 尾段 / 满电保护抖动的 Full、
 	// Not charging）：视为充电延续，继续累计并重置去抖。内核电量计报 100%
@@ -482,7 +512,7 @@ func (p *Pipeline) tailCurrent() (int64, int64, bool) {
 	return 0, 0, false
 }
 
-func (p *Pipeline) tickCharging(outcome *TickOutcome) error {
+func (p *Pipeline) tickCharging() error {
 	capVal, err := p.readNode("capacity")
 	if err != nil {
 		return &SysfsTransient{Err: err}
@@ -710,10 +740,9 @@ func (p *Pipeline) chargeThroughput(iUA int64) error {
 
 func (p *Pipeline) persistSession() error {
 	s := &p.sess
-	sets := []struct {
-		key string
-		val string
-	}{
+	// 所有会话状态键一次性事务写入：逐键写在中途被杀会留下 acc 已更新、
+	// lastTickTs 未更新的混合态，恢复后下一拍会把同一区间重复计一次。
+	pairs := [][2]string{
 		{kvSessActive, "1"},
 		{kvSessStartTs, strconv.FormatInt(s.startTs, 10)},
 		{kvSessStartCap, strconv.FormatInt(s.startCap, 10)},
@@ -729,14 +758,10 @@ func (p *Pipeline) persistSession() error {
 		{kvSessCounterAccUAh, strconv.FormatInt(s.counterAccUAh, 10)},
 		{kvSessCounterLastUAh, strconv.FormatInt(s.counterLastUAh, 10)},
 		{kvSessCounterTs, strconv.FormatInt(s.counterTs, 10)},
+		{kvSessCounterHole, strconv.FormatInt(boolToInt(s.counterHole), 10)},
 		{kvSessRawUAs, strconv.FormatInt(s.rawUAs, 10)},
 	}
-	for _, it := range sets {
-		if err := p.st.KVSet(it.key, it.val); err != nil {
-			return err
-		}
-	}
-	return nil
+	return p.st.KVSetMany(pairs)
 }
 
 func (p *Pipeline) resetSession() error {
@@ -753,9 +778,12 @@ func (p *Pipeline) settle() error {
 	if err := p.st.KVSet(kvSessActive, "0"); err != nil {
 		return &SettleError{Err: err}
 	}
+	// 同一拍内只取一次时钟：EndTs 与 duration 必须来自同一个 now，否则两次
+	// 取时跨秒会让 end_ts-start_ts 与 duration 不等（历史页按前者展示时长）。
+	nowUnix := p.now().Unix()
 	// duration 用墙钟差：变步长采样下拍数×固定秒数不再成立；墙钟口径同时覆盖
 	// 浮充/去抖期，avgI 口径随之更贴近真实平均电流。
-	duration := p.now().Unix() - s.startTs
+	duration := nowUnix - s.startTs
 	avgI := int64(0)
 	if duration > 0 {
 		avgI = s.accUAs / duration
@@ -763,7 +791,7 @@ func (p *Pipeline) settle() error {
 	dur := (time.Duration(duration) * time.Second).Truncate(time.Second)
 	row := Session{
 		StartTs:  s.startTs,
-		EndTs:    p.now().Unix(),
+		EndTs:    nowUnix,
 		StartCap: s.startCap,
 		EndCap:   s.lastCap,
 		AccUAs:   s.accUAs,
@@ -1172,10 +1200,7 @@ func (p *Pipeline) tickResting(status string) error {
 	}
 	if p.restStreak == restRelaxTicks {
 		// 收敛指纹点：绕过去重强制记录（不同 ts 本就不冲突）
-		if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {
-			return &SettleError{Err: err}
-		}
-		p.lastRestCap, p.lastRestUV = capVal, uv
+		p.recordRestPoint(uv, capVal)
 		return nil
 	}
 	driftLimit := restDedupUVDrift * int64(p.cellCount)
@@ -1183,9 +1208,18 @@ func (p *Pipeline) tickResting(status string) error {
 		absI64(uv-p.lastRestUV) <= driftLimit {
 		return nil
 	}
+	p.recordRestPoint(uv, capVal)
+	return nil
+}
+
+// recordRestPoint 落一个静置点并更新去重基线。rest_points 只是展示/统计观测
+// （历史页散点），写失败只落事件、不返回错误：此前的 SettleError 会让
+// tickStrike 立即判死退出，而静息放电每 60s 就写一次，一次 SQLITE_BUSY/磁盘
+// 失败就会永久停掉采样，且 service.sh 只 exec 一次、没有自启路径。
+func (p *Pipeline) recordRestPoint(uv, capVal int64) {
 	if err := p.st.InsertRestPoint(p.now().Unix(), uv, capVal); err != nil {
-		return &SettleError{Err: err}
+		_ = p.st.InsertEvent("rest_fail", err.Error())
+		return
 	}
 	p.lastRestCap, p.lastRestUV = capVal, uv
-	return nil
 }
