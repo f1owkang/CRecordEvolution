@@ -199,6 +199,9 @@ func newApp() (*app, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败：%w", err)
 	}
+	// ICA 相对峰高基准跨版本迁移：旧口径把恒流段之间的长间隙计入主峰，基准
+	// 虚高；升级后第一次启动删除旧基准，下一笔合格会话用段内口径重建。
+	migrateICAPeakBase(st)
 	// 长期容量档案回填：升级后把仍在 90 天窗口内的 estimates 折进 daily，
 	// 只跑一次（kv daily_backfill 标记）。档案是派生只读视图，失败只告警，
 	// 不阻断采样：下次启动会重试（标记未落）。
@@ -715,6 +718,12 @@ func runDaemon() error {
 	// 启动即扫一遍：升级前旧 daemon 留下的重复行，以及回收旧进程前后可能写入的
 	// 重复行都在这里一次性收干净。
 	a.repairDuplicates(true)
+	// 旧版本可能在首次回填失败后误落完成标记：daemon 启动时按 estimates 全量
+	// 重算一次档案（独立修复标记，幂等）。失败只告警，下次启动重试。
+	if err := a.st.RepairDailyBackfill(); err != nil {
+		fmt.Fprintf(os.Stderr, "batteryd: 长期容量档案修复失败：%v\n", err)
+		_ = a.st.InsertEvent("daily_repair_fail", err.Error())
+	}
 
 	a.appendLog("启动 channel=%s", channel)
 

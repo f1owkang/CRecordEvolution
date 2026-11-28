@@ -530,6 +530,12 @@ func (s *Store) KVSet(key, val string) error {
 	return err
 }
 
+// KVDel 删除一个 kv 键；键本来不存在视为成功。
+func (s *Store) KVDel(key string) error {
+	_, err := s.db.Exec(`DELETE FROM kv WHERE k = ?`, key)
+	return err
+}
+
 // KVSetMany 在一个事务里写多组 kv。会话/放电状态是多个键一起恢复的：逐键
 // KVSet 在两次写之间被杀会留下「电量已更新、时间基线没更新」的混合态，下一拍
 // 会把同一区间重复计一次。批量写要么全成、要么全不成（失败时旧状态仍自洽）。
