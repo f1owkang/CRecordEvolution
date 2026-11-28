@@ -46,6 +46,29 @@ func seedML(t *testing.T, est *Learning) {
 	}
 }
 
+// IQR 门必须有最小带宽：历史比值高度集中（整数化 deltaCap/固定充电习惯）时
+// IQR 可收缩到 0，任何正常采样抖动都会被判离群；ratioBandMin 让 ±3% 内的
+// 波动照常采信，只有真正的工况阶跃才进入离群/逃逸路径。
+func TestLearningIQRHasMinimumBand(t *testing.T) {
+	est, st := newTestLearning(t)
+	seedML(t, est)
+	feed := func(permille int64) (EstUpdate, error) {
+		e := kvInt(st, kvKeyEmaUAh)
+		sr := SettledSession{Session: baseSession(), AccUAs: e * 2160 * permille / 1000, DesignUAh: 4000000}
+		return est.OnSession(sr)
+	}
+	// 比值完全一致的 8 条会话：IQR 宽度为 0。
+	for i := 0; i < 8; i++ {
+		if _, err := feed(1000); err != nil {
+			t.Fatalf("同值会话 %d 应接受: %v", i, err)
+		}
+	}
+	// 2% 抖动（< 6% 最小带宽的一半）应正常采信，而不是判 outlier。
+	if _, err := feed(1020); err != nil {
+		t.Fatalf("最小带宽内的正常抖动应接受, got %v", err)
+	}
+}
+
 func TestLearningRejectsColdSeed(t *testing.T) {
 	// ML 通道同样启用温度门控：种子阶段冷/热会话不得初始化 EMA
 	est, _ := newTestLearning(t)

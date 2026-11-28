@@ -14,8 +14,8 @@ const (
 	kvKeySFullHist = "sfull_hist"
 	// kvKeyRatioOutlierStreak 连续被 IQR 判离群的会话数：连续离群说明基线已漂移
 	// 到新工况（单位纠正/换电池/校准把 EMA 拖走），只拒收不学习会死锁——hist 与
-	// EMA 都不变，之后每次会话都会同样离群。连续达 outlierEscape 次后放行一次并
-	// 重置比值历史，让模型重新收敛。
+	// EMA 都不变，之后每次会话都会同样离群。连续达 outlierEscape 次后放行一次，
+	// 把该比值并入历史（不整段重置，避免在正常波动上反复「重置-离群」振荡）。
 	kvKeyRatioOutlierStreak = "ratio_outlier_streak"
 
 	rlsLambda     = 0.99
@@ -23,8 +23,12 @@ const (
 	ratioHistCap  = 40
 	iqrMinSamples = 8
 	outlierEscape = 3
-	clipLo        = 0.7
-	clipHi        = 1.3
+	// ratioBandMin 是 IQR 门的最小带宽（相对中位比值的全宽）。历史比值高度集中
+	// （整数化 deltaCap / 固定充电习惯）时 IQR 可能收缩到接近 0，任何正常的
+	// 采样抖动都会被判离群并触发离群逃逸-重置的振荡；给门一个物理下限。
+	ratioBandMin = 0.06
+	clipLo       = 0.7
+	clipHi       = 1.3
 
 	kvKeyEmaSigma = "ema_sigma_mah"
 	sigmaRelFloor = 0.005
@@ -75,6 +79,10 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 	r := float64(sFull) / float64(ema)
 	if len(hist) >= iqrMinSamples {
 		lo, hi := iqrBounds(hist)
+		if hi-lo < ratioBandMin {
+			mid := (lo + hi) / 2
+			lo, hi = mid-ratioBandMin/2, mid+ratioBandMin/2
+		}
 		if r < lo || r > hi {
 			streak := kvInt(l.kv, kvKeyRatioOutlierStreak) + 1
 			if streak < outlierEscape {
@@ -83,9 +91,9 @@ func (l *Learning) OnSession(sr SettledSession) (EstUpdate, error) {
 				}
 				return EstUpdate{}, &RejectError{Result: SessionResult{Reason: "outlier"}}
 			}
-			// 连续离群达阈值：本次比值作为新工况种子，丢弃旧分布。否则旧 hist
-			// 与冻结的 EMA 会让之后每次会话都同样离群（永远学不到新基线）。
-			hist = nil
+			// 连续离群达阈值：本次比值作为新工况样本并入历史（保留旧样本，避免
+			// 整段重置后在正常波动上再次触发「重置-离群」振荡），放行本次让模型
+			// 开始吸收新基线。
 			if err := l.kv.KVSet(kvKeyRatioOutlierStreak, "0"); err != nil {
 				return EstUpdate{}, err
 			}
