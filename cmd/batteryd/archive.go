@@ -46,8 +46,9 @@ func localDayKey(ts int64) int64 {
 }
 
 // upsertDaily 把一笔估算并入当天档案：容量取当天最后一笔，点数累加。
-func (s *Store) upsertDaily(day, ts, uah int64) error {
-	_, err := s.db.Exec(`INSERT INTO daily(day,ts,uah,n) VALUES(?,?,?,1)
+// 接受 *sql.Tx 以便调用方把「estimates 明细 + daily 档案」放进同一事务。
+func upsertDaily(tx execer, day, ts, uah int64) error {
+	_, err := tx.Exec(`INSERT INTO daily(day,ts,uah,n) VALUES(?,?,?,1)
 		ON CONFLICT(day) DO UPDATE SET ts=excluded.ts, uah=excluded.uah, n=daily.n+1`,
 		day, ts, uah)
 	return err
@@ -60,33 +61,9 @@ func (s *Store) DailyCount() (int64, error) {
 	return n, err
 }
 
-// BackfillDaily 把保留窗口内的 estimates 按本地日回填进 daily。
-// 幂等：标记已落或档案表已有行时直接返回，重复启动不会二次累加点数。
-// 回填只在升级后的第一次启动执行，triggers getprop 时区解析一次。
-func (s *Store) BackfillDaily() error {
-	if v, ok := s.KVGet(kvDailyBackfill); ok && v == "1" {
-		return nil
-	}
-	n, err := s.DailyCount()
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return s.KVSet(kvDailyBackfill, "1")
-	}
-	rows, err := queryAll(s.db, `SELECT ts, mah FROM estimates ORDER BY ts ASC`,
-		func(rows *sql.Rows) (TsVal, error) {
-			var tv TsVal
-			err := rows.Scan(&tv.TS, &tv.V)
-			return tv, err
-		})
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return s.KVSet(kvDailyBackfill, "1")
-	}
-	// 按本地日聚合：同日多笔只保留最后一笔容量，点数累加。
+// aggregateDaily 把 estimates 明细按本地日聚合为档案行：同日多笔只保留最后一笔
+// 容量（时间升序输入），N 为当日估算点数量。纯函数便于单测跨日边界。
+func aggregateDaily(rows []TsVal) []DailyRow {
 	days := make([]DailyRow, 0, len(rows))
 	idx := make(map[int64]int, len(rows))
 	for _, tv := range rows {
@@ -100,33 +77,50 @@ func (s *Store) BackfillDaily() error {
 		idx[day] = len(days)
 		days = append(days, DailyRow{Day: day, TS: tv.TS, UAh: tv.V, N: 1})
 	}
-	tx, err := s.db.Begin()
+	return days
+}
+
+// BackfillDaily 把保留窗口内的 estimates 按本地日回填进 daily。
+//
+// 幂等：标记已落后直接返回；回填本身用「按 estimates 聚合结果覆盖写」而不是
+// 累加，因此可安全重试。不能因为 daily 已有行就认为已完成——首次回填失败（DB
+// busy/IO）后，daemon 正常结算会先写出一条 daily，此时若直接落标记，升级前仍在
+// estimates 里的历史点就永不进档案，90 天清理后档案出现永久空洞。
+// 回填只在升级后的第一次启动执行，会触发一次 getprop 时区解析。
+func (s *Store) BackfillDaily() error {
+	if v, ok := s.KVGet(kvDailyBackfill); ok && v == "1" {
+		return nil
+	}
+	rows, err := queryAll(s.db, `SELECT `+estimateColumns+` FROM estimates ORDER BY ts ASC`,
+		scanTsVal)
 	if err != nil {
 		return err
 	}
-	for _, d := range days {
-		if _, err := tx.Exec(`INSERT INTO daily(day,ts,uah,n) VALUES(?,?,?,?)
-			ON CONFLICT(day) DO UPDATE SET ts=excluded.ts, uah=excluded.uah, n=excluded.n`,
-			d.Day, d.TS, d.UAh, d.N); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
+	days := aggregateDaily(rows)
+	if len(days) == 0 {
+		return s.KVSet(kvDailyBackfill, "1")
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.withTx(func(tx *sql.Tx) error {
+		for _, d := range days {
+			if _, err := tx.Exec(`INSERT INTO daily(day,ts,uah,n) VALUES(?,?,?,?)
+				ON CONFLICT(day) DO UPDATE SET ts=excluded.ts, uah=excluded.uah, n=excluded.n`,
+				d.Day, d.TS, d.UAh, d.N); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, '1')`, kvDailyBackfill)
+		return err
+	}); err != nil {
 		return err
 	}
 	_ = s.InsertEvent("daily_backfill", fmt.Sprintf("长期容量档案回填 %d 天", len(days)))
-	return s.KVSet(kvDailyBackfill, "1")
+	return nil
 }
 
 // DailyEstimates 取最近 limit 天的档案，按日期升序返回（老→新，图表方向）。
 func (s *Store) DailyEstimates(limit int) ([]DailyRow, error) {
-	rows, err := queryAll(s.db, `SELECT day,ts,uah,n FROM daily ORDER BY day DESC LIMIT ?`,
-		func(rows *sql.Rows) (DailyRow, error) {
-			var d DailyRow
-			err := rows.Scan(&d.Day, &d.TS, &d.UAh, &d.N)
-			return d, err
-		}, limit)
+	rows, err := queryAll(s.db, `SELECT `+dailyColumns+` FROM daily ORDER BY day DESC LIMIT ?`,
+		scanDaily, limit)
 	if err != nil {
 		return nil, err
 	}

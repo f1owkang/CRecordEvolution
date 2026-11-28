@@ -75,8 +75,8 @@ func (s *Store) InsertDischarge(r DischargeRow) error {
 
 // RecentDischarge 取最近 limit 条放电会话（按 end_ts 倒序）。
 func (s *Store) RecentDischarge(limit int) ([]DischargeRow, error) {
-	return queryAll(s.db, `SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
-		FROM discharge ORDER BY end_ts DESC LIMIT ?`, scanDischarge, limit)
+	return queryAll(s.db, `SELECT `+dischargeColumns+` FROM discharge
+		ORDER BY end_ts DESC LIMIT ?`, scanDischarge, limit)
 }
 
 func reasonOrNull(s string) any {
@@ -109,6 +109,70 @@ func queryAll[T any](q rowQueryer, query string, scan func(*sql.Rows) (T, error)
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// 各表的查询列清单只在这里写一次：Recent*/Since* 共用同一份 SELECT 列表，
+// 避免同一张表的两条查询各写一份列名、后续加列时只改一处造成 scan 错位。
+// 列顺序必须与对应的 scan* 函数一致。
+const (
+	sessionColumns = `start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
+		temp_avg,valid,invalid_reason`
+	dischargeColumns = `end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason`
+	restPointColumns = `ts, uv, cap`
+	ccctColumns      = `ts, vw_lo, vw_hi, secs`
+	icaPeakColumns   = `session_end_ts, peak_uv, peak_h_rel`
+	estimateColumns  = `ts, mah`
+	sampleColumns    = `ts, ua, uv, cap, cc`
+	dailyColumns     = `day,ts,uah,n`
+)
+
+// scanTsVal 把一行「时间戳→数值」序列映射为 TsVal（estimates 等表）。
+func scanTsVal(rows *sql.Rows) (TsVal, error) {
+	var tv TsVal
+	err := rows.Scan(&tv.TS, &tv.V)
+	return tv, err
+}
+
+// scanResistance 把一行内阻样本映射为 mΩ 数值。
+func scanResistance(rows *sql.Rows) (float64, error) {
+	var mo float64
+	err := rows.Scan(&mo)
+	return mo, err
+}
+
+// scanRestPoint 把一行静置点映射为 RestPoint。
+func scanRestPoint(rows *sql.Rows) (RestPoint, error) {
+	var rp RestPoint
+	err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap)
+	return rp, err
+}
+
+// scanCCCT 把一行 CCCT 特征映射为 CcctRow。
+func scanCCCT(rows *sql.Rows) (CcctRow, error) {
+	var c CcctRow
+	err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs)
+	return c, err
+}
+
+// scanICAPeak 把一行 ICA 主峰映射为 ICAPeakRow。
+func scanICAPeak(rows *sql.Rows) (ICAPeakRow, error) {
+	var r ICAPeakRow
+	err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel)
+	return r, err
+}
+
+// scanSample 把一行采样映射为 SampleRow。
+func scanSample(rows *sql.Rows) (SampleRow, error) {
+	var r SampleRow
+	err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh)
+	return r, err
+}
+
+// scanDaily 把一行长期档案映射为 DailyRow。
+func scanDaily(rows *sql.Rows) (DailyRow, error) {
+	var d DailyRow
+	err := rows.Scan(&d.Day, &d.TS, &d.UAh, &d.N)
+	return d, err
 }
 
 // scanDischarge 把一行 discharge 记录映射为 DischargeRow：implied 为 NULL 时
@@ -146,6 +210,26 @@ func scanSession(rows *sql.Rows) (Session, error) {
 
 // Store 封装 SQLite 引擎：schema 初始化、幂等迁移与各表读写。
 type Store struct{ db *sql.DB }
+
+// execer 是 *sql.DB 与 *sql.Tx 共有的单语句执行入口，供多语句写复用同一段 SQL。
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// withTx 在一个写事务里执行 fn：fn 返回错误则整体回滚（不留下部分写入），
+// 成功才提交。多语句写（estimates + daily、逐表 prune、迁移 + 标记）必须全有
+// 或全无——「明细写进去、档案没写」这类分叉在 SQLite 里没有其它机制可修。
+func (s *Store) withTx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
 
 // Session 为充电会话的落库/查询结构：AccUAs 为电流积分累计电量（µA·s），
 // CounterUAh 为会话期电量计差分电量（µAh，0=无电量计或未采信），AvgI 为平均电流（µA）。
@@ -240,26 +324,35 @@ const kvCounterUnitRepair = "counter_unit_repair"
 // 幂等操作（跨启动重复执行也只覆盖旧行）。
 const kvCounterUnitEpoch = "counter_unit_epoch"
 
-// txKVInt 读事务内 kv 的整数值；缺失或非法返回 ok=false。
-func txKVInt(tx *sql.Tx, key string) (int64, bool) {
+// txKVInt 读事务内 kv 的整数值。键缺失返回 ok=false 且 err=nil；读库错误必须
+// 上抛——迁移完成标记一旦在「读失败」时静默落盘，进行中会话的 cc 会永久停在
+// 小 1000 倍的口径（违反「影响结算/存储的错误不得静默吞掉」）。
+func txKVInt(tx *sql.Tx, key string) (n int64, ok bool, err error) {
 	var txt string
 	if err := tx.QueryRow(`SELECT v FROM kv WHERE k = ?`, key).Scan(&txt); err != nil {
-		return 0, false
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
 	}
-	n, err := strconv.ParseInt(txt, 10, 64)
-	if err != nil {
-		return 0, false
+	v, perr := strconv.ParseInt(txt, 10, 64)
+	if perr != nil {
+		// 历史值非法：按缺失处理（跳过该键的迁移），不阻断整次迁移。
+		return 0, false, nil
 	}
-	return n, true
+	return v, true, nil
 }
 
 // txScaleKV 把 kv 整数值 ×1000 写回；缺失/非正值跳过。
 func txScaleKV(tx *sql.Tx, key string) error {
-	n, ok := txKVInt(tx, key)
+	n, ok, err := txKVInt(tx, key)
+	if err != nil {
+		return err
+	}
 	if !ok || n <= 0 {
 		return nil
 	}
-	_, err := tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`, key, strconv.FormatInt(n*1000, 10))
+	_, err = tx.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)`, key, strconv.FormatInt(n*1000, 10))
 	return err
 }
 
@@ -319,14 +412,18 @@ func (s *Store) RepairCounterUnits(scale, epoch int64) error {
 		}
 		// 进行中的充电/放电会话状态以 kv 保存，同样是小 1000 倍的口径。只换算
 		// epoch 之前已开始的会话：跨 epoch 的会话在下次启动后才可能混入新口径。
-		if start, ok := txKVInt(tx, kvSessStartTs); ok && start > 0 && start < epoch {
+		if start, ok, rerr := txKVInt(tx, kvSessStartTs); rerr != nil {
+			return rerr
+		} else if ok && start > 0 && start < epoch {
 			for _, k := range []string{kvSessCounterAccUAh, kvSessCounterLastUAh} {
 				if err := txScaleKV(tx, k); err != nil {
 					return err
 				}
 			}
 		}
-		if start, ok := txKVInt(tx, kvDisStartTs); ok && start > 0 && start < epoch {
+		if start, ok, rerr := txKVInt(tx, kvDisStartTs); rerr != nil {
+			return rerr
+		} else if ok && start > 0 && start < epoch {
 			for _, k := range []string{kvDisAcc, kvDisLastCounterUAh} {
 				if err := txScaleKV(tx, k); err != nil {
 					return err
@@ -433,6 +530,21 @@ func (s *Store) KVSet(key, val string) error {
 	return err
 }
 
+// KVSetMany 在一个事务里写多组 kv。会话/放电状态是多个键一起恢复的：逐键
+// KVSet 在两次写之间被杀会留下「电量已更新、时间基线没更新」的混合态，下一拍
+// 会把同一区间重复计一次。批量写要么全成、要么全不成（失败时旧状态仍自洽）。
+func (s *Store) KVSetMany(pairs [][2]string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, kv := range pairs {
+			if _, err := tx.Exec(`INSERT INTO kv(k, v) VALUES(?, ?)
+				ON CONFLICT(k) DO UPDATE SET v = excluded.v`, kv[0], kv[1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func boolToInt(b bool) int64 {
 	if b {
 		return 1
@@ -456,23 +568,21 @@ func (s *Store) InsertSession(sess Session) (int64, error) {
 }
 
 // InsertEstimate 写入一条容量估算点（estUAh 单位 µAh，DB 列名历史遗留为 mah），
-// 同时并入当天的长期档案（daily）。档案写失败一并返回，避免「明细有、档案缺」
-// 的分叉静默存在。
+// 同时并入当天的长期档案（daily）。两条写在同一个事务里：任何一条失败都整体
+// 回滚，避免「明细有、档案缺」的分叉（调用方会按结算失败处理）。
 func (s *Store) InsertEstimate(ts, estUAh int64) error {
-	if _, err := s.db.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, estUAh); err != nil {
-		return err
-	}
-	return s.upsertDaily(localDayKey(ts), ts, estUAh)
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO estimates(ts, mah) VALUES(?, ?)`, ts, estUAh); err != nil {
+			return err
+		}
+		return upsertDaily(tx, localDayKey(ts), ts, estUAh)
+	})
 }
 
 // RecentEstimates 取最近 limit 条容量估算（值单位 µAh，按 ts 倒序）。
 func (s *Store) RecentEstimates(limit int) ([]TsVal, error) {
-	return queryAll(s.db, `SELECT ts, mah FROM estimates ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (TsVal, error) {
-			var tv TsVal
-			err := rows.Scan(&tv.TS, &tv.V)
-			return tv, err
-		}, limit)
+	return queryAll(s.db, `SELECT `+estimateColumns+` FROM estimates ORDER BY ts DESC LIMIT ?`,
+		scanTsVal, limit)
 }
 
 // InsertResistance 写入一条内阻回归样本（mo 单位 mΩ）。
@@ -485,11 +595,7 @@ func (s *Store) InsertResistance(ts int64, mo float64) error {
 // 供显示层做稳健统计（中位数），单条离群不影响口径。
 func (s *Store) RecentResistance(limit int) ([]float64, error) {
 	return queryAll(s.db, `SELECT mo FROM resistance ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (float64, error) {
-			var mo float64
-			err := rows.Scan(&mo)
-			return mo, err
-		}, limit)
+		scanResistance, limit)
 }
 
 // InsertRestPoint 写入一个静置点（uv 单位 µV，cap 为显示电量 %）。
@@ -505,18 +611,14 @@ type RestPoint struct {
 
 // RecentSessions 取最近 limit 条充电会话（按 end_ts 倒序）。
 func (s *Store) RecentSessions(limit int) ([]Session, error) {
-	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
-		temp_avg,valid,invalid_reason FROM sessions ORDER BY end_ts DESC LIMIT ?`, scanSession, limit)
+	return queryAll(s.db, `SELECT `+sessionColumns+` FROM sessions
+		ORDER BY end_ts DESC LIMIT ?`, scanSession, limit)
 }
 
 // RecentRestPoints 取最近 limit 个静置点（按 ts 倒序）。
 func (s *Store) RecentRestPoints(limit int) ([]RestPoint, error) {
-	return queryAll(s.db, `SELECT ts, uv, cap FROM rest_points ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (RestPoint, error) {
-			var rp RestPoint
-			err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap)
-			return rp, err
-		}, limit)
+	return queryAll(s.db, `SELECT `+restPointColumns+` FROM rest_points ORDER BY ts DESC LIMIT ?`,
+		scanRestPoint, limit)
 }
 
 // InsertEvent 写入一条内部事件（detail 为中文排障明细）。
@@ -604,13 +706,8 @@ func (s *Store) CountSessions() (int64, error) {
 
 // SamplesRange 返回 [from, to] 闭区间内的样本行，按 ts 升序。
 func (s *Store) SamplesRange(from, to int64) ([]SampleRow, error) {
-	return queryAll(s.db, `SELECT ts, ua, uv, cap, cc FROM samples
-		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`,
-		func(rows *sql.Rows) (SampleRow, error) {
-			var r SampleRow
-			err := rows.Scan(&r.TS, &r.UA, &r.UV, &r.Cap, &r.CounterUAh)
-			return r, err
-		}, from, to)
+	return queryAll(s.db, `SELECT `+sampleColumns+` FROM samples
+		WHERE ts >= ? AND ts <= ? ORDER BY ts ASC`, scanSample, from, to)
 }
 
 // checkScaleFactor 校验按区间缩放的比例：必须为正的有限值，否则拒绝执行
@@ -690,12 +787,8 @@ func (s *Store) InsertCCCT(ts, vwLo, vwHi, secs int64) error {
 
 // RecentCCCT 取最近 limit 条 CCCT 记录（按 ts 倒序）。
 func (s *Store) RecentCCCT(limit int) ([]CcctRow, error) {
-	return queryAll(s.db, `SELECT ts, vw_lo, vw_hi, secs FROM ccct ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (CcctRow, error) {
-			var c CcctRow
-			err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs)
-			return c, err
-		}, limit)
+	return queryAll(s.db, `SELECT `+ccctColumns+` FROM ccct ORDER BY ts DESC LIMIT ?`,
+		scanCCCT, limit)
 }
 
 // ICAPeakRow 为 ica_peaks 表一行：会话结束时刻、主峰位置（µV）与相对峰高。
@@ -713,69 +806,44 @@ func (s *Store) InsertICAPeak(ts, peakUV int64, peakHRel float64) error {
 
 // RecentICAPeaks 取最近 limit 条 ICA 主峰（按会话结束时刻倒序）。
 func (s *Store) RecentICAPeaks(limit int) ([]ICAPeakRow, error) {
-	return queryAll(s.db, `SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks ORDER BY session_end_ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (ICAPeakRow, error) {
-			var r ICAPeakRow
-			err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel)
-			return r, err
-		}, limit)
+	return queryAll(s.db, `SELECT `+icaPeakColumns+` FROM ica_peaks
+		ORDER BY session_end_ts DESC LIMIT ?`, scanICAPeak, limit)
 }
 
 // SessionsSince 返回 end_ts >= since 的全部充电会话（新→旧）。
 func (s *Store) SessionsSince(since int64) ([]Session, error) {
-	return queryAll(s.db, `SELECT start_ts,end_ts,start_cap,end_cap,ua,cc,avg_i,c_rate,
-		temp_avg,valid,invalid_reason FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC`,
-		scanSession, since)
+	return queryAll(s.db, `SELECT `+sessionColumns+` FROM sessions
+		WHERE end_ts >= ? ORDER BY end_ts DESC`, scanSession, since)
 }
 
 // DischargeSince 返回 end_ts >= since 的全部放电会话（新→旧）。
 func (s *Store) DischargeSince(since int64) ([]DischargeRow, error) {
-	return queryAll(s.db, `SELECT end_ts, secs, uah, start_cap, end_cap, implied, invalid_reason
-		FROM discharge WHERE end_ts >= ? ORDER BY end_ts DESC`, scanDischarge, since)
+	return queryAll(s.db, `SELECT `+dischargeColumns+` FROM discharge
+		WHERE end_ts >= ? ORDER BY end_ts DESC`, scanDischarge, since)
 }
 
 // RestPointsSince 返回 ts >= since 的最近 limit 条静置点（新→旧）。
 func (s *Store) RestPointsSince(since int64, limit int) ([]RestPoint, error) {
-	return queryAll(s.db, `SELECT ts, uv, cap FROM rest_points
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (RestPoint, error) {
-			var rp RestPoint
-			err := rows.Scan(&rp.TS, &rp.UV, &rp.Cap)
-			return rp, err
-		}, since, limit)
+	return queryAll(s.db, `SELECT `+restPointColumns+` FROM rest_points
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, scanRestPoint, since, limit)
 }
 
 // CCCTSince 返回 ts >= since 的最近 limit 条 CCCT 记录（新→旧）。
 func (s *Store) CCCTSince(since int64, limit int) ([]CcctRow, error) {
-	return queryAll(s.db, `SELECT ts, vw_lo, vw_hi, secs FROM ccct
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (CcctRow, error) {
-			var c CcctRow
-			err := rows.Scan(&c.TS, &c.VwLo, &c.VwHi, &c.Secs)
-			return c, err
-		}, since, limit)
+	return queryAll(s.db, `SELECT `+ccctColumns+` FROM ccct
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, scanCCCT, since, limit)
 }
 
 // ICAPeaksSince 返回 session_end_ts >= since 的最近 limit 条 ICA 主峰（新→旧）。
 func (s *Store) ICAPeaksSince(since int64, limit int) ([]ICAPeakRow, error) {
-	return queryAll(s.db, `SELECT session_end_ts, peak_uv, peak_h_rel FROM ica_peaks
-		WHERE session_end_ts >= ? ORDER BY session_end_ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (ICAPeakRow, error) {
-			var r ICAPeakRow
-			err := rows.Scan(&r.TS, &r.PeakUV, &r.PeakHRel)
-			return r, err
-		}, since, limit)
+	return queryAll(s.db, `SELECT `+icaPeakColumns+` FROM ica_peaks
+		WHERE session_end_ts >= ? ORDER BY session_end_ts DESC LIMIT ?`, scanICAPeak, since, limit)
 }
 
 // EstimatesSince 返回 ts >= since 的最近 limit 条容量估算（新→旧）。
 func (s *Store) EstimatesSince(since int64, limit int) ([]TsVal, error) {
-	return queryAll(s.db, `SELECT ts, mah FROM estimates
-		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
-		func(rows *sql.Rows) (TsVal, error) {
-			var tv TsVal
-			err := rows.Scan(&tv.TS, &tv.V)
-			return tv, err
-		}, since, limit)
+	return queryAll(s.db, `SELECT `+estimateColumns+` FROM estimates
+		WHERE ts >= ? ORDER BY ts DESC LIMIT ?`, scanTsVal, since, limit)
 }
 
 // CountSamplesSince 统计 ts >= since 的采样行数。
@@ -787,25 +855,28 @@ func (s *Store) CountSamplesSince(since int64) (int64, error) {
 
 // PruneBefore 删除各表早于 cutoffTs 的行，实现 90 天明细保留窗口。
 // daily（长期容量档案）不在清理范围内：它按天汇总且体量恒定，是 90 天以外
-// 容量的唯一来源。
+// 容量的唯一来源。九条 DELETE 放在同一事务里：中途失败不会留下只清了一部分
+// 表的半清理窗口。
 func (s *Store) PruneBefore(cutoffTs int64) error {
-	for _, table := range []struct {
-		name  string
-		tsCol string
-	}{
-		{"sessions", "end_ts"},
-		{"estimates", "ts"},
-		{"resistance", "ts"},
-		{"rest_points", "ts"},
-		{"events", "ts"},
-		{"samples", "ts"},
-		{"ccct", "ts"},
-		{"ica_peaks", "session_end_ts"},
-		{"discharge", "end_ts"},
-	} {
-		if _, err := s.db.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
-			return err
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, table := range []struct {
+			name  string
+			tsCol string
+		}{
+			{"sessions", "end_ts"},
+			{"estimates", "ts"},
+			{"resistance", "ts"},
+			{"rest_points", "ts"},
+			{"events", "ts"},
+			{"samples", "ts"},
+			{"ccct", "ts"},
+			{"ica_peaks", "session_end_ts"},
+			{"discharge", "end_ts"},
+		} {
+			if _, err := tx.Exec("DELETE FROM "+table.name+" WHERE "+table.tsCol+" < ?", cutoffTs); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
