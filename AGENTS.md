@@ -208,8 +208,8 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 构建注入 `main.channel` 选择 stable/ml Estimator。
 - 中段校准 `midwin`：充电样本按 1% 显示百分点分桶、按穿越次数归一，聚合 `[30%, 90%)`；每日至多一次按 1/10 权重并入 EMA。区间电量优先取 `samples.cc`（实为 counter 读数）差分；有 counter 的样本里缺 counter 的旧区间直接跳过，整批无 counter 才回退积分。隐含值必须过 `capacityInWindow`，最近采信值存 kv `mid_implied_ua`。
 - 放电通道 `discharge`：读 `charge_counter` 差分累计，转充电即结算；样本按 5 分钟降采样。门控：掉幅 ≥30 点、起始 ≤95%、过 `capacityInWindow`；按 1/10 权重并入 EMA，采信值存 `dis_implied_ua`。不经 `current_now`，是四路中最稳的一路。**status=Full 时充电器仍在，但旁路供电/高负载会让电池净放电**：用相邻两拍 charge_counter 差分判方向（连续 ≥2 拍可信下降且累计 ≥5mAh≈300mA·min 才开账，单拍回芯不算——真机满电充电期实测单拍 -8/-48mAh 而电流仍充电；单拍回升 ≥2mAh 或慢涓流连续 3 拍回升视为充电恢复并结算），不依赖 `current_now` 符号（部分内核充电报负）；起点 cap 通常是 100，隐含容量仍走原掉幅门控且被 `disCalMaxStart` 排除在标定外。
-- ML 估算器的 IQR 离群门必须能自愈：连续 `outlierEscape`(3) 次判离群说明基线已漂移到新工况（单位纠正/换电池/校准拖动 EMA），此时放行一次并重置 `ratio_hist`；只拒收不学习会让 hist 与 EMA 同时冻结，之后每次会话都同样离群（永久锁死，估算/校准/特征全停摆）。
-- ICA 主峰 `FindPeak` 对相邻样本间隔 >`icaMaxGapSecs`(300s) 的连接点不累计：`recordCCCT` 会把同一会话的多个恒流段拼成一片交给 ICA，段间非 CC 区间的 `UA×gap` 可达数百 mAh，足以伪造主峰并被写成 `ica_peak_base`。CCCT 定位窗的锚点必须落在窗内（首个 ≥WinLo 样本若已越过 WinHi，整窗在单拍内被跨过，判为未跨越、不采信）。
+- ML 估算器的 IQR 离群门必须能自愈：连续 `outlierEscape`(3) 次判离群说明基线已漂移到新工况（单位纠正/换电池/校准拖动 EMA），此时放行一次并把该比值**并入**历史——不能整段重置，否则正常波动会反复触发「重置→离群」振荡（真机回放接受量相差约 9%）。IQR 门另有 `ratioBandMin`(6%) 最小带宽：比值高度集中时 IQR 可收缩到 0，任何采样抖动都会被误判离群。只拒收不学习会让 hist 与 EMA 同时冻结（永久锁死，估算/校准/特征全停摆）。
+- ICA 主峰 `FindPeak` 对相邻样本间隔 >`icaMaxGapSecs`(300s) 的连接点不累计：`recordCCCT` 会把同一会话的多个恒流段拼成一片交给 ICA，段间非 CC 区间的 `UA×gap` 可达数百 mAh，足以伪造主峰并被写成 `ica_peak_base`。CCCT 定位窗的锚点必须落在窗内（首个 ≥WinLo 样本若已越过 WinHi，整窗在单拍内被跨过，判为未跨越、不采信）。旧口径的 `ica_peak_base` 是段间隙放大的量级（真机 260510000，新口径中位峰高约 1.65 亿、个别会话差近 10 倍），升级后第一次启动由 `migrateICAPeakBase` 删除并落 `ica_peak_base_schema=2` 标记，否则升级后所有 `peak_h_rel` 会系统性偏低、趋势图断崖；历史 `ica_peaks.rel` 不重写（无法逐会话反推），跨升级点存在一次重基准。
 - 趋势 `trend`：三态 `insufficient|stable|significant`，显著性用 Mann-Kendall 点对符号检验（双侧 5%）；R² 门控已废弃（单次估算噪声远大于真实周衰减）。
 
 ### sysfs 与单位
@@ -250,7 +250,7 @@ pnpm run format   # Prettier 写回 webui/、scripts/、vite.config.js；format:
 - 满电旁路放电有两条边界：单拍回芯/抖动不单独开账，必须连续 ≥2 拍可信下降且累计 ≥5mAh（持续轻载会在多拍后累计到阈值）；旁路期间显示电量一直 100% 时只累计使用量、结算时掉幅 <5 点不落行（没有容量掉幅可展示）。放电样本仍只在 `status=Discharging` 时落库，旁路段不进 samples。
 - 多 daemon 并发写库还会把 `charged_ua_total` 成倍累加：重复清理删除会话时会按被删行的 `ua` 扣回（累计值记 kv `dup_removed_uas`，事件保留、WebUI 不展示），循环当量不再带 daemon 倍数；但**不落会话的浮充吞吐**（满电直供时仍在计）无法可靠拆分，清理后可能仍略偏高，不影响容量估算。
 - 放电隐含容量以「显示掉幅」为分母，顶部区间被压缩、绝对值偏高，只作观测不进估算通道。
-- 长期容量档案（`daily`）取「当日最后一笔采信估算」，只做只读派生，不参与结算/校准/互检；升级后首次启动把仍在 90 天窗口内的 `estimates` 回填一次（kv `daily_backfill`），更早的历史在升级前已被清理、无法补回；回填失败只告警不阻断采样，下次启动重试。回填**不能因为 daily 已有行就跳过**（首次回填失败后 daemon 会先写出一条 daily，旧逻辑会直接落完成标记、让历史点永不进档案）：必须按 estimates 重新聚合覆盖写（`n` 取聚合点数、非累加），可安全重试。
+- 长期容量档案（`daily`）取「当日最后一笔采信估算」，只做只读派生，不参与结算/校准/互检；升级后首次启动把仍在 90 天窗口内的 `estimates` 回填一次（kv `daily_backfill`），更早的历史在升级前已被清理、无法补回；回填失败只告警不阻断采样，下次启动重试。回填**不能因为 daily 已有行就跳过**（首次回填失败后 daemon 会先写出一条 daily，旧逻辑会直接落完成标记、让历史点永不进档案）：必须按 estimates 重新聚合覆盖写（`n` 取聚合点数、非累加），可安全重试。升级前已误落完成标记的库由 daemon 启动时的 `RepairDailyBackfill` 治愈（独立 kv `daily_backfill_repair`，只跑一次；短命令的 json/history 不触发）：真机回放里旧实现缺 82/83 天档案、新实现 0 缺失。
 - 电流刻度自校准只在充电结算发生：学到新刻度会按新刻度重算该会话积分电量/平均电流/倍率（`sessions.ua`、`avg_i`、`c_rate`），并按比例回填该区间的 `samples.ua`、`resistance.mo` 与 `ica_peak_base`（事件 `cur_backfill`/`cur_backfill_fail`/`cur_backfill_skip`）；仅当旧有效刻度可确定（已学 >0，或 `anchorScaleUA(charge_full)`=1/1000）才回填。回填不覆盖 `charged_ua_total` 与历史行；无 counter 的机型缺标尺无法自校准；已发布库的坏基准无法自动识别。
 
 ## 安全注意事项
