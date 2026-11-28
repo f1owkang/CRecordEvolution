@@ -393,7 +393,8 @@ func TestBuildDescriptionMagiskSingleLine(t *testing.T) {
 }
 
 // TestDescManagerKindDetection 验证目录探测顺序：KernelSU/APatch 优先于残留的
-// Magisk 目录，全部缺失时退化为 unknown（走单行兜底）。
+// Magisk 目录，全部缺失时退化为 unknown（走单行兜底）。APatch 的规范工作目录是
+// /data/adb/ap，历史误写的 /data/adb/apatch 作为兼容回退，两条路径都要能识别。
 func TestDescManagerKindDetection(t *testing.T) {
 	oldRoots := managerRoots
 	oldKind := managerKindForDesc
@@ -402,9 +403,10 @@ func TestDescManagerKindDetection(t *testing.T) {
 
 	root := t.TempDir()
 	ksu := filepath.Join(root, "ksu")
-	apatch := filepath.Join(root, "apatch")
+	ap := filepath.Join(root, "ap")
+	apatchLegacy := filepath.Join(root, "apatch")
 	magisk := filepath.Join(root, "magisk")
-	for _, d := range []string{ksu, apatch, magisk} {
+	for _, d := range []string{ksu, ap, apatchLegacy, magisk} {
 		if err := os.Mkdir(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -414,7 +416,8 @@ func TestDescManagerKindDetection(t *testing.T) {
 		path string
 	}{
 		{managerKernelSU, ksu},
-		{managerAPatch, apatch},
+		{managerAPatch, ap},
+		{managerAPatch, apatchLegacy},
 		{managerMagisk, magisk},
 	}
 	if got := descManagerKind(); got != managerKernelSU {
@@ -426,7 +429,14 @@ func TestDescManagerKindDetection(t *testing.T) {
 	if got := descManagerKind(); got != managerAPatch {
 		t.Fatalf("没有 ksu 时应识别 APatch, got %q", got)
 	}
-	if err := os.Remove(apatch); err != nil {
+	// 只保留历史误写目录 /data/adb/apatch 时仍应识别为 APatch（兼容回退）。
+	if err := os.Remove(ap); err != nil {
+		t.Fatal(err)
+	}
+	if got := descManagerKind(); got != managerAPatch {
+		t.Fatalf("只有 /data/adb/apatch 时应回退识别 APatch, got %q", got)
+	}
+	if err := os.Remove(apatchLegacy); err != nil {
 		t.Fatal(err)
 	}
 	if got := descManagerKind(); got != managerMagisk {

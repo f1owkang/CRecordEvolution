@@ -70,40 +70,17 @@ type Snapshot struct {
 // WriteModuleProp 的 sanitizeDescription 清洗掉。
 const descLineBreakEscaped = `\n`
 
-// 管理器类型：按数据目录探测，测试可用 managerKindForDesc 覆盖。
-const (
-	managerKernelSU = "kernelsu"
-	managerAPatch   = "apatch"
-	managerMagisk   = "magisk"
-	managerUnknown  = "unknown"
-)
-
 // managerKindForDesc 非空时强制管理器类型（测试/调试用）。
 var managerKindForDesc string
 
-// managerRoots 是各 root 管理器的数据目录；KernelSU/APatch 排在前面，避免
-// 残留的 /data/adb/magisk 与原管理器共存时误判。
-var managerRoots = []struct {
-	kind string
-	path string
-}{
-	{managerKernelSU, "/data/adb/ksu"},
-	{managerAPatch, "/data/adb/apatch"},
-	{managerMagisk, "/data/adb/magisk"},
-}
-
 // descManagerKind 返回当前 root 管理器类型；未知时按「不能还原转义」处理，
-// 走单行兜底，避免把字面量 \n 显示给用户。
+// 走单行兜底，避免把字面量 \n 显示给用户。目录判定与 diag 共用 manager.go，
+// 避免两处路径表各写一份导致 APatch 这类目录名漂移。
 func descManagerKind() string {
 	if managerKindForDesc != "" {
 		return managerKindForDesc
 	}
-	for _, m := range managerRoots {
-		if fi, err := os.Stat(m.path); err == nil && fi.IsDir() {
-			return m.kind
-		}
-	}
-	return managerUnknown
+	return detectManagerKind()
 }
 
 // descTypography 返回管理器描述正文的字号与字距（Compose Material3 默认）：
@@ -612,9 +589,5 @@ func WriteModuleProp(propPath, newDescription string) error {
 			lines = append(lines, "description="+newDescription)
 		}
 	}
-	tmp := propPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, propPath)
+	return atomicWriteFile(propPath, []byte(strings.Join(lines, "\n")), 0o644)
 }

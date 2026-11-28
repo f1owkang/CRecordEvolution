@@ -27,18 +27,13 @@ func parseDesignMah(text string) (int64, error) {
 	return mah, nil
 }
 
-// writeDesignOverride 原子写覆盖文件（临时文件 + rename），内容为「数字 + LF」。
+// writeDesignOverride 原子写覆盖文件（唯一临时文件 + rename），内容为「数字 + LF」。
 func writeDesignOverride(dataDir string, mah int64) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fmt.Errorf("创建设计容量目录失败：%w", err)
 	}
 	path := filepath.Join(dataDir, designOverrideFile)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(mah, 10)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("写设计容量临时文件失败：%w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := atomicWriteFile(path, []byte(strconv.FormatInt(mah, 10)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("替换设计容量文件失败：%w", err)
 	}
 	return nil
@@ -75,7 +70,7 @@ func runDesign(args []string) error {
 		if err := writeDesignOverride(dataDir, mah); err != nil {
 			return err
 		}
-		fmt.Printf("已设置设计容量 %d mAh（运行 once 或重启后生效）\n", mah)
+		fmt.Printf("已设置设计容量 %d mAh（once 立即刷新描述；采样进程在下次状态变化/周期刷新时采用新值）\n", mah)
 		return nil
 	case "clear":
 		if len(args) != 1 {

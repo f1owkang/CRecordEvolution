@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -93,7 +94,7 @@ func (a *app) diagInput() diagInput {
 	in := diagInput{
 		Version:      a.version,
 		Channel:      channel,
-		Root:         detectRootManager(),
+		Root:         managerDisplayName(detectManagerKind()),
 		Manufacturer: diagGetprop("ro.product.manufacturer"),
 		Model:        diagGetprop("ro.product.model"),
 		Device:       diagGetprop("ro.product.device"),
@@ -171,20 +172,6 @@ func (a *app) diagReadText(name string) string {
 		return ""
 	}
 	return diagClean(string(data), diagFieldMax)
-}
-
-// detectRootManager 只按管理器固定数据目录判定，不执行任何可能涉及个人数据的命令。
-func detectRootManager() string {
-	for _, c := range []struct{ path, name string }{
-		{"/data/adb/ksu", "KernelSU"},
-		{"/data/adb/ap", "APatch"},
-		{"/data/adb/magisk", "Magisk"},
-	} {
-		if fi, err := os.Stat(c.path); err == nil && fi.IsDir() {
-			return c.name
-		}
-	}
-	return "unknown"
 }
 
 // diagAllowedProps 是诊断允许读取的设备属性白名单。只列非唯一标识；序列号 /
@@ -373,12 +360,17 @@ func renderDiag(in diagInput) string {
 			diagAge(in.Now, in.LastEvent.TS), in.LastEvent.Kind, orDash(in.LastEvent.Detail))
 	}
 
+	// 预算按 rune 计（与 limitDiag 同口径）：中文一行 3 字节/字，用 len(字节)
+	// 估预算会把 1800 rune 的空间提前耗光，日志尾部一行都带不上。
+	used := utf8.RuneCountInString(b.String())
 	for _, tail := range in.LogTail {
 		entry := "log=" + tail + "\n"
-		if b.Len()+len(entry) > diagMaxChars {
+		n := utf8.RuneCountInString(entry)
+		if used+n > diagMaxChars {
 			break
 		}
 		b.WriteString(entry)
+		used += n
 	}
 	return limitDiag(b.String())
 }
