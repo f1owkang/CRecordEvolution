@@ -244,7 +244,7 @@ func newApp() (*app, error) {
 	if vNode, err := fs.FindNode("voltage_now"); err == nil {
 		if v, verr := fs.ReadInt(vNode); verr == nil && v > 5_000_000 {
 			cellCount = 2
-			_ = st.InsertEvent("dual_cell", fmt.Sprintf("检测到双电芯，voltage_now=%dµV", v))
+			logCellCountOnce(st, cellCount, v)
 		}
 	}
 	// 按电芯数缩放所有电压阈值（CCCT 窗口、ICA 搜索域）
@@ -269,8 +269,25 @@ func newApp() (*app, error) {
 	}, nil
 }
 
+// kvCellCountLog 记录上次落 dual_cell 事件时的电芯数：newApp 在每次 json/
+// history/diag/once 都会执行，双电芯机型的 voltage_now 恒 >5V，无条件写事件会让
+// events 表随 WebUI 轮询线性膨胀（读命令退化成写命令、与 daemon 争 SQLite 写锁）。
+const kvCellCountLog = "cell_count_log"
+
+// logCellCountOnce 只在电芯数相对上次记录变化时落事件。
+func logCellCountOnce(st *Store, cellCount int, vUV int64) {
+	want := strconv.Itoa(cellCount)
+	if cur, ok := st.KVGet(kvCellCountLog); ok && cur == want {
+		return
+	}
+	if err := st.KVSet(kvCellCountLog, want); err != nil {
+		return
+	}
+	_ = st.InsertEvent("dual_cell", fmt.Sprintf("检测到 %d 电芯，voltage_now=%dµV", cellCount, vUV))
+}
+
 // redetectCellCount 周期性重检电芯数：启动时可能因电池深度放电导致误判。
-// 检测到变化时重新初始化 CCCT/ICA 电压阈值。同时刷新 fullUAh。
+// 检测到变化时重新初始化 CCCT/ICA 电压阈值并同步 Pipeline 持有的估算器。
 func (a *app) redetectCellCount(p *Pipeline) {
 	// 刷新 charge_full（满充后会更新）
 	if full, err := a.readIntNode("charge_full"); err == nil {
@@ -291,13 +308,41 @@ func (a *app) redetectCellCount(p *Pipeline) {
 	p.SetCellCount(want)
 	initCCCTVoltage(want)
 	initICAVoltage(want)
-	// 重新初始化 ML 估算器（cellCount 影响 VStart 归一化）
+	// 重新初始化 ML 估算器（cellCount 影响 VStart 归一化），并同步给正在采样的
+	// Pipeline——接口值是启动时复制进去的，不覆盖会让结算一直用旧电芯数。
 	if old, ok := a.est.(*Learning); ok {
 		old.ResetModel()
 		a.est = NewLearning(a.st, want)
+		p.SetEstimator(a.est)
 	}
 	_ = a.st.InsertEvent("dual_cell_change", fmt.Sprintf("cellCount→%d voltage_now=%dµV", want, v))
 	a.appendLog("[电芯] cellCount 重检→%d (voltage_now=%d)", want, v)
+}
+
+// reloadDesign 在运行中重新裁决设计容量：data/design_mah 手动覆盖、sysfs 节点与
+// 设备树缓存都可能在进程启动后变化（design set 子命令、启动瞬间节点未就绪、
+// OTA 改设备树）。启动时只裁决一次的话，designUAh=0 会让 capacityInWindow 的
+// 窗口门控一直放行，design set 也会与 once 的临时描述来回跳。只在状态翻转/
+// 周期刷新时调用（几次小文件/kv 读）；结果变化由 logDesignChoice 去重后落事件。
+func (a *app) reloadDesign(p *Pipeline) {
+	sysfsDesignUAh := int64(0)
+	if node, err := a.fs.FindNode("charge_full_design"); err == nil {
+		if v, rerr := a.fs.ReadInt(node); rerr == nil {
+			sysfsDesignUAh = v
+		}
+	}
+	anchor := int64(0)
+	if v, ok := readRawNodeValue(a.fs, "charge_full"); ok {
+		anchor = v
+	}
+	if anchor <= 0 {
+		anchor = kvInt(a.st, kvKeyEmaUAh)
+	}
+	design := resolveDesignCapacity(a.st, filepath.Join(a.moddir, "data"), sysfsDesignUAh, anchor, time.Now().Unix())
+	a.designUAh = design.UAh
+	a.designInfo = design
+	p.SetDesignUAh(design.UAh)
+	logDesignChoice(a.st, design)
 }
 
 // readRawNodeValue 读节点原始整数；节点缺失或内容非法时返回 ok=false。
@@ -732,18 +777,29 @@ func runDaemon() error {
 			}
 		}
 
-		if _, err := p.Tick(status); err != nil {
+		// 状态翻转/周期到点先把电芯数、charge_full 与设计容量重检同步给 Pipeline，
+		// 再跑本拍：否则翻转这一拍仍用启动时的电芯数判满电门控、用旧设计容量
+		// 判容量窗口。
+		changed := status != lastStatus
+		periodic := count+1 >= refreshEveryTicks
+		if changed || periodic {
+			a.redetectCellCount(p)
+			a.reloadDesign(p)
+		}
+
+		outcome, err := p.Tick(status)
+		if err != nil {
 			failStreak = a.reportTickFailure(failStreak,
 				fmt.Sprintf("Tick(status=%s) 失败：%v", status, err), err)
 			continue
 		}
 		failStreak = 0
-
-		changed := status != lastStatus
 		lastStatus = status
 		count++
-		if changed || count >= refreshEveryTicks {
-			a.redetectCellCount(p)
+		// 结算发生在状态翻转后的去抖拍（Tick 用 SessionSettled 标记），那一拍
+		// status 早已稳定；不在这里补一次刷新，模块描述里的「实测」会落后一整个
+		// 充放电周期（要等下次插拔或 refreshEveryTicks 拍）。
+		if changed || count >= refreshEveryTicks || outcome.SessionSettled {
 			if err := a.refreshPruned(); err != nil {
 				a.reportFailure("refresh_fail", "刷新描述失败："+err.Error(), err.Error())
 			}
@@ -951,42 +1007,27 @@ func runJson() error {
 	if err != nil {
 		return err
 	}
-	sess := make([]sessionEntry, 0, len(sessRows))
-	for _, se := range sessRows {
-		sess = append(sess, convSession(se))
-	}
 	restRows, err := a.st.RecentRestPoints(jsonRecentLimit)
 	if err != nil {
 		return err
-	}
-	rests := make([]restEntry, 0, len(restRows))
-	for _, rp := range restRows {
-		rests = append(rests, restEntry{TS: rp.TS, UV: rp.UV, Cap: rp.Cap})
 	}
 	ccctRows, err := a.st.RecentCCCT(jsonRecentLimit)
 	if err != nil {
 		return err
 	}
-	ccct := make([]ccctEntry, 0, len(ccctRows))
-	for _, c := range ccctRows {
-		ccct = append(ccct, ccctEntry{TS: c.TS, Secs: c.Secs, VwLo: c.VwLo, VwHi: c.VwHi})
-	}
 	icaRows, err := a.st.RecentICAPeaks(jsonRecentLimit)
 	if err != nil {
 		return err
-	}
-	icaPeaks := make([]icaEntry, 0, len(icaRows))
-	for _, ip := range icaRows {
-		icaPeaks = append(icaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: finitePtr(&ip.PeakHRel)})
 	}
 	disRows, err := a.st.RecentDischarge(jsonRecentLimit)
 	if err != nil {
 		return err
 	}
-	disch := make([]dischargeEntry, 0, len(disRows))
-	for _, dr := range disRows {
-		disch = append(disch, convDischarge(dr))
-	}
+	sess := convSessions(sessRows)
+	rests := convRestPoints(restRows)
+	ccct := convCCCT(ccctRows)
+	icaPeaks := convICAPeaks(icaRows)
+	disch := convDischarges(disRows)
 	n, err := a.st.CountSamples()
 	if err != nil {
 		return err
