@@ -108,3 +108,52 @@ describe('toTimelineRow 记录行', () => {
     expect(toTimelineRow({ kind: 'rest' }, t, 'zh')).toBeNull();
   });
 });
+
+describe('toTimelineRow 放电时长缺失/非法', () => {
+  function dischargeRow(secs) {
+    return toTimelineRow(
+      {
+        kind: 'discharge',
+        discharge: { ts: 1000, secs: secs, uah_mah: 2100, start_cap: 80, end_cap: 58 },
+      },
+      t,
+      'zh'
+    );
+  }
+
+  function hasDuration(row) {
+    const labels = row.detail.map(function (pair) {
+      return pair[0];
+    });
+    return labels.indexOf('时长') >= 0;
+  }
+
+  it('secs 缺失时不渲染 NaN min，副指标与详情一致省略时长', () => {
+    [undefined, null, 0, -5, 'x', NaN, Infinity].forEach(function (secs) {
+      const row = dischargeRow(secs);
+      expect(row).not.toBeNull();
+      expect(row.sub).toEqual(['80→58%']);
+      expect(hasDuration(row)).toBe(false);
+      expect(JSON.stringify(row)).not.toContain('NaN');
+      expect(JSON.stringify(row)).not.toContain('min');
+    });
+  });
+
+  it('有效 secs 时副指标与详情共用同一判定（分钟走 i18n）', () => {
+    const row = dischargeRow(5400);
+    expect(row.sub).toEqual(['80→58%', '历时 90 分钟']);
+    const detailMap = {};
+    row.detail.forEach(function (pair) {
+      detailMap[pair[0]] = pair[1];
+    });
+    expect(detailMap['时长']).toBe('历时 90 分钟');
+    // 中文字典里时长文案是「分钟」，不再有硬编码 ' min'。
+    expect(JSON.stringify(row)).not.toContain(' min');
+  });
+
+  it('不足一分钟的秒数按 0 分钟处理（不显示 0 分钟）', () => {
+    const row = dischargeRow(20);
+    expect(row.sub).toEqual(['80→58%']);
+    expect(hasDuration(row)).toBe(false);
+  });
+});

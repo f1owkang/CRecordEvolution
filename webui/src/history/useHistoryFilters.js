@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks';
 import { HIST_DAYS_KEY, HIST_MODE_KEY, storedHistDays, storedHistMode } from '../core.js';
+import { writePref } from '../prefs.js';
 
 const HIST_MODES = ['records', 'trends'];
 const HIST_FILTERS = ['all', 'charge', 'discharge'];
@@ -14,9 +15,7 @@ function useHistoryFilters() {
   function changeMode(next) {
     if (!HIST_MODES.includes(next) || next === mode) return;
     setMode(next);
-    try {
-      localStorage.setItem(HIST_MODE_KEY, next);
-    } catch (e) {}
+    writePref(HIST_MODE_KEY, next);
   }
 
   function changeFilter(next) {
@@ -27,9 +26,7 @@ function useHistoryFilters() {
   function changeDays(next) {
     if (!HIST_DAY_RANGES.includes(next) || next === days) return;
     setDays(next);
-    try {
-      localStorage.setItem(HIST_DAYS_KEY, String(next));
-    } catch (e) {}
+    writePref(HIST_DAYS_KEY, String(next));
   }
 
   return { mode, filter, days, changeMode, changeFilter, changeDays };

@@ -21,11 +21,13 @@ function groupEventsByDay(events) {
 
 // 记录视图：按日期分组的时间轴 + 底部「加载更早 / 重试 / 已全部加载」。
 // error 只在已有数据（分页失败）时由调用方传入：底部给一行错误 + 重试，
-// 首屏失败仍走 History 顶部的空态错误样式。
+// 首屏与整页重载失败由 HistoryBody 顶部的错误行承担。
+// busy 为整页重载在途/上一轮重载失败：禁用「加载更早」与重试，避免点出并行请求。
 function TimelineList({
   events,
   hasMore,
   loadingMore,
+  busy,
   error,
   openKey,
   onToggleEvent,
@@ -61,13 +63,23 @@ function TimelineList({
       <div class="hist-foot">
         {error ? (
           <div class="hist-more-err" role="alert">
-            <div class="t">{t('err_run', { detail: error.detail })}</div>
-            <button type="button" class="load-more" onClick={onRetry}>
+            <div class="t">{t(error.key, error.vars)}</div>
+            <button
+              type="button"
+              class="load-more"
+              disabled={loadingMore || busy}
+              onClick={onRetry}
+            >
               {t('hist_retry')}
             </button>
           </div>
         ) : hasMore ? (
-          <button type="button" class="load-more" disabled={loadingMore} onClick={onLoadMore}>
+          <button
+            type="button"
+            class="load-more"
+            disabled={loadingMore || busy}
+            onClick={onLoadMore}
+          >
             {loadingMore ? t('loading') : t('hist_load_more')}
           </button>
         ) : (

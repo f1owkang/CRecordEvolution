@@ -6,19 +6,28 @@ import { HistoryControls } from './HistoryControls.jsx';
 import { HistorySummary } from './HistorySummary.jsx';
 import { TimelineList } from './TimelineList.jsx';
 import { TrendsView } from './trends.jsx';
+import { historyErrorView, historyListBusy } from './historyView.js';
+
+// 历史页错误行：文案沿用统一错误模型 t(err.key, err.vars)（与 ErrorBanner 同源），
+// 样式复用历史页已有的错误空态；首屏失败与「已有数据但重载失败」共用同一组件。
+// 重试按钮在重载在途时禁用，避免重复发起整页请求。
+function HistoryErrorRow(props) {
+  const { t, err, disabled, onRetry } = props;
+  return (
+    <div class="hist-empty" role="alert">
+      <div class="t">{t(err.key, err.vars)}</div>
+      <button type="button" class="load-more" disabled={disabled} onClick={onRetry}>
+        {t('hist_retry')}
+      </button>
+    </div>
+  );
+}
 
 // 历史页内容：错误 / 骨架屏 / 记录视图 / 趋势视图四选一，History 只负责编排与状态。
 function HistoryBody(props) {
   const { t, data, events, trends, loading, loadingMore, err, mode, filter } = props;
-  if (err && !data) {
-    return (
-      <div class="hist-empty">
-        <div class="t">{t('err_run', { detail: err.detail })}</div>
-        <button type="button" class="load-more" onClick={() => props.load(true)}>
-          {t('hist_retry')}
-        </button>
-      </div>
-    );
+  if (!data && err) {
+    return <HistoryErrorRow t={t} err={err} disabled={loading} onRetry={() => props.load(true)} />;
   }
   if (!data && loading) {
     return (
@@ -30,34 +39,55 @@ function HistoryBody(props) {
       </div>
     );
   }
+  // 已有数据时错误行固定渲染在顶部：趋势视图与空列表下重载失败不再静默。
+  // 「加载更早」失败同时保留列表底部的就近错误行（历史行为）。
+  const flags = historyErrorView(err, data);
+  const errorRow = flags.topError ? (
+    <HistoryErrorRow
+      t={t}
+      err={err}
+      disabled={loading}
+      onRetry={() => props.load(flags.retryReset)}
+    />
+  ) : null;
   if (mode === 'trends') {
     return (
-      <TrendsView trends={trends} openTile={props.openTile} onToggleTile={props.onToggleTile} />
+      <div>
+        {errorRow}
+        <TrendsView trends={trends} openTile={props.openTile} onToggleTile={props.onToggleTile} />
+      </div>
     );
   }
   if (!events.length) {
     return (
-      <div class="hist-empty">
-        <div class="t">{filter === 'all' ? t('hist_empty_records') : t('hist_empty_filter')}</div>
-        {filter !== 'all' ? (
-          <button type="button" class="load-more" onClick={() => props.onFilter('all')}>
-            {t('hist_filter_all')}
-          </button>
-        ) : null}
+      <div>
+        {errorRow}
+        <div class="hist-empty">
+          <div class="t">{filter === 'all' ? t('hist_empty_records') : t('hist_empty_filter')}</div>
+          {filter !== 'all' ? (
+            <button type="button" class="load-more" onClick={() => props.onFilter('all')}>
+              {t('hist_filter_all')}
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   }
   return (
-    <TimelineList
-      events={events}
-      hasMore={data && data.has_more}
-      loadingMore={loadingMore}
-      error={err}
-      openKey={props.openKey}
-      onToggleEvent={props.onToggleEvent}
-      onLoadMore={() => props.load(false)}
-      onRetry={() => props.load(err && err.reset ? true : false)}
-    />
+    <div>
+      {errorRow}
+      <TimelineList
+        events={events}
+        hasMore={data && data.has_more}
+        loadingMore={loadingMore}
+        busy={historyListBusy(loading, err)}
+        error={flags.pagingError}
+        openKey={props.openKey}
+        onToggleEvent={props.onToggleEvent}
+        onLoadMore={() => props.load(false)}
+        onRetry={() => props.load(!!(flags.pagingError && flags.pagingError.reset))}
+      />
+    </div>
   );
 }
 

@@ -90,12 +90,15 @@ function toTimelineRow(event, t, lang) {
     }
     if (discharge.start_cap != null && discharge.end_cap != null)
       sub.push(fmtInt(discharge.start_cap) + '→' + fmtInt(discharge.end_cap) + '%');
-    const dischargeMinutes = Math.round(Number(discharge.secs) / 60);
-    if (isFinite(dischargeMinutes)) sub.push(t('hist_duration', { n: dischargeMinutes }));
+    // 时长：secs 缺失/非数字/非正时不渲染（Number(null)=0 也不能造出 "0/NaN 分钟"）；
+    // 副指标与详情共用同一个 minutes 判定，避免一边省略一边显示 "NaN min"。
+    const seconds = Number(discharge.secs);
+    const minutes = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds / 60) : 0;
+    if (minutes > 0) sub.push(t('hist_duration', { n: minutes }));
     if (discharge.implied_mah != null)
       sub.push(t('hist_implied', { n: fmtInt(discharge.implied_mah) }));
     addDetail(t('hist_detail_time'), fmtTs(lang, discharge.ts));
-    addDetail(t('hist_detail_duration'), dischargeMinutes + ' min');
+    if (minutes > 0) addDetail(t('hist_detail_duration'), t('hist_duration', { n: minutes }));
     if (discharge.start_cap != null && discharge.end_cap != null)
       addDetail(
         t('hist_detail_soc'),
