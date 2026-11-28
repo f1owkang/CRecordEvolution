@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -74,10 +75,23 @@ var procRoot = "/proc"
 // 普通用户没有创建符号链接的权限）。
 var readProcExeLink = os.Readlink
 
+// isDaemonCmdline 判断 /proc/<pid>/cmdline 对应的进程是否是守护进程：argv[0] 之后
+// 缺省（旧版 service.sh 直接 exec 无参数）或为 "daemon" 才算。json/once/diag/
+// history/design 是同一二进制的子命令，comm 与 exe 都与 daemon 相同；启动瞬间
+// 如果 WebUI 正在轮询，把读命令当成旧 daemon 杀掉会让该次取数失败/超时。
+func isDaemonCmdline(raw []byte) bool {
+	args := bytes.Split(bytes.TrimRight(raw, "\x00"), []byte{0})
+	if len(args) <= 1 {
+		return true
+	}
+	return string(args[1]) == "daemon"
+}
+
 // findOtherDaemonPids 在 procRoot 下找出「除 self 外、同名可执行文件」的 batteryd
-// 进程：先按 comm 粗筛（避免对每个进程都读 exe 链接），再核对 /proc/<pid>/exe
-// 是否指向本模块的 bin/batteryd。旧版本升级后二进制被替换，exe 链接可能带
-// " (deleted)" 后缀，比较前去掉。读不到的进程直接跳过（进程可能刚退出）。
+// 守护进程：先按 comm 粗筛（避免对每个进程都读 exe 链接），再核对
+// /proc/<pid>/exe 是否指向本模块的 bin/batteryd，最后按 cmdline 排除同二进制
+// 子命令。旧版本升级后二进制被替换，exe 链接可能带 " (deleted)" 后缀，比较前
+// 去掉。读不到的进程直接跳过（进程可能刚退出）。
 func findOtherDaemonPids(procRoot, exePath string, self int) []int {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -105,6 +119,10 @@ func findOtherDaemonPids(procRoot, exePath string, self int) []int {
 		}
 		target = strings.TrimSuffix(target, " (deleted)")
 		if filepath.Clean(target) != want {
+			continue
+		}
+		cmdline, mErr := os.ReadFile(filepath.Join(dir, "cmdline"))
+		if mErr != nil || !isDaemonCmdline(cmdline) {
 			continue
 		}
 		pids = append(pids, pid)
