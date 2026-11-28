@@ -2,8 +2,9 @@
 DIR=${0%/*}
 
 # Action 提示文案语言：优先模块语言偏好 data/lang（安装时选择 / WebUI 切换写入），
-# 没有偏好时回退系统语言探测（与 batteryd 同口径）；探测不到按中文处理。
-T=zh
+# 没有偏好时回退系统语言探测（与 batteryd 同口径）；探测不到按英文处理
+# （与 i18n.go / 安装器 / boot.js 的兜底一致）。
+T=en
 pref=`cat "$DIR/data/lang" 2>/dev/null`
 case "$pref" in
 zh*) T=zh ;;
@@ -21,6 +22,16 @@ en*) T=en ;;
 			break
 		fi
 	done
+	# 部分 ROM 的 property 服务不可用时读属性文件（与 i18n.go 一致）。
+	if [ -z "$v" ]; then
+		v=`cat /data/property/persist.sys.locale 2>/dev/null | tr -d '\r\n'`
+		if [ -n "$v" ]; then
+			case "$v" in
+			zh*) T=zh ;;
+			*) T=en ;;
+			esac
+		fi
+	fi
 	;;
 esac
 

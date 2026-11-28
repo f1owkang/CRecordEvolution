@@ -52,6 +52,15 @@ oldmod="/data/adb/modules/$modid"
 oldprop="$oldmod/module.prop"
 oldlang=`cat "$oldmod/data/lang" 2>/dev/null | tr -d '\r\n'`
 
+# 恢复模式（原位安装）：Magisk/KernelSU 的 installer 在 source customize.sh 之前
+# 先 rm -rf 安装目录再解压，此时 $oldmod == $MODPATH、$oldprop 已是本次包，
+# 旧版本/通道与旧 data/ 全都读不到。降级/跨通道判定与数据保留在这种模式下
+# 不成立，必须明确告知，不能假装已经检查过。
+inplace=0
+if [ "$oldmod" = "$MODPATH" ]; then
+	inplace=1
+fi
+
 # 文案语言：升级沿用旧 data/lang，否则跟随系统（顺序与 i18n.go 一致），
 # 探测不到时回退英文（与 i18n.go / boot.js 的兜底一致）。
 T=en
@@ -180,11 +189,43 @@ fi
 
 say "$(L "正在写入模块…" "Installing module...")"
 
+if [ "$inplace" = 1 ]; then
+	say "$(L "恢复模式安装：无法判断降级/跨通道，旧数据不会保留" "In-place install: cannot detect downgrade/channel; previous data will not be kept")"
+fi
+
 # 保留旧学习数据；失败不阻断安装，也不谎报“已保留”。
+# 旧 daemon 仍在跑并写 WAL 库：先按锁文件里的 pid 尽力优雅结束（必须确认是
+# 本模块 batteryd），避免 cp 到「主库 + 半截 WAL」的撕裂状态；复制先落到
+# 临时目录、成功后再整体替换，失败清理，绝不让半份 data 变成正式库。
 kept=0
-if [ "$oldmod" != "$MODPATH" ] && [ -d "$oldmod/data" ]; then
-	mkdir -p "$MODPATH/data"
-	cp -a "$oldmod/data/." "$MODPATH/data/" 2>/dev/null && kept=1
+if [ "$inplace" = 0 ] && [ -d "$oldmod/data" ]; then
+	oldpid=`cat "$oldmod/data/batteryd.lock" 2>/dev/null | tr -d '\r\n'`
+	case "$oldpid" in
+	''|*[!0-9]*) ;;
+	*)
+		if [ -r "/proc/$oldpid/cmdline" ] && grep -q 'batteryd' "/proc/$oldpid/cmdline" 2>/dev/null; then
+			kill -TERM "$oldpid" 2>/dev/null
+			sleep 1
+		fi
+		;;
+	esac
+	tmpdata="$MODPATH/data.new.$$"
+	if mkdir -p "$tmpdata" 2>/dev/null && cp -a "$oldmod/data/." "$tmpdata/" 2>/dev/null; then
+		# -shm 是进程共享内存文件，按新库重建即可；-wal 必须保留（含已提交数据）。
+		rm -f "$tmpdata"/*-shm 2>/dev/null
+		if mv "$tmpdata" "$MODPATH/data" 2>/dev/null; then
+			kept=1
+		else
+			rm -rf "$MODPATH/data" 2>/dev/null
+			if mv "$tmpdata" "$MODPATH/data" 2>/dev/null; then
+				kept=1
+			else
+				rm -rf "$tmpdata" 2>/dev/null
+			fi
+		fi
+	else
+		rm -rf "$tmpdata" 2>/dev/null
+	fi
 fi
 
 # 只给二进制设权限；不要给 webroot 加 chmod/set_perm。
