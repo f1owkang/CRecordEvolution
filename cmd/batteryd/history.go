@@ -217,7 +217,7 @@ func buildHistoryDoc(st *Store, opt historyOptions, now time.Time) (*historyDoc,
 	}
 	page, hasMore, nextBefore := paginateHistory(filtered, opt.Before, opt.Limit)
 
-	trends, err := loadHistoryTrends(st, since)
+	trends, err := loadHistoryTrends(st, since, sessRows, disRows)
 	if err != nil {
 		return nil, err
 	}
@@ -261,88 +261,66 @@ func paginateHistory(events []historyEvent, before int64, limit int) ([]historyE
 	return events[start:end], hasMore, next
 }
 
-// loadHistoryTrends 读取各类趋势点并统一为时间升序。
-func loadHistoryTrends(st *Store, since int64) (historyTrends, error) {
-	tr := historyTrends{
-		Sessions:   []sessionEntry{},
-		Discharge:  []dischargeEntry{},
-		RestPoints: []restEntry{},
-		Ccct:       []ccctEntry{},
-		IcaPeaks:   []icaEntry{},
-		Estimates:  []recentEntry{},
-		Archive:    []archiveEntry{},
-	}
+// loadHistoryTrends 读取各类趋势点并统一为时间升序。充电/放电行由
+// buildHistoryDoc 传入（其摘要与分页已查过同一份范围内全量行）：趋势只取
+// 新→旧的前 historyTrendLimit 条，避免同一范围对 sessions/discharge 各扫两遍库。
+func loadHistoryTrends(st *Store, since int64, sessRows []Session, disRows []DischargeRow) (historyTrends, error) {
+	tr := historyTrends{}
 
-	sessRows, err := st.SessionsSince(since)
-	if err != nil {
-		return tr, err
+	// 查询结果为新→旧；先截近端上限，再转 JSON 条目并反转为旧→新（图表方向）。
+	if len(sessRows) > historyTrendLimit {
+		sessRows = sessRows[:historyTrendLimit]
 	}
-	for i, se := range sessRows {
-		if i >= historyTrendLimit {
-			break
-		}
-		tr.Sessions = append(tr.Sessions, convSession(se))
-	}
+	tr.Sessions = convSessions(sessRows)
 	reverseInPlace(tr.Sessions)
-
-	disRows, err := st.DischargeSince(since)
-	if err != nil {
-		return tr, err
+	if len(disRows) > historyTrendLimit {
+		disRows = disRows[:historyTrendLimit]
 	}
-	for i, dr := range disRows {
-		if i >= historyTrendLimit {
-			break
-		}
-		tr.Discharge = append(tr.Discharge, convDischarge(dr))
-	}
+	tr.Discharge = convDischarges(disRows)
 	reverseInPlace(tr.Discharge)
 
 	restRows, err := st.RestPointsSince(since, historyTrendLimit)
 	if err != nil {
 		return tr, err
 	}
-	reverseInPlace(restRows)
-	for _, rp := range restRows {
-		tr.RestPoints = append(tr.RestPoints, restEntry{TS: rp.TS, UV: rp.UV, Cap: rp.Cap})
-	}
+	tr.RestPoints = convRestPoints(restRows)
+	reverseInPlace(tr.RestPoints)
 
 	ccctRows, err := st.CCCTSince(since, historyTrendLimit)
 	if err != nil {
 		return tr, err
 	}
-	reverseInPlace(ccctRows)
-	for _, c := range ccctRows {
-		tr.Ccct = append(tr.Ccct, ccctEntry{TS: c.TS, Secs: c.Secs, VwLo: c.VwLo, VwHi: c.VwHi})
-	}
+	tr.Ccct = convCCCT(ccctRows)
+	reverseInPlace(tr.Ccct)
 
 	icaRows, err := st.ICAPeaksSince(since, historyTrendLimit)
 	if err != nil {
 		return tr, err
 	}
-	reverseInPlace(icaRows)
-	for _, ip := range icaRows {
-		if h := finitePtr(&ip.PeakHRel); h != nil {
-			tr.IcaPeaks = append(tr.IcaPeaks, icaEntry{TS: ip.TS, PeakUV: ip.PeakUV, PeakHRel: h})
+	// 趋势图只画有有限峰高的点：非有限值在条目里是「缺失即省略」，直接跳过。
+	// 先显式初始化空切片：该字段无 omitempty，nil 会被序列化成 null，破坏
+	// 「空数据输出 []」的既有契约（新装/长期无充电会话时必然走到这里）。
+	tr.IcaPeaks = []icaEntry{}
+	for _, e := range convICAPeaks(icaRows) {
+		if e.PeakHRel != nil {
+			tr.IcaPeaks = append(tr.IcaPeaks, e)
 		}
 	}
+	reverseInPlace(tr.IcaPeaks)
 
 	estRows, err := st.EstimatesSince(since, historyTrendLimit)
 	if err != nil {
 		return tr, err
 	}
-	reverseInPlace(estRows)
-	for _, tv := range estRows {
-		tr.Estimates = append(tr.Estimates, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
-	}
+	tr.Estimates = convEstimates(estRows)
+	reverseInPlace(tr.Estimates)
 
 	// 长期容量档案：按本地日汇总、永久保留，按需压缩到 historyArchiveLimit 点。
 	dailyRows, err := st.DailyEstimates(archiveQueryLimit)
 	if err != nil {
 		return tr, err
 	}
-	for _, d := range downsampleDaily(dailyRows, historyArchiveLimit) {
-		tr.Archive = append(tr.Archive, archiveEntry{TS: d.TS, Mah: d.UAh / 1000})
-	}
+	tr.Archive = convArchive(downsampleDaily(dailyRows, historyArchiveLimit))
 
 	return tr, nil
 }

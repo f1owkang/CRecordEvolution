@@ -192,6 +192,68 @@ func convDischarge(r DischargeRow) dischargeEntry {
 	return e
 }
 
+// 以下批量转换是「查询行 → JSON 条目」的唯一实现：概览（runJson）、历史
+// （history）与诊断共用，避免同一字段换算在两处各写一遍循环而口径漂移。
+// 返回值恒为非 nil 切片：空结果序列化为 []，与既有「空数据输出 [] 而非 null」
+// 的契约一致。
+func convSessions(rows []Session) []sessionEntry {
+	out := make([]sessionEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, convSession(r))
+	}
+	return out
+}
+
+func convDischarges(rows []DischargeRow) []dischargeEntry {
+	out := make([]dischargeEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, convDischarge(r))
+	}
+	return out
+}
+
+func convRestPoints(rows []RestPoint) []restEntry {
+	out := make([]restEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, restEntry{TS: r.TS, UV: r.UV, Cap: r.Cap})
+	}
+	return out
+}
+
+func convCCCT(rows []CcctRow) []ccctEntry {
+	out := make([]ccctEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ccctEntry{TS: r.TS, Secs: r.Secs, VwLo: r.VwLo, VwHi: r.VwHi})
+	}
+	return out
+}
+
+// convICAPeaks 保留非有限峰高的条目（PeakHRel 省略），是否丢弃该点由调用方
+// 决定：概览原样透传，历史趋势图只画有峰高的点。
+func convICAPeaks(rows []ICAPeakRow) []icaEntry {
+	out := make([]icaEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, icaEntry{TS: r.TS, PeakUV: r.PeakUV, PeakHRel: finitePtr(&r.PeakHRel)})
+	}
+	return out
+}
+
+func convEstimates(rows []TsVal) []recentEntry {
+	out := make([]recentEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, recentEntry{TS: r.TS, Mah: r.V / 1000})
+	}
+	return out
+}
+
+func convArchive(rows []DailyRow) []archiveEntry {
+	out := make([]archiveEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, archiveEntry{TS: r.TS, Mah: r.UAh / 1000})
+	}
+	return out
+}
+
 // RenderJSON 把概览数据渲染为 `batteryd json` 的 JSON 输出。
 // live/daemon 可为 nil（对应字段整体省略）：live 由构建实时节点得到，daemon 由
 // 心跳文件解析得到。
@@ -208,7 +270,6 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 		WeeksTo80:       snap.WeeksTo80,
 		EstMahSigma:     finitePtr(snap.SigmaMah),
 		Updated:         now.Format("2006-01-02 15:04:05"),
-		Recent:          make([]recentEntry, 0, len(recent)),
 		SamplesN:        samplesN,
 		SessionsN:       snap.SessionsN,
 	}
@@ -236,10 +297,8 @@ func RenderJSON(ch string, d Design, snap Snapshot, recent []TsVal, sess []sessi
 	doc.DupRepair = snap.DupRepair
 	doc.Live = live
 	doc.Daemon = daemon
-	// estimates 表存 µAh，此处换算为 mAh 展示
-	for _, tv := range recent {
-		doc.Recent = append(doc.Recent, recentEntry{TS: tv.TS, Mah: tv.V / 1000})
-	}
+	// estimates 表存 µAh，convEstimates 统一换算为 mAh 展示
+	doc.Recent = convEstimates(recent)
 	// 趋势线端点与 recent 用同一份数据拟合，保证概览趋势图里虚线与数据点同一
 	// 时间窗、同一锚点（见 cmd/batteryd/trend.go 的 FitTrend）。stats() 判定显著
 	// 才下发 trend_mah_per_week，这里保持一致；不显著时不画虚线。
